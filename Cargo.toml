@@ -1,0 +1,74 @@
+# InPhase Rust workspace.
+#
+# Per the architecture report (§17 "Concrete repository layout"):
+#   crates/host     — the Windows host application (GStreamer + Win32).
+#   crates/protocol — the shared, platform-neutral wire protocol (input packets,
+#                     signaling message types, protocol version constants).
+#
+# The `host` crate only builds on Windows. `protocol` builds and tests
+# everywhere and carries the golden Rust<->TypeScript test vectors (§19 Phase 3).
+[workspace]
+resolver = "2"
+members = ["crates/protocol", "crates/host"]
+
+[workspace.package]
+version = "0.1.1"
+edition = "2021"
+rust-version = "1.85"
+# InPhase-owned code is GPL-3.0-or-later (see LICENSE + NOTICE). Third-party
+# components keep their own licenses; packaged builds ship a per-file manifest.
+license = "GPL-3.0-or-later"
+publish = false
+repository = "https://github.com/SamBennettDev/InPhase"
+
+[workspace.dependencies]
+inphase-protocol = { path = "crates/protocol" }
+
+# Async host runtime (§17).
+tokio = { version = "1.40", features = ["full"] }
+# HTTP, WebSocket and static-asset endpoints (§16, §17).
+axum = { version = "0.7", features = ["ws"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["set-header", "trace"] }
+# Signaling / control protocol (§15, §16).
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+# Structured diagnostic logs (§17, §26 "never log PINs/cookies/SDP/raw input").
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+# PIN / session cryptographic randomness from the OS source (§14, §17).
+getrandom = "0.2"
+rand = "0.8"
+# Error plumbing.
+anyhow = "1"
+thiserror = "2"
+# Misc.
+bytes = "1"
+base64 = "0.22"
+futures-util = "0.3"
+parking_lot = "0.12"
+time = { version = "0.3", features = ["formatting", "macros"] }
+# Pairing / device-challenge crypto. All MIT / Apache-2.0 / BSD — no copyleft.
+#   sha2/hmac/hkdf  — QR-invite proof (HMAC over the pairing secret)
+#   subtle          — constant-time proof comparison
+sha2 = "0.10"
+hmac = "0.12"
+hkdf = "0.12"
+subtle = "2"
+
+[profile.release]
+# Latency work benefits from a predictable, fully-optimised build; the host is
+# small so build time is not a concern (§20, §29).
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "unwind"
+strip = "debuginfo"
+
+# quinn-proto 0.11.17 double-decrements `payload_bytes` in its datagram
+# overflow path, wrapping the counter and panicking the endpoint under loss
+# (see vendor/quinn-proto for the one-line fix; upstream as of 0.11.17 is
+# unfixed). Everything else is the pristine crates.io source.
+[patch.crates-io]
+quinn-proto = { path = "vendor/quinn-proto" }

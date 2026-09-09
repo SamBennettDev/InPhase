@@ -1,0 +1,10 @@
+{
+  "name": "inphase-integration",
+  "private": true,
+  "type": "module",
+  "description": "Headless InPhase client for verifying the media + input path without a browser.",
+  "dependencies": {
+    "werift": "^0.20.0",
+    "ws": "^8.18.0"
+  }
+}

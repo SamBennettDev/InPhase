@@ -1,0 +1,1212 @@
+// Player page (architecture report §25.2).
+//
+// Flow: [pair PIN] -> home (pick when to connect) -> capabilities -> negotiate
+// -> play. Connect enters fullscreen immediately (the click is the browser
+// gesture fullscreen + pointer lock need) and captures input. Ctrl+Shift+Q
+// exits back to the home screen; it does not auto-reconnect. Leaving fullscreen
+// any other way (Esc — unavoidable without Keyboard Lock, i.e. HTTPS) just
+// pauses: a "click to resume" prompt, session still live.
+
+import {
+  SignalSocket,
+  type SignalMessage,
+  SIGNALING_PROTOCOL_VERSION,
+} from "../signaling.js";
+import { WtVideoClient, type WtVideoInfo } from "../wt.js";
+import { WtDecoder } from "../wtdecoder.js";
+import { WtRecovery } from "../wtrecovery.js";
+import { InputManager } from "../input/manager.js";
+import { TouchController } from "../input/touch.js";
+import { WtAudio } from "../wtaudio.js";
+import { FrameProbe } from "../diag.js";
+import { Hud } from "./hud.js";
+import { brandLogo, browserInputHint } from "./brand.js";
+import {
+  fetchLibrary,
+  mountLibraryGrid,
+  targetLabel,
+  sameTarget,
+  type LibraryItem,
+} from "./library.js";
+import { getControllerIdentity, forgetControllerIdentity, deviceLabel } from "../controller-key.js";
+import { checkBuildId } from "../buildid.js";
+import {
+  loadSettings,
+  saveSettings,
+  type StreamSettings,
+  type StreamTarget,
+  RESOLUTIONS,
+  FPS_CHOICES,
+  BITRATE_CHOICES_KBPS,
+  bitrateLabel,
+  clampFps,
+  clampBitrate,
+} from "../settings.js";
+import {
+  detectFeatures,
+  receiveAudioCodecs,
+  decodeHints,
+  usableVideoCodecs,
+  fetchHostCapabilities,
+  setHostAudioDevice,
+  mediaCapabilities,
+} from "../capabilities.js";
+
+const isTouch = matchMedia("(pointer: coarse)").matches || "ontouchstart" in window;
+
+/** Drop `?play` from the address bar without navigating.
+ *
+ *  `?play` means "auto-connect on load". Any code path that re-renders the page
+ *  after a session ends must clear it first, or the render immediately starts
+ *  another session — which, when the session cannot succeed, is a reconnect
+ *  loop that hammers the host continuously. */
+function stripAutoPlayParam(): void {
+  const url = new URL(location.href);
+  if (!url.searchParams.has("play")) return;
+  url.searchParams.delete("play");
+  history.replaceState(null, "", url.toString());
+}
+
+export async function renderPlay(root: HTMLElement) {
+  root.innerHTML = `<div class="center">${brandLogo()}<p class="sub">Checking pairing…</p></div>`;
+  let paired = false;
+  try {
+    paired = (await fetch("/api/v1/session")).ok;
+  } catch {
+    /* offline */
+  }
+
+  // `?play` — auto-connect in this tab, no home screen, no auto-fullscreen
+  // (diagnostics / bookmark).
+  if (new URLSearchParams(location.search).has("play")) {
+    if (paired) new Session(root, loadSettings());
+    else showPair(root);
+    return;
+  }
+
+  if (paired) showHome(root);
+  else showPair(root);
+}
+
+/** Landing page for a paired device: a searchable poster grid of "Whole
+ *  desktop" + every installed game, a live status line, and a sticky Connect
+ *  bar. Picking a card just remembers the choice; Connect enters the session. */
+function showHome(root: HTMLElement) {
+  root.innerHTML = `
+    <div class="home">
+      <div class="home-panel card" id="panel" hidden></div>
+
+      <div class="library-shell" id="library"></div>
+
+      <footer class="home-bar">
+        <div class="home-bar-target">
+          <span class="home-bar-cap">Selected</span>
+          <span class="home-bar-name" id="picklabel">Whole desktop</span>
+        </div>
+        <div class="home-bar-btns">
+          <button class="icon-btn" id="cfgbtn" type="button" title="Stream settings" aria-label="Stream settings">⚙</button>
+          <button id="connect" disabled>Connect</button>
+        </div>
+      </footer>
+      <button class="link home-forget" id="forget" type="button">Forget this device</button>
+    </div>`;
+
+  const $ = <T extends HTMLElement>(s: string) => root.querySelector<T>(s)!;
+  const connect = $<HTMLButtonElement>("#connect");
+  const picklabel = $("#picklabel");
+  let poll = 0;
+  let settings = loadSettings();
+  let items: LibraryItem[] = [];
+  let activeStream: StreamTarget | null = null;
+  const stop = () => clearInterval(poll);
+
+  const render = () => {
+    mountLibraryGrid(
+      $("#library"),
+      { items, selected: settings.streamTarget, active: activeStream, query: "" },
+      (t) => {
+        settings = { ...settings, streamTarget: t };
+        saveSettings(settings);
+        picklabel.textContent = targetLabel(t, items);
+      },
+    );
+  };
+
+  picklabel.textContent = targetLabel(settings.streamTarget, items);
+  const loadLibrary = async (tries = 0) => {
+    const { items: list, artPending } = await fetchLibrary();
+    if (!root.querySelector("#library")) return; // navigated away
+    items = list;
+    picklabel.textContent = targetLabel(settings.streamTarget, items);
+    render();
+    // The host fetches Steam box art in the background and it takes priority
+    // over launcher posters — poll a few times so covers upgrade without a
+    // reload.
+    const more = artPending || list.some((i) => i.kind === "game" && !i.poster_url);
+    if (more && tries < 6) window.setTimeout(() => void loadLibrary(tries + 1), 3000);
+  };
+  void loadLibrary();
+
+  $<HTMLButtonElement>("#cfgbtn").addEventListener("click", () => {
+    const panel = $<HTMLElement>("#panel");
+    panel.hidden = !panel.hidden;
+    if (!panel.hidden && !panel.dataset["built"]) {
+      panel.dataset["built"] = "1";
+      buildHomeSettings(panel, () => {});
+    }
+  });
+
+  connect.addEventListener("click", async () => {
+    if (connect.disabled) return;
+    // Last line of defence against a stale bundle: the tab may have sat
+    // foreground-black across a deploy (no visibilitychange, no load - the
+    // 2026-09-09 phone dialed an old per-frame reader against a host that
+    // had moved on, and waited forever for a stream that never came).
+    // Re-check at the exact moment dialing matters; the reload replaces the
+    // page, so skip starting a session that is about to be torn down.
+    if ((await checkBuildId()) === "reloading") return;
+    stop();
+    root.innerHTML = "";
+    new Session(root, loadSettings(), { immersive: !isTouch });
+  });
+
+  $("#forget").addEventListener("click", async () => {
+    stop();
+    const ident = await getControllerIdentity().catch(() => null);
+    const q = ident ? `?controller=${ident.publicKeyHex}` : "";
+    await fetch(`/api/v1/logout${q}`, { method: "POST" }).catch(() => {});
+    await forgetControllerIdentity().catch(() => {});
+    showPair(root);
+  });
+
+  const refresh = async () => {
+    if (!root.contains(connect)) return stop(); // navigated away
+    let st:
+      | { pc_name?: string; busy?: boolean; active_stream?: StreamTarget | null }
+      | null = null;
+    try {
+      const r = await fetch("/api/v1/status");
+      st = r.ok ? await r.json() : null;
+    } catch {
+      /* offline */
+    }
+
+    if (!st) {
+      connect.disabled = true;
+      connect.textContent = "Offline";
+      if (activeStream) {
+        activeStream = null;
+        render();
+      }
+      return;
+    }
+
+    const nextActive = st.busy ? st.active_stream ?? null : null;
+    if (JSON.stringify(nextActive) !== JSON.stringify(activeStream)) {
+      activeStream = nextActive;
+      render();
+    }
+
+    if (st.busy) {
+      connect.disabled = true;
+      connect.textContent = "In use";
+    } else {
+      connect.disabled = false;
+      const t = settings.streamTarget;
+      const label = targetLabel(t, items);
+      connect.textContent = label && !sameTarget(t, { type: "desktop" }) ? `Play ${label}` : "Connect";
+    }
+  };
+  void refresh();
+  poll = window.setInterval(refresh, 3000);
+}
+
+function settingsSummary(s: StreamSettings): string {
+  const mbps = (s.maxBitrateKbps / 1000).toFixed(s.maxBitrateKbps % 1000 ? 1 : 0);
+  return `${s.height}p · ${s.fps} fps · ${mbps} Mbps · 0 ms buffer`;
+}
+
+/** Compact pre-connect settings editor, written straight to localStorage
+ *  (no live session to reconnect). */
+function buildHomeSettings(panel: HTMLElement, onChange: () => void) {
+  const s = loadSettings();
+  panel.innerHTML = `
+    <p class="home-panel-head">Stream settings <span id="cfgsum">${settingsSummary(s)}</span></p>
+    <label>Resolution
+      <select data-s="res">${RESOLUTIONS.map(
+        (r) => `<option value="${r.height}"${r.height === s.height ? " selected" : ""}>${r.label}</option>`,
+      ).join("")}</select>
+    </label>
+    <label>Frame rate
+      <select data-s="fps">${FPS_CHOICES.map(
+        (f) => `<option value="${f}"${f === s.fps ? " selected" : ""}>${f} fps</option>`,
+      ).join("")}</select>
+    </label>
+    <label>Max bitrate
+      <select data-s="br">${BITRATE_CHOICES_KBPS.map(
+        (b) => `<option value="${b}"${b === s.maxBitrateKbps ? " selected" : ""}>${bitrateLabel(b)}</option>`,
+      ).join("")}</select>
+    </label>
+    <p class="sub">Jitter buffer: none — frames render as they arrive.</p>
+    <div class="home-audio" id="audiocfg"></div>`;
+  const pick = (k: string) => panel.querySelector<HTMLSelectElement>(`[data-s="${k}"]`)!;
+  const save = () => {
+    const height = Number(pick("res").value);
+    const width = RESOLUTIONS.find((r) => r.height === height)?.width ?? Math.round((height * 16) / 9);
+    saveSettings({
+      ...loadSettings(),
+      width,
+      height,
+      fps: clampFps(Number(pick("fps").value)),
+      maxBitrateKbps: clampBitrate(Number(pick("br").value)),
+    });
+    const sum = panel.querySelector("#cfgsum");
+    if (sum) sum.textContent = settingsSummary(loadSettings());
+    onChange();
+  };
+  for (const k of ["res", "fps", "br"]) pick(k).addEventListener("change", save);
+  void buildAudioSettings(panel.querySelector<HTMLElement>("#audiocfg")!);
+}
+
+/** Audio section of the settings panel: host capture source + client output.
+ *  `connected` (a callback that reconnects) is passed only from the in-session
+ *  HUD path — on the home screen there's nothing to reconnect. */
+async function buildAudioSettings(host: HTMLElement, reconnect?: () => void) {
+  const caps = await fetchHostCapabilities();
+  const a = caps?.audio;
+  if (!a?.enabled) {
+    host.innerHTML = `<p class="sub">Audio is off on the host.</p>`;
+    return;
+  }
+  const cur = a.capture.device_id;
+  const eps = a.endpoints ?? [];
+  const def = eps.find((e) => e.is_default);
+  const captureOpts =
+    `<option value=""${cur === "" ? " selected" : ""}>System default${def ? ` — ${def.name}` : ""}</option>` +
+    eps
+      .filter((e) => !e.is_default)
+      .map(
+        (e) =>
+          `<option value="${e.id}"${e.id === cur ? " selected" : ""}>${e.name}${
+            e.active ? "" : " (inactive)"
+          }</option>`,
+      )
+      .join("");
+
+  host.innerHTML = `
+    <label>Game audio — capture source (host)
+      <select data-a="capture">${captureOpts}</select>
+    </label>
+    <label>Output device (this device)
+      <select data-a="output" disabled><option>Browser / OS default</option></select>
+    </label>
+    <p class="sub" id="audionote"></p>`;
+
+  const cap = host.querySelector<HTMLSelectElement>('[data-a="capture"]')!;
+  const note = host.querySelector<HTMLElement>("#audionote")!;
+
+  // Health / signal readout for the current source.
+  const health = a.capture.health;
+  if (health === "failed") note.textContent = "Audio branch failed on the host — reconnect to recover.";
+  else if (health === "degraded") note.textContent = "Capture device error — audio may be silent.";
+  else if (a.capture.signal_detected === false)
+    note.textContent = `No audio detected from “${a.capture.name}”. Try another source.`;
+
+  cap.addEventListener("change", async () => {
+    const ok = await setHostAudioDevice(cap.value || null);
+    if (!ok) {
+      note.textContent = "Could not reach the host to save that.";
+      return;
+    }
+    if (reconnect) {
+      note.innerHTML = `Changed to “${cap.selectedOptions[0]!.textContent}”. `;
+      const b = document.createElement("button");
+      b.className = "secondary";
+      b.type = "button";
+      b.textContent = "Reconnect now";
+      b.addEventListener("click", reconnect);
+      note.append(b);
+    } else {
+      note.textContent = "Saved — applies on your next connection.";
+    }
+  });
+
+  // ---- output device: needs selectAudioOutput + setSinkId (secure context) ---
+  const mc = mediaCapabilities();
+  const out = host.querySelector<HTMLSelectElement>('[data-a="output"]')!;
+  if (!mc.audioOutputSelection) {
+    note.textContent ||= mc.secureContext
+      ? "This browser can't switch the audio output device."
+      : "Output-device switching needs an HTTPS connection — playing to your device's default.";
+    return;
+  }
+  const md = navigator.mediaDevices as MediaDevices & {
+    selectAudioOutput?: () => Promise<MediaDeviceInfo>;
+  };
+  const fill = async () => {
+    const devs = (await md.enumerateDevices()).filter((d) => d.kind === "audiooutput");
+    const s = loadSettings();
+    out.disabled = false;
+    out.innerHTML =
+      `<option value="">Default</option>` +
+      devs
+        .map(
+          (d) =>
+            `<option value="${d.deviceId}"${d.deviceId === s.audioOutputId ? " selected" : ""}>${
+              d.label || "Output device"
+            }</option>`,
+        )
+        .join("");
+  };
+  try {
+    await fill();
+    md.addEventListener?.("devicechange", () => void fill());
+    out.addEventListener("change", () => {
+      saveSettings({ ...loadSettings(), audioOutputId: out.value });
+      note.textContent = "Output device saved — applies on connect.";
+    });
+    // Blank labels ⇒ no permission yet; add a picker button.
+    if (![...out.options].some((o) => o.value && o.textContent !== "Output device")) {
+      const pick = document.createElement("button");
+      pick.className = "secondary";
+      pick.type = "button";
+      pick.textContent = "Choose output device…";
+      pick.addEventListener("click", async () => {
+        try {
+          const d = await md.selectAudioOutput!();
+          saveSettings({ ...loadSettings(), audioOutputId: d.deviceId });
+          await fill();
+          note.textContent = "Output device saved — applies on connect.";
+        } catch {
+          /* cancelled */
+        }
+      });
+      host.append(pick);
+    }
+  } catch {
+    /* enumerate failed */
+  }
+}
+
+function showPair(root: HTMLElement) {
+  root.innerHTML = `
+    <div class="center">
+      ${brandLogo()}
+      <p class="sub">Enter the PIN shown on the host PC.</p>
+      <div class="card">
+        <label for="pin">Pairing PIN</label>
+        <input id="pin" type="tel" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="000000" />
+        <button id="go">Connect</button>
+        <div class="err" id="err"></div>
+      </div>
+    </div>`;
+  const pin = root.querySelector<HTMLInputElement>("#pin")!;
+  const err = root.querySelector<HTMLDivElement>("#err")!;
+  const go = root.querySelector<HTMLButtonElement>("#go")!;
+  pin.focus();
+  const submit = async () => {
+    go.disabled = true;
+    err.textContent = "";
+    try {
+      // This browser's durable device identity — registered in the Host's ACL
+      // on a successful pair.
+      const ident = await getControllerIdentity();
+      if (!ident) throw new Error("This browser can't hold a device key — update it and retry.");
+      const res = await fetch("/api/v1/pair", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          pin: pin.value.trim(),
+          controller_pubkey: ident.publicKeyHex,
+          controller_name: deviceLabel(),
+        }),
+      });
+      if (res.status === 429) throw new Error("Too many attempts — wait a minute.");
+      if (!res.ok) throw new Error("Incorrect PIN.");
+      showHome(root);
+    } catch (e) {
+      err.textContent = e instanceof Error ? e.message : String(e);
+      go.disabled = false;
+    }
+  };
+  go.addEventListener("click", submit);
+  pin.addEventListener("keydown", (e) => e.key === "Enter" && submit());
+}
+
+/** One connection attempt. Recreated on Apply (settings change). */
+export class Session {
+  private stage = div("stage");
+  private status = div("status-line");
+  private sock!: SignalSocket;
+  private input: InputManager | TouchController | null = null;
+  private probe: FrameProbe | null = null;
+  private hud: Hud;
+  private pingTimer = 0;
+  private lastInputRtt = 0;
+  private closed = false;
+  // WebTransport video path (ADR-0011). Both stay null until the host
+  // advertises `wt_video_info` AND the browser supports WebTransport; any
+  // failure reverts to the WebRTC <video>, which never stops flowing.
+  private wtClient: WtVideoClient | null = null;
+  /** §15: the single recovery state machine owns the reset/redial ladder. */
+  private wtRecovery = new WtRecovery();
+  /** §13: when the WT path is live it takes input datagrams; the WebRTC
+   *  data channel only serves while WT is down. Exactly one path per packet. */
+  private wtInput: ((b: Uint8Array) => Promise<boolean>) | null = null;
+  private wtDecoder: WtDecoder | null = null;
+  private wtSyncError: (() => number | null) | null = null;
+  private wtClose: (() => void) | null = null;
+  private wtInfo: WtVideoInfo | null = null;
+  private wtRedialTimer = 0;
+  /** performance.now() when the current dial started (stuck-dial watchdog). */
+  private wtDialAt = 0;
+  /** onConnected mounted the glass (HUD, input, telemetry) exactly once. */
+  private glassMounted = false;
+  /** Latest host route warning (HUD), cleared when the glass closes. */
+  private routeWarning: string | null = null;
+  /** WT audio (§11-on-WT): Opus datagrams -> WebCodecs -> AudioContext. */
+  // One WtAudio for the page: start() after stop() recreates its context.
+  private readonly wtAudio = new WtAudio();
+  /** The codec the WT session actually negotiated (HUD label). */
+  private wtCodecLabel: string | null = null;
+  private wtActive = false;
+  private readonly immersive: boolean;
+
+  /** Where "go home" / teardown returns to. Defaults to `renderPlay`. */
+  private readonly onExit?: () => void;
+
+  constructor(
+    private readonly root: HTMLElement,
+    private settings: StreamSettings,
+    opts: {
+      immersive?: boolean;
+      onExit?: () => void;
+    } = {},
+  ) {
+    this.immersive = opts.immersive ?? false;
+    this.onExit = opts.onExit;
+    saveSettings(settings);
+    // Sound from the first frame: creating/resuming the AudioContext here
+    // lands inside the Connect click's user gesture - iOS Safari suspends
+    // contexts made outside one, which read as "starts muted".
+    this.wtAudio.prime();
+    document.body.append(this.stage, this.status);
+    this.status.textContent = "Connecting…";
+    if (this.immersive) {
+      document.title = "InPhase — playing";
+      window.addEventListener("pagehide", this.onPageHide);
+    }
+
+    this.hud = new Hud(
+      settings,
+      (s) => this.reconnect(s),
+      () => this.teardown(),
+      (sc) => this.input?.tapKey(sc),
+      (vol, muted) => this.setAudio(vol, muted),
+      (el) => void buildAudioSettings(el, () => this.reconnect(this.settings)),
+      (v) => {
+        this.settings.showMetrics = v;
+        saveSettings(this.settings);
+      },
+    );
+
+    // No WebRTC session: video, audio and input all ride WebTransport, and
+    // the host's signaling offer is ignored below.
+    window.addEventListener("resize", () => this.layoutHud());
+    document.addEventListener("fullscreenchange", () => this.layoutHud());
+
+    if (!isTouch) {
+      const im = new InputManager(this.stage, { sendInput: (b) => this.routeInput(b) });
+      if (this.immersive) {
+        im.onQuitHotkey = () => this.goHome(); // Ctrl+Shift+Q → back to home
+        document.addEventListener("fullscreenchange", this.onImmersiveFs);
+        document.addEventListener("pointerlockchange", this.onPointerLock);
+        // The Connect click is a live browser gesture right now — take the
+        // screen + pointer lock before the async negotiation burns it.
+        void im.capture();
+      } else {
+        im.onReleaseHotkey = () => this.toast("Capture released — click the video to go fullscreen again");
+      }
+      this.input = im;
+      this.input.attach();
+    }
+
+    window.addEventListener("gamepadconnected", this.onGamepad);
+
+    void this.negotiate();
+  }
+
+  private onGamepad = (e: GamepadEvent) => {
+    const g = e.gamepad;
+    this.toast(`${g.id.split("(")[0]!.trim() || "Controller"} connected`);
+    console.info("[InPhase] gamepad", g.id, g.mapping || "(non-standard)", `${g.buttons.length}btn/${g.axes.length}ax`);
+  };
+
+  private toast(text: string) {
+    const el = div("status-line");
+    el.textContent = text;
+    document.body.append(el);
+    setTimeout(() => el.remove(), 2500);
+  }
+
+  // ---- immersive (fullscreen) play --------------------------------------
+
+  private enterOverlay: HTMLElement | null = null;
+
+  /** "Paused" prompt shown when fullscreen drops but the session is still up
+   *  (typically Esc — the browser exits fullscreen and we can't stop it without
+   *  Keyboard Lock, which needs a secure/HTTPS origin). Click resumes.
+   *  Idempotent. */
+  private showEnterPrompt() {
+    if (this.closed || document.fullscreenElement) return;
+    if (!this.enterOverlay) {
+      const ov = div("overlay enter-prompt");
+      ov.innerHTML = `<div class="enter-cta">
+        <div class="enter-glyph">▶</div>
+        <div class="enter-title">Paused</div>
+        <div class="enter-hint">Mouse control is off until you click here.<br/>Esc exits fullscreen in this browser — click to go back in.</div>
+        <div class="sub" style="margin-top:.8rem">click to resume · <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Q</kbd> to exit</div>
+      </div>`;
+      const resume = async () => {
+        await (this.input as InputManager | null)?.capture();
+        if (document.fullscreenElement) ov.remove();
+      };
+      ov.addEventListener("click", resume);
+      // any keypress also resumes (a keydown is a valid fullscreen gesture)
+      ov.addEventListener("keydown", resume);
+      ov.tabIndex = 0;
+      this.enterOverlay = ov;
+    }
+    if (!this.enterOverlay.isConnected) this.stage.append(this.enterOverlay);
+    this.enterOverlay.focus();
+  }
+
+  private onImmersiveFs = () => {
+    if (this.closed) return;
+    this.updateCaptureUi();
+  };
+
+  private onPointerLock = () => {
+    if (this.closed || !this.immersive) return;
+    this.updateCaptureUi();
+  };
+
+  private updateCaptureUi() {
+    if (!this.immersive || this.closed) return;
+    const fs = !!document.fullscreenElement;
+    const locked = document.pointerLockElement === this.stage;
+    // Full-screen "Paused" overlay only when we've actually left fullscreen.
+    // In fullscreen without pointer lock, the small stage-paused banner is enough
+    // — a dark overlay on top of live video looks like a black screen.
+    this.stage.classList.toggle("stage-paused", fs && !locked);
+    if (!fs) this.showEnterPrompt();
+    else this.enterOverlay?.remove();
+  }
+
+  private onPageHide = () => {
+    // Tab closed / navigated away — free the host session promptly.
+    navigator.sendBeacon?.("/api/v1/session/stop");
+  };
+
+  private async negotiate() {
+    const features = detectFeatures();
+    // H.265 is the only codec (user directive): one probe, one advertisement.
+    const hints = await decodeHints([
+      { codec: "h265", width: this.settings.width, height: this.settings.height, framerate: this.settings.fps },
+    ]);
+    const videoCodecs = usableVideoCodecs(
+      [{ codec: "h265", width: this.settings.width, height: this.settings.height, framerate: this.settings.fps }],
+      hints,
+    );
+    if (videoCodecs.length === 0) {
+      // The host picks between them; the client's job is to report honestly
+      // what it can decode. Only a browser that can decode neither is refused,
+      // and it is refused by name rather than by guessing at the cause.
+      this.fail(
+        "This browser can't decode H.265 or H.264 video. Try a current Safari, Chrome, or Edge.",
+      );
+      return;
+    }
+
+    this.sock = new SignalSocket(
+      (m) => this.onSignal(m),
+      () => this.onDrop(),
+    );
+    let authOk = true;
+    await this.sock.ready.catch((e: unknown) => {
+      authOk = false;
+      this.fail(e instanceof Error ? e.message : "signaling channel failed");
+    });
+    if (!authOk || this.closed) return;
+
+    this.sock.send({
+      type: "client_hello",
+      protocol_version: SIGNALING_PROTOCOL_VERSION,
+      browser: navigator.userAgent,
+      requested_mode: {
+        width: this.settings.width,
+        height: this.settings.height,
+        fps: this.settings.fps,
+        preset: this.settings.preset,
+        // H.265 only (user directive) - the host refuses anything else.
+        codec_preference: "h265",
+        max_bitrate_kbps: this.settings.maxBitrateKbps,
+        stream_target:
+          this.settings.streamTarget.type === "desktop"
+            ? { type: "desktop" }
+            : { type: "game", id: this.settings.streamTarget.id },
+      },
+    });
+    this.sock.send({
+      type: "client_capabilities",
+      rtp_video_codecs: videoCodecs,
+      rtp_audio_codecs: receiveAudioCodecs(),
+      decode_hints: hints,
+      features,
+    });
+  }
+
+  private async onSignal(m: SignalMessage) {
+    switch (m.type) {
+      case "session_config":
+        break; // no WebRTC configuration to apply
+      case "wt_video_info":
+        this.maybeDialWt(m);
+        break;
+      case "offer":
+      case "ice":
+        break; // WebRTC is removed (user directive); WT dials via wt_video_info
+      case "session_ready":
+        this.status.remove();
+        this.root.innerHTML = "";
+        break;
+      case "error":
+        if (m.code === "unauthorized") {
+          // The host does not know this browser's device key, so retrying can
+          // never succeed. Drop the session cookie on the way to the pairing
+          // screen: while it is still valid `renderPlay` treats the browser as
+          // paired and skips pairing, which puts it right back here.
+          stripAutoPlayParam();
+          this.teardownInternals();
+          this.status.remove();
+          document.querySelectorAll(".overlay, .status-line").forEach((el) => el.remove());
+          void (async () => {
+            await fetch("/api/v1/logout", { method: "POST" }).catch(() => {});
+            showPair(this.root);
+          })();
+          return;
+        }
+        this.fail(m.message);
+        break;
+    }
+  }
+
+  /**
+   * Dial the host's WebTransport video path (ADR-0011). The WebRTC video
+   * keeps flowing underneath; the first decoded WT frame swaps the display
+   * to the canvas, and any close swaps back. Nothing here can fail the
+   * session — worst case we simply never switch away from WebRTC.
+   */
+  private maybeDialWt(info: WtVideoInfo): void {
+    if (this.closed) return;
+    if (this.wtClient !== null) {
+      // The host rotates its certificate on every restart (self-signed,
+      // freshly generated). A dial pinned to the old hash can never
+      // complete - and a WebTransport stuck in `connecting` never fires
+      // close() - so a wedged client object would block every fresh push
+      // forever (seen live 2026-09-08: three host restarts, the page never
+      // re-dialed, "stuck on connecting"). A push whose pin differs from
+      // the pinned one is authoritative: recycle and dial with it.
+      if (info.cert_sha256 === this.wtInfo?.cert_sha256) return;
+      console.info("wt: host certificate rotated - recycling the dead dial");
+      this.wtTeardown();
+    }
+    if (!("WebTransport" in globalThis)) {
+      console.info("wt: browser lacks WebTransport - no video path");
+      return;
+    }
+    this.wtInfo = info;
+    const client = new WtVideoClient();
+    const decoder = new WtDecoder(
+      () => {
+        if (this.wtActive || this.closed) return;
+        this.wtActive = true;
+        this.wtAudio?.start();
+        // The WT video is presenting - the session is visibly up. Mount the
+        // full glass (HUD, touch input, telemetry) here too: on a cellular
+        // path WebRTC ICE may never connect, and onConnected - the only
+        // other mount site - keys off ICE (2026-09-08 Safari: video
+        // streamed while the HUD, input buttons and touch capture were
+        // missing entirely, and the page rubber-banded under touches).
+        this.onConnected();
+        this.stage.append(decoder.root);
+        this.toast("WebTransport video path active");
+        this.hudTick();
+      },
+      () => client.requestKeyframe(),
+      // Pong-synced host↔client clock offset → true capture→glass aging.
+      () => client.clockOffsetUs(),
+      // The decoder has given up rebuilding. Say so - the alternative was an
+      // endless error/configure loop that froze the tab with no explanation.
+      (why) => this.fail(why),
+    );
+    this.wtSyncError = () => client.syncErrorMs();
+    this.wtClose = () => client.close();
+    this.wtInput = (b) => client.sendInput(b);
+    client
+      .dial(info, {
+        onVideoConfig: (cfg) => {
+          // The HUD's codec label: what THIS session negotiated, not a
+          // stale WebRTC-era telemetry field with an "H.264" fallback.
+          this.wtCodecLabel = /hvc1|hev1|265/i.test(cfg.codec)
+            ? "H265"
+            : cfg.codec.replace(/^video\//i, "").toUpperCase();
+          // Probe the exact configuration before applying it (review §5):
+          // isConfigSupported is the browser's authoritative answer about
+          // this codec/description/size combination.
+          void VideoDecoder.isConfigSupported({
+            codec: cfg.codec,
+            codedWidth: cfg.width,
+            codedHeight: cfg.height,
+            description: cfg.description ?? undefined,
+          })
+            .then((probe) => {
+              if (!probe.supported) throw new Error("config unsupported by this browser");
+              // The WT path now races the WebRTC answer at session start, so
+              // TWO video_config messages arrive (epochs 3 and 4 in the
+              // 18:34 session). Reconfiguring on the identical second one
+              // flushes the decoder right after the startup IDR passed - the
+              // session then decoded nothing forever. Only a REAL change
+              // (codec/description/size) reconfigures; duplicates just ack.
+              const last = decoder.currentConfig();
+              const same =
+                last !== null &&
+                last.codec === cfg.codec &&
+                last.width === cfg.width &&
+                last.height === cfg.height &&
+                (last.description ?? null) === (cfg.description ?? null);
+              decoder.configure(cfg);
+              void client.send({ type: "config_ack", epoch: cfg.epoch });
+              if (same) console.info("wt: duplicate video_config (epoch", cfg.epoch, ") - kept the running decoder");
+            })
+            .catch((e) => {
+              // Unsupported codec/description combo: without this the client
+              // would sit connected-but-forever-unconfigured. Close so the
+              // watchdog redials a fresh WT path.
+              console.warn("wt: decoder config rejected:", String(e));
+              client.close();
+            });
+        },
+        onFrame: (f) => decoder.onFrame(f),
+        onClosed: (why) => {
+          console.info("wt video path closed:", why);
+          this.wtTeardown();
+          if (!this.closed) {
+            // No WebRTC video exists to fall back to — the canvas holds the
+            // last frame while the auto-redial (3 s) restores the glass.
+            this.toast("WebTransport video lost — redialing");
+            this.hudTick();
+          }
+        },
+        onRtt: () => this.hudTick(),
+        onRouteWarning: (detail) => {
+          // §"respect user inputs": the resolution stays; the user is told.
+          console.warn("wt route warning:", detail);
+          this.toast(detail);
+          this.routeWarning = detail;
+        },
+        onAudio: (opus, ptsUs) => this.wtAudio?.push(opus, ptsUs),
+        onControlMessage: (data) => this.onControl(data),
+      })
+      .then(() => {
+        this.wtClient = client;
+        this.wtDialAt = performance.now();
+        this.wtDecoder = decoder;
+        // Once-per-second WT telemetry reports decoder + playout stats to the
+        // host's congestion controller (media/bitrate.rs), same shape as the
+        // WebRTC path's ClientTelemetry.
+        client.setStatsProvider(() => {
+          const s = decoder.stats();
+          return {
+            codec: this.wtCodecLabel ?? null,
+            framesDecoded: s.framesDecoded,
+            freezeCount: s.freezeCount,
+            totalFreezeMs: s.totalFreezeMs,
+            framesDropped: s.framesDropped,
+          };
+        });
+      })
+      .catch((e) => {
+        console.info("wt dial failed (watchdog will redial):", String(e));
+        client.close();
+        decoder.stop();
+      });
+  }
+
+  private wtTeardown(): void {
+    this.wtActive = false;
+    this.wtAudio?.stop();
+    this.wtInput = null;
+    this.wtDecoder?.stop();
+    this.wtDecoder = null;
+    this.wtClient?.close();
+    this.wtClient = null;
+    // No WebRTC video exists to reveal — the canvas holds the last frame and
+    // the auto-redial below restores the glass.
+    if (!this.closed && this.wtInfo && this.wtRedialTimer === 0) {
+      this.wtRedialTimer = window.setTimeout(() => {
+        this.wtRedialTimer = 0;
+        if (!this.closed && this.wtClient === null) {
+          // The old dial token was consumed by the connection that just
+          // died — ask the host for a fresh one over the still-alive
+          // signaling channel; the `wt_video_info` handler dials with it.
+          console.info("wt: requesting a fresh dial token");
+          this.sock.send({ type: "wt_video_info_request" });
+        }
+      }, 3000);
+    }
+  }
+
+  // Host frame stamps + host_now_us ride the control stream; consumed in maybeDialWt.
+  private onControl(data: string) {
+    let m: {
+      type?: string;
+      at_us?: number;
+      host_now_us?: number;
+      frames?: [number, number, number, number][];
+    };
+    try {
+      m = JSON.parse(data);
+    } catch {
+      return; // not json
+    }
+    if (m.type === "pong" && typeof m.at_us === "number") {
+      this.lastInputRtt = performance.now() - m.at_us / 1000;
+    } else if (m.type === "frame_stamps" && m.frames) {
+      this.probe?.ingestHostStamps(
+        m.frames.map(([rtp, capture_us, encode_us, send_us]) => ({ rtp, capture_us, encode_us, send_us })),
+        m.host_now_us ?? 0,
+        this.lastInputRtt / 2, // control-channel one-way, from ping/pong
+      );
+    }
+  }
+
+  private onConnected() {
+    if (this.glassMounted) return;
+    this.glassMounted = true;
+    // Video is flowing — clear the "Connecting…" overlay even if `session_ready`
+    // is slow (belt-and-suspenders; the host also sends it).
+    this.status.remove();
+    this.root.innerHTML = "";
+    // Must live inside `.stage` — Chrome only paints descendants of the
+    // fullscreen element, and we request fullscreen on the stage.
+    this.stage.append(this.hud.root);
+    // Belt-and-suspenders: autoplay can still stall after a long negotiate or
+    // when fullscreen/pointer-lock churns during connect.
+    if (isTouch) {
+      const tc = new TouchController(this.stage, { sendInput: (b) => this.routeInput(b) });
+      tc.onDisconnect = () => this.teardown();
+      tc.attach();
+      this.input = tc;
+    } else if (this.immersive) {
+      // Fullscreen was requested on the Connect gesture. If it didn't stick
+      // (denied, or dismissed while connecting), show the resume prompt.
+      if (!document.fullscreenElement) this.showEnterPrompt();
+      const hint = browserInputHint();
+      if (hint) this.toast(hint);
+      this.updateCaptureUi();
+    } else {
+      this.toast("Click the video for fullscreen — input is captured while fullscreen · Esc to release");
+    }
+    this.probe = new FrameProbe();
+    // Label the glass in the frame log: while WT is showing, its measured
+    // latency rides along — otherwise the WebRTC numbers below are the hidden
+    // fallback stream's, not what the user is watching.
+    this.probe.wtGlass = () => {
+      const s = this.wtActive ? this.wtDecoder?.stats() : null;
+      return s && s.e2eMs > 0
+        ? {
+            e2eMs: s.e2eMs,
+            presentedFps: s.presentedFps,
+            syncErrMs: this.wtSyncError?.() ?? null,
+            framesDecoded: s.framesDecoded,
+            framesDropped: s.framesDropped,
+            rendering: s.rendering,
+          }
+        : null;
+    };
+    this.probe.start();
+    // Slow-poll the host audio-branch health (rare failure; not on the hot path).
+    if (this.settings.volume > 0) {
+      this.audioHealthPoll = window.setInterval(async () => {
+        const c = await fetchHostCapabilities();
+        this.audioHostFailed = c?.audio?.capture?.health === "failed";
+      }, 8000);
+    }
+    // Audio autoplays muted; apply the saved volume/mute on the first input
+    // (a real user gesture — otherwise Chrome keeps it silent).
+    document.addEventListener("pointerdown", this.applyAudioOnce);
+    document.addEventListener("keydown", this.applyAudioOnce);
+    this.hudTick();
+  }
+
+  private applyAudioOnce = () => {
+    document.removeEventListener("pointerdown", this.applyAudioOnce);
+    document.removeEventListener("keydown", this.applyAudioOnce);
+    if (this.closed) return;
+    // iOS Safari only creates/resumes an AudioContext inside a user gesture -
+    // this handler IS that gesture. Without it the context stays suspended
+    // and every decoded sample plays into the void.
+    this.wtAudio.prime();
+    this.setAudio(this.settings.volume, this.settings.muted);
+  };
+
+  private setAudio(volume: number, muted: boolean) {
+    this.settings.volume = volume;
+    this.settings.muted = muted;
+    saveSettings(this.settings);
+    this.wtAudio.setVolume(volume, muted);
+  }
+
+  private audioHealthPoll = 0;
+  private audioHostFailed = false;
+
+  /** Letterbox geometry → HUD placement. When the video's aspect leaves
+   *  ≥96px bars on the sides (a phone in landscape), the controls rail moves
+   *  into the right gutter and the stats overlay tucks into the left one —
+   *  the overlays stop covering the picture. */
+  private layoutHud() {
+    const hud = this.hud?.root;
+    if (!hud?.isConnected) return;
+    const sw = this.stage.clientWidth;
+    const sh = this.stage.clientHeight;
+    if (!sw || !sh) return;
+    const vw = this.settings.width || 16;
+    const vh = this.settings.height || 9;
+    const contentW = sw / sh > vw / vh ? sh * (vw / vh) : sw;
+    const gutter = (sw - contentW) / 2;
+    if (gutter >= 96) {
+      hud.style.setProperty("--gutter-w", `${Math.round(gutter)}px`);
+      hud.classList.add("hud-gutter");
+    } else {
+      hud.classList.remove("hud-gutter");
+      hud.style.removeProperty("--gutter-w");
+    }
+  }
+
+  private hudTick() {
+    try {
+      this.hudTickInner();
+    } catch (e) {
+      // The watchdog MUST run even if a DOM probe is null (e.g. an element
+      // torn down mid-session) — a dead watchdog is a frozen glass.
+      console.warn("hud tick failed:", String(e));
+    }
+  }
+
+  private hudTickInner() {
+    // A dial that never completes (host restarted mid-handshake, filtered
+    // UDP path) leaves a WebTransport object in `connecting` forever with no
+    // close event - it blocks every fresh dial. Recycle it and let the
+    // recovery ladder request a fresh token.
+    if (
+      this.wtClient !== null &&
+      !this.wtActive &&
+      this.wtDialAt > 0 &&
+      performance.now() - this.wtDialAt > 12_000
+    ) {
+      console.info("wt: dial never completed in 12s - recycling");
+      this.wtDialAt = 0;
+      this.wtTeardown();
+    }
+
+    this.layoutHud();
+    this.hud.setHasAudio(this.wtActive);
+    const measuredE2e = this.probe?.measuredE2eMs() ?? 0;
+
+    const wtStats = this.wtActive ? this.wtDecoder?.stats() : null;
+    // Watchdog: a network stall can break the decode reference chain (or starve
+    // the reassembler) while the transport stays healthy — the host keeps
+    // pinging fine while presentedFps sits at 0 forever. Recover in stages:
+    // reset the decoder and demand an IDR after 3 s frozen; redial the whole
+    // WT path after 10 s (the fresh session re-gates on a keyframe anyway).
+    // Arm on a live WT path, not only after a first successful decode: the
+    // 18:34 shape was a session that NEVER decoded (a mid-startup reconfigure
+    // swallowed the IDR) - rendering was false forever, so the ladder never
+    // armed and the glass sat black until the user closed it. A never-decoded
+    // session IS a freeze from t=0; reset+IDR at 3 s and redial at 10 s apply.
+    // Safari never fires onClosed when a WT connection dies silently - the
+    // read promises hang and the glass freezes with no recovery path. Watch
+    // the connection's own pulse: no pong AND no datagram for 8 s means it
+    // is dead regardless of what the transport claims; force the redial.
+    if (this.wtActive && this.wtClient && this.wtClient.staleMs() > 8000) {
+      console.warn("wt connection silent >8s - forcing teardown + redial");
+      this.toast("WebTransport lost — reconnecting");
+      this.wtTeardown();
+    } else if (wtStats) {
+      const action = this.wtRecovery.observe(wtStats.framesPresented);
+      if (action === "reset") {
+        console.warn("wt watchdog: glass frozen — resetting decoder, requesting IDR");
+        this.wtDecoder?.reset();
+      } else if (action === "redial") {
+        console.warn("wt watchdog: still frozen after reset — redialing WT path");
+        this.wtClose?.();
+      }
+    } else {
+      this.wtRecovery.reset();
+    }
+    const syncErr = this.wtSyncError?.() ?? null;
+    const inputPath =
+      this.wtInput === null
+        ? "input: rtc"
+        : this.wtInputFailures > 0
+          ? "input: wt failed→rtc"
+          : null;
+    const wtDetail = wtStats
+      ? `wt · dec ${wtStats.decodeMs.toFixed(1)} ms · dropped ${wtStats.framesDropped}` +
+        (syncErr !== null ? ` · sync ±${syncErr.toFixed(1)} ms` : "") +
+        (inputPath ? ` · ${inputPath}` : "")
+      : null;
+    // While the WT glass is up, its own pong-synced capture→glass EMA is the
+    // truth — the WebRTC probe below measures a stream the user isn't watching.
+    const wtE2e = wtStats && wtStats.e2eMs > 0 ? wtStats.e2eMs : 0;
+    this.hud.update({
+      decodedFps: wtStats?.decodedFps ?? 0,
+      presentedFps: wtStats?.presentedFps ?? 0,
+      rttMs: this.wtClient?.rttMs() ?? 0,
+      inputRttMs: this.lastInputRtt,
+      e2eEstMs: wtE2e > 0 ? wtE2e : measuredE2e,
+      width: this.wtDecoder?.root.width ?? 0,
+      height: this.wtDecoder?.root.height ?? 0,
+      inboundKbps: this.wtClient?.inboundKbps() ?? 0,
+      codec: this.wtCodecLabel ?? "--",
+      jitterBufferMs: undefined,
+      decodeMs: wtStats?.decodeMs,
+      packetsLost: undefined,
+      audioState: null,
+      audioHostFailed: this.audioHostFailed,
+      // No ICE to classify - the path IS the WebTransport connection.
+      path: "wt",
+      pathDetail: this.routeWarning
+        ? `⚠ ${this.routeWarning}` + (wtDetail ? ` · ${wtDetail}` : "")
+        : wtDetail ?? null,
+    });
+  }
+
+  private reconnect(s: StreamSettings) {
+    this.settings = s;
+    saveSettings(s);
+    this.teardownInternals();
+    this.status = div("status-line");
+    this.status.textContent = "Reconnecting…";
+    document.body.append(this.status);
+    // fresh session object keeps this simple
+    new Session(this.root, s, { immersive: this.immersive, onExit: this.onExit });
+  }
+
+  /** Signalling socket closed on its own (host gone, network drop) — not our
+   *  own teardown. */
+  private onDrop() {
+    if (this.closed) return;
+    if (this.immersive) this.fail("Connection lost");
+    else this.goHome();
+  }
+
+  /** Hard error (unsupported codec, host `error` message, signalling / network
+   *  failure). Show why, and offer an explicit retry — never auto-reconnect. */
+  private fail(reason: string) {
+    if (this.closed) return;
+    // Console mirror: the harness and remote debugging read console.log;
+    // the overlay alone left E2E verdicts blind to named failures.
+    console.error("session failed:", reason);
+    this.teardownInternals();
+    this.status.remove();
+    const ov = div("overlay");
+    ov.innerHTML = `<div class="card">
+      <h1>Disconnected</h1>
+      <p class="sub"></p>
+      <button data-a="retry">Reconnect</button>
+      <button class="secondary" data-a="home" type="button">Home</button>
+    </div>`;
+    ov.querySelector(".sub")!.textContent = reason;
+    ov.querySelector<HTMLButtonElement>('[data-a="retry"]')!.addEventListener("click", () => {
+      ov.remove();
+      new Session(this.root, this.settings, { immersive: this.immersive, onExit: this.onExit });
+    });
+    ov.querySelector<HTMLButtonElement>('[data-a="home"]')!.addEventListener("click", () => {
+      ov.remove();
+      void renderPlay(this.root);
+    });
+    document.body.append(ov);
+  }
+
+  /** Disconnect button (HUD) — end the session and return to the home screen. */
+  private teardown() {
+    if (this.closed) return;
+    this.goHome();
+  }
+
+  /** §13: WT datagrams carry replaceable input state while the WT path is
+   *  live; the WebRTC data channel is the fallback only. Never both. */
+  /** Input packets the WT datagram path rejected (HUD: fallback visibility). */
+  private wtInputFailures = 0;
+
+  private routeInput(b: Uint8Array): void {
+    const wt = this.wtInput;
+    if (!wt) return; // still dialing - snapshots before the transport exists are dropped
+    void wt(b).then((took) => {
+      if (!took && this.wtClient?.inputReady()) {
+        // A write failed on an otherwise-live transport - count it (HUD).
+        if (this.wtInputFailures === 0) {
+          console.warn("wt input write failed - input is dropped until the WT path recovers");
+        }
+        this.wtInputFailures++;
+      }
+      // !took with no live writers = pre-dial snapshot; skip silently.
+    });
+  }
+
+  private goHome() {
+    this.teardownInternals();
+    this.status.remove();
+    document.querySelectorAll(".overlay, .status-line").forEach((el) => el.remove());
+    // Drop `?play` first: it means "auto-connect on load", so re-rendering with
+    // it still set sends us straight back into a session. When the session is
+    // failing (an unpaired device, say) that is an unbounded reconnect loop
+    // hammering the host every few milliseconds.
+    stripAutoPlayParam();
+    if (this.onExit) this.onExit();
+    else void renderPlay(this.root);
+  }
+
+  private teardownInternals() {
+    this.closed = true;
+    window.removeEventListener("gamepadconnected", this.onGamepad);
+    window.removeEventListener("pagehide", this.onPageHide);
+    document.removeEventListener("fullscreenchange", this.onImmersiveFs);
+    document.removeEventListener("pointerlockchange", this.onPointerLock);
+    document.removeEventListener("pointerdown", this.applyAudioOnce);
+    document.removeEventListener("keydown", this.applyAudioOnce);
+    clearInterval(this.pingTimer);
+    clearInterval(this.audioHealthPoll);
+    this.probe?.stop();
+    this.wtTeardown();
+    this.input?.detach();
+    try {
+      this.sock?.close();
+    } catch {
+      /* */
+    }
+    this.hud.root.remove();
+    this.stage.remove();
+    this.enterOverlay?.remove();
+    if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
+  }
+}
+
+function div(cls: string): HTMLElement {
+  const e = document.createElement("div");
+  e.className = cls;
+  return e;
+}
+

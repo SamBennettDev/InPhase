@@ -1,0 +1,83 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Rust toolchain
+        run: rustup show
+
+      - name: Cache GStreamer installer
+        id: gst-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}\gstreamer.exe
+          # Keep in sync with scripts/provision-windows.ps1 + ADR-002.
+          key: gstreamer-1.28.6-msvc-x64-complete
+
+      - name: Install GStreamer 1.28.6 (runtime + devel)
+        shell: pwsh
+        run: |
+          $v = "1.28.6"
+          $exe = "$env:RUNNER_TEMP\gstreamer.exe"
+          if (-not (Test-Path $exe) -or (Get-Item $exe).Length -lt 100MB) {
+            $url = "https://gstreamer.freedesktop.org/data/pkg/windows/$v/msvc/gstreamer-1.0-msvc-x86_64-$v.exe"
+            curl.exe -sSL --retry 3 -o $exe $url
+          }
+          Start-Process $exe -Wait -ArgumentList `
+            '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-','/NOCANCEL','/TYPE=complete'
+          $gst = "C:\Program Files\gstreamer\1.0\msvc_x86_64"
+          if (-not (Test-Path "$gst\lib\pkgconfig\gstreamer-1.0.pc")) {
+            throw "GStreamer devel install failed"
+          }
+          # Machine scope: scripts/build.ps1 reads the machine env, not process env.
+          [Environment]::SetEnvironmentVariable("GSTREAMER_1_0_ROOT_MSVC_X86_64", "$gst\", "Machine")
+          [Environment]::SetEnvironmentVariable("PKG_CONFIG_PATH", "$gst\lib\pkgconfig", "Machine")
+          $mp = [Environment]::GetEnvironmentVariable("Path", "Machine")
+          if ($mp -notlike "*$gst\bin*") {
+            [Environment]::SetEnvironmentVariable("Path", "$gst\bin;$mp", "Machine")
+          }
+          "$gst\bin" | Out-File -Append $env:GITHUB_PATH
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Build installer
+        shell: pwsh
+        run: pwsh scripts\build-installer.ps1
+
+      - name: Checksum + notes
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash dist\InPhaseSetup.exe -Algorithm SHA256).Hash.ToLower()
+          Set-Content -Encoding ascii dist\InPhaseSetup.exe.sha256 "$hash  InPhaseSetup.exe"
+          Copy-Item installer\RELEASE_NOTES.md dist\notes.md
+          Add-Content dist\notes.md ""
+          Add-Content dist\notes.md "### Verify"
+          Add-Content dist\notes.md ""
+          Add-Content dist\notes.md '```'
+          Add-Content dist\notes.md "SHA-256 (InPhaseSetup.exe) = $hash"
+          Add-Content dist\notes.md '```'
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          body_path: dist/notes.md
+          files: |
+            dist/InPhaseSetup.exe
+            dist/InPhaseSetup.exe.sha256
+          fail_on_unmatched_files: true

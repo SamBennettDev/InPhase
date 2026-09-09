@@ -1,0 +1,8 @@
+[
+  { "name": "mouse_move_unadjusted", "hex": "010101002a00000087d6120000000000fdff07000000ffff", "len": 24 },
+  { "name": "mouse_buttons_left_right", "hex": "010200000700000000000000000000000500", "len": 18 },
+  { "name": "key_a_down_ctrl_shift", "hex": "010300000100000001000000000000001e000103", "len": 20 },
+  { "name": "gamepad_extremes", "hex": "01040000640000007f96980000000000efbeadde0080ff7f000100ffffff0000", "len": 32 },
+  { "name": "snapshot_empty", "hex": "01050000000000000000000000000000000000000000", "len": 22 },
+  { "name": "snapshot_two_keys_with_gamepad", "hex": "01050000370000002a000000000000000100010102001e00110001000000010002000300040005000600", "len": 42 }
+]
