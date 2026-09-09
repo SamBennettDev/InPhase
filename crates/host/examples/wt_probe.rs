@@ -380,15 +380,18 @@ async fn run() -> Result<()> {
             let Ok(f) = WtFragment::decode(&d) else {
                 continue;
             };
-            let e = parts
-                .entry(f.frame_no)
-                .or_insert(vec![None; f.frag_cnt as usize]);
-            if f.frag_idx as usize >= e.len() {
-                continue;
-            }
-            e[f.frag_idx as usize] = Some(f.payload);
-            if e.iter().all(|p| p.is_some()) {
-                parts.remove(&f.frame_no);
+            let complete = {
+                let e = parts
+                    .entry(f.frame_no)
+                    .or_insert(vec![None; f.frag_cnt as usize]);
+                if f.frag_idx as usize >= e.len() {
+                    continue;
+                }
+                e[f.frag_idx as usize] = Some(f.payload);
+                e.iter().all(|p| p.is_some())
+            };
+            if complete {
+                let e = parts.remove(&f.frame_no).unwrap();
                 let bytes = e.iter().flatten().map(|p| p.len()).sum::<usize>();
                 let mut s = sink_dg.lock().unwrap();
                 s.datagram_frames += 1;
