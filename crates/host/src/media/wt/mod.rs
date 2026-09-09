@@ -68,6 +68,12 @@ pub struct OutboundFrame {
     pub capture_us: u64,
     pub key: bool,
     pub payload: Vec<u8>,
+    /// Host monotonic time the encoder produced this frame. Every queue
+    /// downstream measures age against it and rejects work past the frame's
+    /// freshness budget (`DELTA_FRESHNESS` / `KEY_FRESHNESS` in transport.rs):
+    /// a frame older than its playout window is worthless, and delivering it
+    /// only delays the frames behind it.
+    pub captured_at: std::time::Instant,
 }
 
 /// Control-stream events surfaced to the media session (drained via

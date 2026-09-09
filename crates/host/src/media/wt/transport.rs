@@ -47,6 +47,71 @@ const WT_AUDIO_TAG: u8 = 0x41;
 /// unusable, so it is reset and the frame dropped.
 const FRAME_STREAM_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(120);
 
+/// Freshness budgets (docs/research/performance-latency-2026-09-09.md, P0):
+/// a frame that has not left the host within its budget is worthless - it
+/// would playout behind the frames captured after it - so every queue between
+/// the encoder and the wire rejects expired work instead of delivering it.
+/// Deltas must move fast; a keyframe gets more room because it is the only
+/// thing that can resume a broken reference chain.
+const DELTA_FRESHNESS: std::time::Duration = std::time::Duration::from_millis(35);
+const KEY_FRESHNESS: std::time::Duration = std::time::Duration::from_millis(80);
+
+/// Encoded-frame handoff with latest-value semantics.
+///
+/// The old bounded mpsc rejected the NEWEST frame when full - exactly the
+/// wrong victim: live video wants the freshest frame, not the four oldest.
+/// A full queue now evicts the oldest non-key frame to admit the new one (a
+/// keyframe evicts the plain oldest; it is the one frame that can restart a
+/// broken reference chain, so it always gets a slot). Popping also enforces
+/// the freshness budget: expired frames are counted, never sent.
+struct FrameQueue {
+    q: parking_lot::Mutex<std::collections::VecDeque<OutboundFrame>>,
+    cap: usize,
+    notify: tokio::sync::Notify,
+}
+
+impl FrameQueue {
+    fn new(cap: usize) -> Self {
+        Self {
+            q: parking_lot::Mutex::new(std::collections::VecDeque::new()),
+            cap: cap.max(1),
+            notify: tokio::sync::Notify::new(),
+        }
+    }
+
+    fn push(&self, frame: OutboundFrame) {
+        let mut q = self.q.lock();
+        if q.len() >= self.cap {
+            // Evict the oldest non-key frame; if only keyframes remain, the
+            // plain oldest goes. Never evict a keyframe in favor of a delta.
+            match q.iter().position(|f| !f.key) {
+                Some(pos) => {
+                    q.remove(pos);
+                }
+                None => {
+                    q.pop_front();
+                }
+            }
+        }
+        q.push_back(frame);
+        drop(q);
+        self.notify.notify_one();
+    }
+
+    async fn pop(&self) -> OutboundFrame {
+        loop {
+            if let Some(f) = self.q.lock().pop_front() {
+                return f;
+            }
+            self.notify.notified().await;
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.q.lock().len()
+    }
+}
+
 fn try_send_datagram(conn: &wtransport::Connection, data: &[u8]) -> bool {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         match conn.send_datagram(data) {
@@ -62,7 +127,7 @@ fn try_send_datagram(conn: &wtransport::Connection, data: &[u8]) -> bool {
 }
 
 pub struct WtVideoTransport {
-    frames_tx: mpsc::Sender<OutboundFrame>,
+    frame_queue: Arc<FrameQueue>,
     events_rx: Mutex<mpsc::UnboundedReceiver<WtClientEvent>>,
     audio_tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
     audio_seq: parking_lot::Mutex<u32>,
@@ -91,7 +156,7 @@ impl WtVideoTransport {
     /// Bind the UDP endpoint and start the accept loop. Must be called from a
     /// tokio runtime context (the host's main runtime).
     pub fn bind(cfg: WtTransportConfig) -> anyhow::Result<Self> {
-        let (frames_tx, frames_rx) = mpsc::channel(cfg.max_queued_frames.max(1));
+        let frame_queue = Arc::new(FrameQueue::new(cfg.max_queued_frames.max(1)));
         // Audio datagrams (§11 on WT, ADR-0011 WT-only): Opus packets from
         // the GStreamer streaming thread funnel through the SAME single-owner
         // sender task as video — never send_datagram from the audio thread.
@@ -216,21 +281,23 @@ impl WtVideoTransport {
         {
             let mut shutdown = shutdown_rx.clone();
             let shared_for_sender = shared.clone();
+            let frame_queue_sender = frame_queue.clone();
             tokio::spawn(async move {
-                let mut frames_rx = frames_rx;
                 let mut live_rx = live_connection_rx;
                 let mut live: Option<wtransport::Connection> = None;
                 // The sink is injected (client-opened), never opened here.
                 let mut stream: Option<wtransport::stream::SendStream> = None;
-                let (mut sent, mut stalled) = (0u32, 0u32);
+                let (mut sent, mut stalled, mut expired) = (0u32, 0u32, 0u32);
                 let mut stall_window_ms = 0u32;
                 let mut last_report = std::time::Instant::now();
                 loop {
                     if last_report.elapsed() >= std::time::Duration::from_secs(1) {
-                        if stalled > 0 {
+                        if stalled > 0 || expired > 0 {
                             warn!(
                                 sent,
-                                stalled, "wt: frames dropped - the client is not reading"
+                                stalled,
+                                expired,
+                                "wt: frames dropped - client not reading, or past freshness"
                             );
                         } else if sent > 0 {
                             debug!(sent, "wt: frame send rate");
@@ -242,6 +309,7 @@ impl WtVideoTransport {
                         }
                         sent = 0;
                         stalled = 0;
+                        expired = 0;
                         shared_for_sender
                             .write_stall_ms
                             .store(
@@ -273,16 +341,20 @@ impl WtVideoTransport {
                             stream = None;
                             continue;
                         }
-                        frame = async {
-                            match &live {
-                                Some(_) => frames_rx.recv().await,
-                                None => std::future::pending::<Option<OutboundFrame>>().await,
-                            }
-                        }, if live.is_some() => match frame {
-                            Some(f) => f,
-                            None => break, // queue dropped: transport gone
-                        },
+                        frame = frame_queue_sender.pop(), if live.is_some() => frame,
                     };
+                    // Freshness budget: a frame the encoder finished more than
+                    // its budget ago would playout behind newer frames that
+                    // are already ahead of it - drop it, don't deliver it.
+                    let budget = if frame.key {
+                        KEY_FRESHNESS
+                    } else {
+                        DELTA_FRESHNESS
+                    };
+                    if frame.captured_at.elapsed() > budget {
+                        expired = expired.saturating_add(1);
+                        continue;
+                    }
                     // Refresh the send-time anchor: Pong replies project the
                     // capture clock from the most recently sent frame, so no
                     // constant PTS-epoch offset can leak into client ages.
@@ -344,7 +416,7 @@ impl WtVideoTransport {
         }
 
         Ok(Self {
-            frames_tx,
+            frame_queue,
             events_rx: Mutex::new(events_rx),
             audio_tx,
             audio_seq: parking_lot::Mutex::new(0),
@@ -407,10 +479,10 @@ impl WtVideoTransport {
     }
 
     pub fn send_frame(&self, frame: OutboundFrame) -> bool {
-        // Leaky bucket: a full queue drops the frame. Dropping under congestion
-        // is the right response; buffering is how latency compounds.
-        //
-        // It deliberately does NOT force a keyframe. That repair looked correct
+        // Latest-value semantics (docs/research/performance-latency-2026-09-09.md):
+        // a full queue evicts the oldest non-key frame to admit the newest -
+        // live video wants the freshest frame, never the oldest. It
+        // deliberately does NOT force a keyframe. That repair looked correct
         // - an infinite GOP means a dropped P-frame breaks the reference chain
         // until the next IDR - but drops are not isolated events. When the
         // client stops reading, *every* frame drops, so every second produced a
@@ -421,7 +493,8 @@ impl WtVideoTransport {
         // The client already asks for a keyframe when it is actually stuck, and
         // that request is throttled and reflects the decoder's real state
         // rather than the sender's. One repair signal, from the end that knows.
-        self.frames_tx.try_send(frame).is_ok()
+        self.frame_queue.push(frame);
+        true
     }
 
     /// Queue one Opus packet as a WT audio datagram (§11-on-WT). Header:
@@ -632,19 +705,44 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn queue_overflow_drops_frames_without_blocking() {
+    async fn queue_evicts_oldest_delta_never_a_keyframe() {
         let t = test_transport();
-        // No client connects; the bounded queue fills and then drops.
-        let make = |i: u32| OutboundFrame {
+        // No client connects. Fill the queue with deltas, then verify
+        // latest-value semantics: the newest frame is admitted, the oldest
+        // delta is the victim, and a keyframe in the queue is never evicted
+        // by a delta (it is the only frame that can restart the reference
+        // chain).
+        let make = |i: u32, key: bool| OutboundFrame {
             frame_no: i,
             capture_us: 0,
-            key: false,
-            payload: vec![0; 100],
+            key,
+            payload: vec![i as u8; 100],
+            captured_at: std::time::Instant::now(),
         };
         for i in 0..DEFAULT_MAX_QUEUED_FRAMES as u32 {
-            assert!(t.send_frame(make(i)), "frame {i} accepted");
+            assert!(t.send_frame(make(i, false)), "frame {i} accepted");
         }
-        assert!(!t.send_frame(make(99)), "queue full → drop");
+        assert!(
+            t.send_frame(make(DEFAULT_MAX_QUEUED_FRAMES as u32, false)),
+            "queue full → newest still admitted (evicts oldest delta)"
+        );
+        assert!(t.send_frame(make(200, true)), "keyframe admitted");
+        // A delta arriving behind a full queue of [1 delta + 1 keyframe …]
+        // must evict the oldest DELTA, never the keyframe.
+        for _ in 0..DEFAULT_MAX_QUEUED_FRAMES {
+            assert!(t.send_frame(make(201, false)), "deltas keep flowing");
+        }
+        let q: &FrameQueue = &t.frame_queue;
+        let snapshot: Vec<u32> =
+            q.q.lock().iter().map(|f| f.frame_no).collect();
+        assert!(
+            snapshot.contains(&200),
+            "keyframe survives eviction pressure: {snapshot:?}"
+        );
+        assert!(
+            !snapshot.contains(&0),
+            "oldest delta evicted first: {snapshot:?}"
+        );
     }
 
     /// The whole video path, v3: authenticate, send frames, read each one off
@@ -689,6 +787,7 @@ mod tests {
                     capture_us: n as u64 * 16_667,
                     key: n == 1,
                     payload: vec![n as u8; if n == 1 { 400_000 } else { 900 }],
+                    captured_at: std::time::Instant::now(),
                 }),
                 "frame {n} accepted"
             );
