@@ -36,7 +36,9 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use ed25519_dalek::{Signer, SigningKey};
 use futures_util::{SinkExt, StreamExt};
-use inphase_protocol::{SignalMessage, WtClientMessage, WtFrame};
+use inphase_protocol::{
+    SignalMessage, WtClientMessage, WtFragment, WtFrame, WT_AUDIO_DATAGRAM_TAG,
+};
 
 struct Args {
     host: String,
@@ -271,44 +273,142 @@ async fn run() -> Result<()> {
     ctl_tx.write_all(line.as_bytes()).await?;
 
     // --- read frames ------------------------------------------------------
-    // One frame per unidirectional stream: read to EOF, that is the frame.
-    let mut stream_out = Vec::new();
-    let (mut frames, mut keyframes) = (0u32, 0u32);
-    let mut arrivals: Vec<(u32, bool, usize)> = Vec::new();
-    let until = Instant::now() + Duration::from_secs(args.secs);
-    while Instant::now() < until {
-        let Ok(Ok(mut s)) = tokio::time::timeout(Duration::from_secs(5), conn.accept_uni()).await
-        else {
-            continue;
-        };
-        use tokio::io::AsyncReadExt as _;
-        if args.read_delay_ms > 0 {
-            tokio::time::sleep(Duration::from_millis(args.read_delay_ms)).await;
-        }
-        let mut buf = Vec::new();
-        if s.read_to_end(&mut buf).await.is_err() {
-            continue; // stream reset: the frame was abandoned, keep going
-        }
-        match WtFrame::decode(&buf) {
-            Ok(f) => {
-                frames += 1;
-                if f.key {
-                    keyframes += 1;
-                }
-                // Arrival ORDER, not frame order. Streams complete
-                // independently, so this is the sequence the browser's decoder
-                // actually sees - and the input the client's reordering logic
-                // has to cope with.
-                arrivals.push((f.frame_no, f.key, f.payload.len()));
-                stream_out.extend_from_slice(&f.payload);
-            }
-            Err(e) => eprintln!("probe: undecodable frame: {e}"),
-        }
-    }
+    // The browser's carrier (2026-09-09): the client opens the video channel
+    // (bidi stream, 2-byte length-framed JSON marker), requests a keyframe,
+    // and - once audio datagrams prove the host→client datagram path - asks
+    // for the v4 datagram carrier. The probe mirrors all three, so it
+    // verifies what Safari actually exercises, not the retired per-frame
+    // stream path.
+    let (mut vch_tx, mut vch_rx) = conn.open_bi().await?.await?;
+    let marker = b"{\"type\":\"video_channel\"}";
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    vch_tx
+        .write_all(&((marker.len() as u16).to_be_bytes()))
+        .await?;
+    vch_tx.write_all(marker).await?;
+    let req = serde_json::to_string(&WtClientMessage::KeyframeRequest)?;
+    vch_tx.write_all(&(req.len() as u16).to_be_bytes()).await?;
+    vch_tx.write_all(req.as_bytes()).await?;
 
-    std::fs::write(&args.out, &stream_out)?;
+    // Ask for the v4 carrier exactly as the browser does after the probe.
+    let mut line = serde_json::to_string(&WtClientMessage::EnableDatagramVideo)?;
+    line.push('\n');
+    ctl_tx.write_all(line.as_bytes()).await?;
+
+    #[derive(Default)]
+    struct Sink {
+        stream_frames: u32,
+        datagram_frames: u32,
+        keyframes: u32,
+        arrivals: Vec<(u32, bool, usize)>,
+        out: Vec<u8>,
+    }
+    let sink = std::sync::Arc::new(std::sync::Mutex::new(Sink::default()));
+    let until = Instant::now() + Duration::from_secs(args.secs);
+
+    // Carrier 1: the client-opened channel, v3 self-delimited frames
+    // back-to-back (read_exact both halves of each frame).
+    let sink_stream = sink.clone();
+    let stream_task = tokio::spawn(async move {
+        let mut hdr = [0u8; 18];
+        loop {
+            if Instant::now() >= until {
+                return;
+            }
+            if tokio::time::timeout(
+                Duration::from_secs(2),
+                vch_rx.read_exact(&mut hdr),
+            )
+            .await
+            .map(|r| r.is_err())
+            .unwrap_or(true)
+            {
+                if Instant::now() >= until {
+                    return; // reset/EOF after the window: normal exit
+                }
+                eprintln!("probe: video channel reset - frame abandoned");
+                return;
+            }
+            let payload_len =
+                u32::from_le_bytes([hdr[14], hdr[15], hdr[16], hdr[17]]) as usize;
+            let mut payload = vec![0u8; payload_len];
+            if tokio::time::timeout(
+                Duration::from_secs(2),
+                vch_rx.read_exact(&mut payload),
+            )
+            .await
+            .map(|r| r.is_err())
+            .unwrap_or(true)
+            {
+                eprintln!("probe: channel read timed out mid-payload");
+                return;
+            }
+            let key = hdr[1] & 0x01 != 0;
+            let frame_no = u32::from_le_bytes([hdr[2], hdr[3], hdr[4], hdr[5]]);
+            let mut s = sink_stream.lock().unwrap();
+            s.stream_frames += 1;
+            if key {
+                s.keyframes += 1;
+            }
+            s.arrivals.push((frame_no, key, payload_len));
+            s.out.extend_from_slice(&payload);
+        }
+    });
+
+    // Carrier v4: one reassembled frame per datagram fragment set.
+    let sink_dg = sink.clone();
+    let dg_task = tokio::spawn(async move {
+        let mut parts: std::collections::HashMap<u32, Vec<Option<Vec<u8>>>> =
+            std::collections::HashMap::new();
+        loop {
+            if Instant::now() >= until {
+                return;
+            }
+            let d = match tokio::time::timeout(
+                Duration::from_secs(2),
+                conn.receive_datagram(),
+            )
+            .await
+            {
+                Ok(Ok(d)) => d,
+                Ok(Err(_)) => return, // connection closed
+                Err(_) => continue,   // idle second
+            };
+            if d.first() == Some(&WT_AUDIO_DATAGRAM_TAG) {
+                continue; // audio piggybacking on the same reader
+            }
+            let Ok(f) = WtFragment::decode(&d) else {
+                continue;
+            };
+            let e = parts
+                .entry(f.frame_no)
+                .or_insert(vec![None; f.frag_cnt as usize]);
+            if f.frag_idx as usize >= e.len() {
+                continue;
+            }
+            e[f.frag_idx as usize] = Some(f.payload);
+            if e.iter().all(|p| p.is_some()) {
+                parts.remove(&f.frame_no);
+                let bytes = e.iter().flatten().map(|p| p.len()).sum::<usize>();
+                let mut s = sink_dg.lock().unwrap();
+                s.datagram_frames += 1;
+                if f.key {
+                    s.keyframes += 1;
+                }
+                s.arrivals.push((f.frame_no, f.key, bytes));
+                s.out
+                    .extend(e.iter().flatten().flat_map(|p| p.iter().copied()));
+            }
+        }
+    });
+
+    // Both readers self-terminate on the deadline (2 s read timeouts).
+    let _ = tokio::join!(stream_task, dg_task);
+    let s = sink.lock().unwrap();
+    std::fs::write(&args.out, &s.out)?;
     // The arrival trace, for replaying through the client's ordering logic.
-    let trace: Vec<serde_json::Value> = arrivals
+    let trace: Vec<serde_json::Value> = s
+        .arrivals
         .iter()
         .map(|(n, k, len)| serde_json::json!({ "frame_no": n, "key": k, "bytes": len }))
         .collect();
@@ -316,12 +416,18 @@ async fn run() -> Result<()> {
         format!("{}.arrivals.json", args.out),
         serde_json::to_string(&trace)?,
     )?;
+    let carrier = if s.datagram_frames > 0 { "datagrams" } else { "stream" };
     println!(
-        "{{\"frames\":{frames},\"keyframes\":{keyframes},\"bytes\":{},\"out\":{:?}}}",
-        stream_out.len(),
+        "{{\"frames\":{},\"stream_frames\":{},\"datagram_frames\":{},\"carrier\":\"{}\",\"keyframes\":{},\"bytes\":{},\"out\":{:?}}}",
+        s.stream_frames + s.datagram_frames,
+        s.stream_frames,
+        s.datagram_frames,
+        carrier,
+        s.keyframes,
+        s.out.len(),
         args.out
     );
-    if frames == 0 {
+    if s.stream_frames + s.datagram_frames == 0 {
         eprintln!("probe: the transport delivered no frames");
         std::process::exit(1);
     }
