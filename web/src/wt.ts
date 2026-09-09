@@ -327,12 +327,92 @@ export class WtVideoClient {
       this.datagramsSeen++;
       this.lastDatagramAt = performance.now();
       this.winBytes += value.byteLength;
-      // Audio datagrams carry the 0x41 tag (see transport.rs).
+      // Audio datagrams carry the 0x41 tag (see transport.rs); v4 video
+      // fragments start with version byte 4 (see protocol wtvideo.rs). The
+      // two never collide, so the reader demultiplexes on the first byte.
       if (value.byteLength > 13 && value[0] === 0x41) {
         const view = new DataView(value.buffer, value.byteOffset, value.byteLength);
         const ptsUs = Number(view.getBigUint64(5, false));
         h.onAudio?.(value.subarray(13), ptsUs);
+        // A delivered audio datagram is the capability probe: host→client
+        // datagrams work, so video can use them too (research doc Safari
+        // matrix). Asked once per connection; the host logs the switch.
+        if (!this.datagramVideoEnabled && this.datagramsSeen > 100) {
+          this.datagramVideoEnabled = true;
+          this.datagramVideoToggledAtMs = performance.now();
+          void this.send({ type: "enable_datagram_video" });
+        }
+      } else if (value.byteLength >= 18 && value[0] === 4) {
+        this.onVideoFragment(value, h);
       }
+    }
+  }
+
+  // ---- v4: deadline-aware datagram video (research doc P0) ----
+
+  /** Reassembly state for the v4 fragment carrier: frame_no → parts. */
+  private v4 = new Map<
+    number,
+    { cnt: number; parts: (Uint8Array | null)[]; got: number; captureUs: number; key: boolean; atMs: number }
+  >();
+  private v4Received = 0;
+  /** Whether we asked the host for the v4 carrier (and have not asked off). */
+  private datagramVideoEnabled = false;
+  private datagramVideoToggledAtMs = 0;
+
+  /** Insert one v4 fragment; deliver the frame when its last part lands.
+   *  Fragments of a frame missing its 150 ms assembly window are dropped -
+   *  expired video is worthless (research doc freshness budget). */
+  private onVideoFragment(d: Uint8Array, h: WtClientHandlers): void {
+    const dv = new DataView(d.buffer, d.byteOffset, d.byteLength);
+    const frameNo = dv.getUint32(2, true);
+    const idx = dv.getUint16(6, true);
+    const cnt = dv.getUint16(8, true);
+    const captureUs = Number(dv.getBigUint64(10, true));
+    const key = (dv.getUint8(1) & 1) !== 0;
+    const nowMs = performance.now();
+    // Expire stale assemblies first: a frame that never completed past its
+    // playout window is abandoned, and its slot freed.
+    for (const [no, st] of this.v4) {
+      if (nowMs - st.atMs > 150) {
+        this.v4.delete(no);
+        this.framesAbandoned++;
+      }
+    }
+    let st = this.v4.get(frameNo);
+    if (st === undefined) {
+      st = { cnt, parts: new Array(cnt).fill(null), got: 0, captureUs, key, atMs: nowMs };
+      this.v4.set(frameNo, st);
+      if (this.v4.size > 4) {
+        // Keep only the newest frames; an old partial cannot playout anyway.
+        const oldest = [...this.v4.keys()].sort((a, b) => a - b)[0];
+        if (oldest !== undefined && oldest !== frameNo) this.v4.delete(oldest);
+      }
+    }
+    if (idx >= cnt || st.parts[idx] !== null) return; // duplicate/overflow fragment
+    st.parts[idx] = d.subarray(18);
+    st.got++;
+    if (st.got === cnt) {
+      this.v4.delete(frameNo);
+      let len = 0;
+      for (const p of st.parts) len += p!.byteLength;
+      const payload = new Uint8Array(len);
+      let off = 0;
+      for (const p of st.parts) {
+        payload.set(p!, off);
+        off += p!.byteLength;
+      }
+      this.v4Received++;
+      this.framesReceived++;
+      this.lastFrameAtMs = nowMs;
+      if (this.offsetEmaUs !== null) {
+        const ageMs = (performance.now() * 1000 - (captureUs + this.offsetEmaUs)) / 1000;
+        if (ageMs >= 0 && ageMs < 5_000) {
+          this.latBuf.push(ageMs);
+          if (this.latBuf.length > 512) this.latBuf.shift();
+        }
+      }
+      h.onFrame({ frame_no: frameNo, capture_us: captureUs, key, payload });
     }
   }
 
@@ -475,6 +555,16 @@ export class WtVideoClient {
   private sendTelemetry(): void {
     const nowMs = performance.now();
     const dtSec = Math.max(0.001, (nowMs - this.winStartedMs) / 1000);
+    // v4 safety net: if the datagram carrier delivered nothing 5 s after we
+    // asked for it - while the connection is otherwise alive (this line runs
+    // on the control stream) - switch back to the reliable stream carrier.
+    if (this.datagramVideoEnabled
+        && this.v4Received === 0
+        && nowMs - this.datagramVideoToggledAtMs > 5_000) {
+      this.datagramVideoEnabled = false;
+      console.warn("wt: datagram video carrier silent - reverting to the stream");
+      void this.send({ type: "disable_datagram_video" });
+    }
     const stats = this.statsProvider?.();
     // Wire-side counters, next to the decoder's on `window.__inphaseWt`.
     // Without these, "no frames arriving" and "arriving but not decoding" are

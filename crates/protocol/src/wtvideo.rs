@@ -154,6 +154,12 @@ pub enum WtClientMessage {
     Input {
         data_b64: String,
     },
+    /// Switch the video carrier to v4 datagram fragments (client must have
+    /// proof that host→client datagrams arrive: audio datagrams flowing).
+    /// The client can switch back with `disable_datagram_video` — the
+    /// reliable stream stays installed as the fallback carrier.
+    EnableDatagramVideo,
+    DisableDatagramVideo,
 }
 
 /// Host → client messages on the WT control stream.
@@ -516,4 +522,115 @@ mod hvcc_tests {
         let stub: &[u8] = &[0x42, 0x01, 0x01, 0x60];
         assert_eq!(hvcc_description(&annexb(&[VPS, stub, PPS])), None);
     }
+}
+
+/// ---- v4: deadline-aware datagram fragments (docs/research/performance-latency-2026-09-09.md P0) ----
+
+pub const WT_VIDEO_PROTOCOL_V4: u8 = 4;
+
+/// One fragment of one frame, carried in a single QUIC datagram: header +
+/// payload, where payload must fit the path's datagram budget. No
+/// retransmission, no ordering: a fragment that misses its playout window is
+/// worthless, and its successor (or the next recovery frame) proceeds
+/// regardless — the property a reliable stream cannot offer.
+///
+/// Wire layout (little-endian throughout):
+/// `[0]` version = 4, `[1]` flags (bit0 = keyframe), `[2..6)` frame_no,
+/// `[6..8)` frag_idx, `[8..10)` frag_cnt, `[10..18)` capture_us,
+/// `[18..]` payload.
+pub const WT_FRAGMENT_HEADER_LEN: usize = 18;
+
+/// First payload byte of a server→client audio datagram (transport.rs): a
+/// fragment can never collide with it, so the client's datagram reader can
+/// demultiplex by the first byte alone.
+pub const WT_AUDIO_DATAGRAM_TAG: u8 = 0x41;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WtFragment {
+    pub frame_no: u32,
+    pub frag_idx: u16,
+    pub frag_cnt: u16,
+    pub capture_us: u64,
+    pub key: bool,
+    pub payload: Vec<u8>,
+}
+
+impl WtFragment {
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(WT_FRAGMENT_HEADER_LEN + self.payload.len());
+        out.push(WT_VIDEO_PROTOCOL_V4);
+        out.push(if self.key { WT_FRAME_KEY } else { 0 });
+        out.extend_from_slice(&self.frame_no.to_le_bytes());
+        out.extend_from_slice(&self.frag_idx.to_le_bytes());
+        out.extend_from_slice(&self.frag_cnt.to_le_bytes());
+        out.extend_from_slice(&self.capture_us.to_le_bytes());
+        out.extend_from_slice(&self.payload);
+        out
+    }
+
+    pub fn decode(buf: &[u8]) -> Result<Self, WtVideoError> {
+        if buf.len() < WT_FRAGMENT_HEADER_LEN {
+            return Err(WtVideoError::Truncated);
+        }
+        if buf[0] != WT_VIDEO_PROTOCOL_V4 {
+            return Err(WtVideoError::BadVersion(buf[0]));
+        }
+        let key = buf[1] & WT_FRAME_KEY != 0;
+        let frame_no = u32::from_le_bytes([buf[2], buf[3], buf[4], buf[5]]);
+        let frag_idx = u16::from_le_bytes([buf[6], buf[7]]);
+        let frag_cnt = u16::from_le_bytes([buf[8], buf[9]]);
+        let capture_us = u64::from_le_bytes([
+            buf[10], buf[11], buf[12], buf[13], buf[14], buf[15], buf[16], buf[17],
+        ]);
+        Ok(Self {
+            frame_no,
+            frag_idx,
+            frag_cnt,
+            capture_us,
+            key,
+            payload: buf[WT_FRAGMENT_HEADER_LEN..].to_vec(),
+        })
+    }
+}
+
+#[test]
+fn fragment_roundtrips_and_rejects_truncation() {
+    let f = WtFragment {
+        frame_no: 0x0102_0304,
+        frag_idx: 2,
+        frag_cnt: 7,
+        capture_us: 1_234_567_890,
+        key: true,
+        payload: vec![7; 600],
+    };
+    let wire = f.encode();
+    assert_eq!(wire.len(), WT_FRAGMENT_HEADER_LEN + 600);
+    assert_eq!(wire[0], 4);
+    assert_eq!(WtFragment::decode(&wire).unwrap(), f);
+    // A datagram is atomic - decode can never see a partial one - but a
+    // short buffer yields a short payload rather than panicking, and a wrong
+    // version is refused outright.
+    assert_eq!(
+        WtFragment::decode(&wire[..WT_FRAGMENT_HEADER_LEN + 599])
+            .unwrap()
+            .payload
+            .len(),
+        599
+    );
+    let mut bad = wire.clone();
+    bad[0] = 3;
+    assert_eq!(WtFragment::decode(&bad), Err(WtVideoError::BadVersion(3)));
+}
+
+#[test]
+fn fragment_tag_never_collides_with_audio() {
+    let f = WtFragment {
+        frame_no: 1,
+        frag_idx: 0,
+        frag_cnt: 1,
+        capture_us: 0,
+        key: false,
+        payload: vec![],
+    };
+    assert_ne!(f.encode()[0], WT_AUDIO_DATAGRAM_TAG);
 }

@@ -282,6 +282,16 @@ pub(super) async fn handle_incoming(
                         };
                         let _ = co_tx.send(WtHostMessage::Pong { at_us, host_us });
                     }
+                    Ok(WtClientMessage::EnableDatagramVideo) => {
+                        if !shared.datagram_video.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                            info!("wt: video carrier switched to v4 datagram fragments");
+                        }
+                    }
+                    Ok(WtClientMessage::DisableDatagramVideo) => {
+                        if shared.datagram_video.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                            info!("wt: video carrier switched back to the reliable stream");
+                        }
+                    }
                     Ok(WtClientMessage::Auth { .. }) => debug!("wt: duplicate Auth ignored"),
                     Err(e) => debug!(%e, "wt: bad control line"),
                 }

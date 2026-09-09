@@ -164,4 +164,11 @@ struct Shared {
     /// reset mid-write (timeout/error). Drained by the admin
     /// `frame-timeline` endpoint as JSONL for trace capture and replay.
     wt_timeline: Mutex<std::collections::VecDeque<[u64; 5]>>,
+    /// v4 carrier switch: video frames go as deadline-aware datagram
+    /// fragments instead of the reliable stream. Toggled by the client over
+    /// the control channel (`enable_datagram_video` / `disable_datagram_video`)
+    /// once it has proof that host→client datagrams arrive (audio datagrams
+    /// flowing = the probe, on iOS Safari where server-initiated streams are
+    /// broken but datagrams demonstrably work).
+    datagram_video: std::sync::atomic::AtomicBool,
 }

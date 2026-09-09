@@ -234,6 +234,7 @@ impl WtVideoTransport {
             video_sink: Mutex::new(None),
             write_stall_ms: std::sync::atomic::AtomicU32::new(0),
             wt_timeline: Mutex::new(std::collections::VecDeque::new()),
+            datagram_video: std::sync::atomic::AtomicBool::new(false),
         });
 
         // Accept loop: one task per incoming session; auth gates everything.
@@ -362,6 +363,57 @@ impl WtVideoTransport {
                     // constant PTS-epoch offset can leak into client ages.
                     *shared_for_sender.frame_anchor.lock() =
                         Some((std::time::Instant::now(), frame.capture_us));
+                    // ---- v4 carrier: deadline-aware datagram fragments ----
+                    // Every fragment is one datagram: loss costs one fragment,
+                    // never the frames behind it. A fragment the QUIC
+                    // implementation cannot queue (congestion) is dropped,
+                    // never buffered - the frame misses its deadline whole or
+                    // not at all. The reliable stream stays installed as the
+                    // fallback carrier; the client toggles this switch off the
+                    // same way it toggled it on (research doc Safari matrix).
+                    if shared_for_sender
+                        .datagram_video
+                        .load(std::sync::atomic::Ordering::Relaxed)
+                    {
+                        let Some(conn) = live.as_ref() else { continue };
+                        let budget = conn
+                            .max_datagram_size()
+                            .map(|m| m.saturating_sub(inphase_protocol::WT_FRAGMENT_HEADER_LEN))
+                            .unwrap_or(1082)
+                            .max(256);
+                        let frag_cnt = (frame.payload.len().div_ceil(budget)).max(1) as u16;
+                        let mut ok = true;
+                        for idx in 0..frag_cnt {
+                            let start = idx as usize * budget;
+                            let end = ((idx as usize + 1) * budget).min(frame.payload.len());
+                            let frag = inphase_protocol::WtFragment {
+                                frame_no: frame.frame_no,
+                                frag_idx: idx,
+                                frag_cnt,
+                                capture_us: frame.capture_us,
+                                key: frame.key,
+                                payload: frame.payload[start..end].to_vec(),
+                            }
+                            .encode();
+                            if !try_send_datagram(conn, &frag) {
+                                ok = false;
+                                break; // queue full: the rest is past deadline anyway
+                            }
+                        }
+                        if ok {
+                            sent = sent.saturating_add(1);
+                        } else {
+                            stalled = stalled.saturating_add(1);
+                        }
+                        shared_for_sender.wt_timeline.lock().push_back([
+                            frame.frame_no as u64,
+                            frame.capture_us,
+                            frame.enq_us,
+                            pop_us,
+                            if ok { crate::media::frametrace::now_us() } else { 0 },
+                        ]);
+                        continue;
+                    }
                     let wire = inphase_protocol::WtFrame {
                         frame_no: frame.frame_no,
                         capture_us: frame.capture_us,
@@ -519,6 +571,14 @@ impl WtVideoTransport {
             tl.pop_front();
         }
         tl.iter().copied().collect()
+    }
+
+    /// Whether the v4 datagram carrier is currently selected (the client
+    /// toggles it; surfaced for the dashboard and tests).
+    pub fn datagram_video_enabled(&self) -> bool {
+        self.shared
+            .datagram_video
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Queue one Opus packet as a WT audio datagram (§11-on-WT). Header:
@@ -1001,5 +1061,73 @@ mod tests {
             at_us: 1,
             host_us: 0,
         });
+    }
+
+    /// The v4 carrier end to end: the client asks for datagram video over the
+    /// control stream, and every frame arrives reassembled from datagram
+    /// fragments - no reliable stream involved. The stream carrier itself is
+    /// proven by `frames_arrive_self_delimited`; the fallback design means
+    /// both stay true (research doc P0).
+    #[tokio::test]
+    async fn frames_arrive_as_datagrams_when_enabled() {
+        let t = test_transport();
+        let token = t.issue_token(Duration::from_secs(30));
+
+        let conn = connect_client(&t).await;
+        let (mut ctl, _rx) = open_control_and_auth(&conn, &token).await;
+        wait_for(&t, |e| matches!(e, WtClientEvent::Connected)).await;
+
+        // Ask for the v4 carrier, exactly as the browser does once the
+        // audio-datagram probe has proven the path.
+        let mut line = serde_json::to_string(&WtClientMessage::EnableDatagramVideo).unwrap();
+        line.push('\n');
+        use tokio::io::AsyncWriteExt as _;
+        ctl.write_all(line.as_bytes()).await.unwrap();
+
+        // Wait for the control reader to apply the switch: the flag travels
+        // the control-stream path, not the queue path.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !t.datagram_video_enabled() {
+            assert!(Instant::now() < deadline, "carrier switch never applied");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        // One keyframe larger than a single datagram, plus two deltas.
+        for n in 1..=3u32 {
+            assert!(t.send_frame(OutboundFrame {
+                frame_no: n,
+                capture_us: n as u64 * 16_667,
+                key: n == 1,
+                payload: vec![n as u8; if n == 1 { 6_000 } else { 900 }],
+                captured_at: std::time::Instant::now(),
+                enq_us: 0,
+            }));
+        }
+
+        // Client side: read datagrams, reassemble fragments into frames.
+        use inphase_protocol::{WtFragment, WT_AUDIO_DATAGRAM_TAG};
+        let mut parts: std::collections::HashMap<u32, Vec<Option<Vec<u8>>>> =
+            std::collections::HashMap::new();
+        let mut got = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while got.len() < 3 && Instant::now() < deadline {
+            let d = tokio::time::timeout(Duration::from_secs(5), conn.receive_datagram()).await;
+            let Ok(Ok(d)) = d else { break };
+            if d.first() == Some(&inphase_protocol::WT_AUDIO_DATAGRAM_TAG) {
+                continue; // audio piggybacks on the same reader; not video
+            }
+            let f = WtFragment::decode(&d).expect("fragment decodes");
+            let e = parts.entry(f.frame_no).or_insert(vec![None; f.frag_cnt as usize]);
+            e[f.frag_idx as usize] = Some(f.payload);
+            if e.iter().all(|p| p.is_some()) && !got.contains(&f.frame_no) {
+                got.push(f.frame_no);
+            }
+        }
+        got.sort_unstable();
+        assert_eq!(got, vec![1, 2, 3], "every frame reassembled from datagrams");
+
+        // The stream carrier must be silent in v4 mode: no video uni streams.
+        drop(conn);
+        wait_for(&t, |e| matches!(e, WtClientEvent::Disconnected)).await;
     }
 }

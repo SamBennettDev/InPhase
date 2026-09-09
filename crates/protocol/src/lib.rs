@@ -38,6 +38,7 @@ pub use signaling::{
     StreamTarget, VideoCodec, SIGNALING_PROTOCOL_VERSION,
 };
 pub use wtvideo::{
-    annexb_to_length_prefixed, hvcc_description, WtClientMessage, WtFrame, WtHostMessage,
-    WtVideoError, WT_FRAME_KEY, WT_VIDEO_HEADER_LEN, WT_VIDEO_PROTOCOL_VERSION,
+    annexb_to_length_prefixed, hvcc_description, WtClientMessage, WtFragment, WtFrame,
+    WtHostMessage, WtVideoError, WT_AUDIO_DATAGRAM_TAG, WT_FRAGMENT_HEADER_LEN, WT_FRAME_KEY,
+    WT_VIDEO_HEADER_LEN, WT_VIDEO_PROTOCOL_VERSION,
 };
