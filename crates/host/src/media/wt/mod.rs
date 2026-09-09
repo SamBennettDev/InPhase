@@ -76,6 +76,11 @@ pub struct OutboundFrame {
     pub captured_at: std::time::Instant,
     /// Host wall-clock µs when `send_frame` accepted the frame (timeline).
     pub enq_us: u64,
+    /// Host wall-clock µs the encoder finished this frame, derived in
+    /// `send_frame` from `captured_at` (monotonic) so the timeline's
+    /// capture→handoff spans all sit in one clock. The wire carries the PTS
+    /// `capture_us`; this is the host-clock twin.
+    pub capture_host_us: u64,
 }
 
 /// Control-stream events surfaced to the media session (drained via

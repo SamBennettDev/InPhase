@@ -315,19 +315,20 @@ async fn run() -> Result<()> {
             if Instant::now() >= until {
                 return;
             }
-            if tokio::time::timeout(
+            let r = tokio::time::timeout(
                 Duration::from_secs(2),
                 vch_rx.read_exact(&mut hdr),
             )
-            .await
-            .map(|r| r.is_err())
-            .unwrap_or(true)
-            {
-                if Instant::now() >= until {
-                    return; // reset/EOF after the window: normal exit
+            .await;
+            match r {
+                Ok(Ok(())) => {}
+                Ok(Err(_)) => {
+                    if Instant::now() < until {
+                        eprintln!("probe: video channel reset - frame abandoned");
+                    }
+                    return;
                 }
-                eprintln!("probe: video channel reset - frame abandoned");
-                return;
+                Err(_) => continue, // idle second; the carrier may have moved
             }
             let payload_len =
                 u32::from_le_bytes([hdr[14], hdr[15], hdr[16], hdr[17]]) as usize;

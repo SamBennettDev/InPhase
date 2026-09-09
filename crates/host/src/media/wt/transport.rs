@@ -407,7 +407,7 @@ impl WtVideoTransport {
                         }
                         shared_for_sender.wt_timeline.lock().push_back([
                             frame.frame_no as u64,
-                            frame.capture_us,
+                            frame.capture_host_us,
                             frame.enq_us,
                             pop_us,
                             if ok { crate::media::frametrace::now_us() } else { 0 },
@@ -447,7 +447,7 @@ impl WtVideoTransport {
                     // reset mid-write (timeout / transport error).
                     let mut tl = [
                         frame.frame_no as u64,
-                        frame.capture_us,
+                        frame.capture_host_us,
                         frame.enq_us,
                         pop_us,
                         0u64,
@@ -558,7 +558,9 @@ impl WtVideoTransport {
         // that request is throttled and reflects the decoder's real state
         // rather than the sender's. One repair signal, from the end that knows.
         let mut frame = frame;
-        frame.enq_us = crate::media::frametrace::now_us();
+        let enq_us = crate::media::frametrace::now_us();
+        frame.enq_us = enq_us;
+        frame.capture_host_us = enq_us.saturating_sub(frame.captured_at.elapsed().as_micros() as u64);
         self.frame_queue.push(frame);
         true
     }
@@ -803,6 +805,7 @@ mod tests {
             payload: vec![i as u8; 100],
             captured_at: std::time::Instant::now(),
             enq_us: 0,
+            capture_host_us: 0,
         };
         for i in 0..DEFAULT_MAX_QUEUED_FRAMES as u32 {
             assert!(t.send_frame(make(i, false)), "frame {i} accepted");
@@ -874,6 +877,7 @@ mod tests {
                     payload: vec![n as u8; if n == 1 { 400_000 } else { 900 }],
                     captured_at: std::time::Instant::now(),
                     enq_us: 0,
+                    capture_host_us: 0,
                 }),
                 "frame {n} accepted"
             );
@@ -1100,7 +1104,8 @@ mod tests {
                 key: n == 1,
                 payload: vec![n as u8; if n == 1 { 6_000 } else { 900 }],
                 captured_at: std::time::Instant::now(),
-                enq_us: 0,
+                    enq_us: 0,
+                    capture_host_us: 0,
             }));
         }
 
