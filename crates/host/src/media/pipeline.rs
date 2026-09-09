@@ -88,6 +88,7 @@ fn attach_gst_tap(pipeline: &gst::Pipeline, t: &Arc<crate::media::wt::WtVideoTra
                     key,
                     payload,
                     captured_at: std::time::Instant::now(),
+                    enq_us: 0,
                 });
             }
         }
