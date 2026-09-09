@@ -381,6 +381,9 @@ async fn run() -> Result<()> {
             let Ok(f) = WtFragment::decode(&d) else {
                 continue;
             };
+            if f.parity != 0 {
+                continue; // FEC parity: data-only reassembly here
+            }
             let complete = {
                 let e = parts
                     .entry(f.frame_no)
