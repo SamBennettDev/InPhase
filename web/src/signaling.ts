@@ -112,6 +112,10 @@ export interface ClientTelemetry {
   frames_received?: number;
   streams_wedged?: number;
   datagrams_seen?: number;
+  /** Capture → decode-complete latency percentiles (ms), via the pong clock
+   *  anchor. Negative until the clock syncs. */
+  lat_p50_ms?: number;
+  lat_p95_ms?: number;
 }
 
 export type SignalMessage =

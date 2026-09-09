@@ -344,6 +344,14 @@ pub struct ClientTelemetry {
     pub streams_wedged: u64,
     #[serde(default)]
     pub datagrams_seen: u64,
+    /// Capture → decode-complete latency percentiles (ms), client-side, via
+    /// the pong clock anchor (research doc §measurement). Negative until the
+    /// clock syncs. Percentiles rather than an EMA: the spikes define
+    /// remote-play quality. Absent from older clients, hence `default`.
+    #[serde(default)]
+    pub lat_p50_ms: f32,
+    #[serde(default)]
+    pub lat_p95_ms: f32,
 }
 
 // PartialEq for ClientTelemetry uses f32 fields; Eq is intentionally not derived.

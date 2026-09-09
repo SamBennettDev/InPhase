@@ -233,6 +233,7 @@ impl WtVideoTransport {
             video_config: video_config.clone(),
             video_sink: Mutex::new(None),
             write_stall_ms: std::sync::atomic::AtomicU32::new(0),
+            wt_timeline: Mutex::new(std::collections::VecDeque::new()),
         });
 
         // Accept loop: one task per incoming session; auth gates everything.
@@ -355,6 +356,7 @@ impl WtVideoTransport {
                         expired = expired.saturating_add(1);
                         continue;
                     }
+                    let pop_us = crate::media::frametrace::now_us();
                     // Refresh the send-time anchor: Pong replies project the
                     // capture clock from the most recently sent frame, so no
                     // constant PTS-epoch offset can leak into client ages.
@@ -389,12 +391,21 @@ impl WtVideoTransport {
                     // behind catch up.
                     let s = stream.as_mut().expect("stream just ensured");
                     let wstart = std::time::Instant::now();
+                    // Timeline record: write_us = 0 marks a frame the sender
+                    // reset mid-write (timeout / transport error).
+                    let mut tl = [
+                        frame.frame_no as u64,
+                        frame.capture_us,
+                        frame.enq_us,
+                        pop_us,
+                        0u64,
+                    ];
                     match tokio::time::timeout(FRAME_STREAM_TIMEOUT, s.write_all(&wire)).await {
                         Ok(Ok(())) => {
                             let wms = wstart.elapsed().as_millis() as u32;
                             stall_window_ms = stall_window_ms.max(wms);
+                            tl[4] = crate::media::frametrace::now_us();
                         }
-                        Ok(Ok(())) => {}
                         Ok(Err(e)) => {
                             debug!("wt: frame stream failed: {e}");
                             stream = None;
@@ -411,6 +422,7 @@ impl WtVideoTransport {
                             debug!("wt: frame write timed out - stream reset");
                         }
                     }
+                    shared_for_sender.wt_timeline.lock().push_back(tl);
                 }
             });
         }
@@ -493,8 +505,20 @@ impl WtVideoTransport {
         // The client already asks for a keyframe when it is actually stuck, and
         // that request is throttled and reflects the decoder's real state
         // rather than the sender's. One repair signal, from the end that knows.
+        let mut frame = frame;
+        frame.enq_us = crate::media::frametrace::now_us();
         self.frame_queue.push(frame);
         true
+    }
+
+    /// Snapshot of the per-frame host timeline, oldest first, for the admin
+    /// `frame-timeline` endpoint. Capped at 4096 records (≈1 min at 60 fps).
+    pub fn timeline_snapshot(&self) -> Vec<[u64; 5]> {
+        let mut tl = self.shared.wt_timeline.lock();
+        while tl.len() > 4096 {
+            tl.pop_front();
+        }
+        tl.iter().copied().collect()
     }
 
     /// Queue one Opus packet as a WT audio datagram (§11-on-WT). Header:
@@ -718,6 +742,7 @@ mod tests {
             key,
             payload: vec![i as u8; 100],
             captured_at: std::time::Instant::now(),
+            enq_us: 0,
         };
         for i in 0..DEFAULT_MAX_QUEUED_FRAMES as u32 {
             assert!(t.send_frame(make(i, false)), "frame {i} accepted");
@@ -788,6 +813,7 @@ mod tests {
                     key: n == 1,
                     payload: vec![n as u8; if n == 1 { 400_000 } else { 900 }],
                     captured_at: std::time::Instant::now(),
+                    enq_us: 0,
                 }),
                 "frame {n} accepted"
             );

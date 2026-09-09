@@ -74,6 +74,8 @@ pub struct OutboundFrame {
     /// a frame older than its playout window is worthless, and delivering it
     /// only delays the frames behind it.
     pub captured_at: std::time::Instant,
+    /// Host wall-clock µs when `send_frame` accepted the frame (timeline).
+    pub enq_us: u64,
 }
 
 /// Control-stream events surfaced to the media session (drained via
@@ -156,4 +158,10 @@ struct Shared {
     /// the session) - so the transport measures its own queue and the bitrate
     /// controller reads it as `rtp_backlog_ms` in its feedback.
     write_stall_ms: std::sync::atomic::AtomicU32,
+    /// Per-frame host timeline (research doc §measurement): frames of
+    /// `[frame_no, capture_us, enq_us, pop_us, write_us]` in host wall-clock
+    /// µs (`frametrace::now_us`). `write_us == 0` marks a frame the sender
+    /// reset mid-write (timeout/error). Drained by the admin
+    /// `frame-timeline` endpoint as JSONL for trace capture and replay.
+    wt_timeline: Mutex<std::collections::VecDeque<[u64; 5]>>,
 }

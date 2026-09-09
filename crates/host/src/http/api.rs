@@ -498,6 +498,39 @@ pub async fn admin_disconnect(State(st): State<HttpState>) -> Response {
     (StatusCode::OK, Json(serde_json::json!({ "ok": true }))).into_response()
 }
 
+/// `GET /api/v1/admin/frame-timeline` — per-frame host timeline for the WT
+/// path (research doc §measurement): `[frame_no, capture_us, enq_us, pop_us,
+/// write_us]` in wall-clock µs, oldest first; `write_us == 0` marks a frame
+/// reset mid-write. Loopback admin only, like `admin_status`. Consumed by the
+/// trace harness (JSONL) and the capture→present percentile report.
+pub async fn admin_frame_timeline(State(st): State<HttpState>) -> Response {
+    let Some(wt) = st.wt.as_ref() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "wt transport down").into_response();
+    };
+    let frames = wt.timeline_snapshot();
+    let mut handoff_us: Vec<u64> = frames
+        .iter()
+        .filter(|f| f[4] > 0)
+        .map(|f| f[4].saturating_sub(f[1]))
+        .collect();
+    handoff_us.sort_unstable();
+    let pct = |p: f32| -> u64 {
+        if handoff_us.is_empty() {
+            return 0;
+        }
+        let idx = ((handoff_us.len() as f32) * p) as usize;
+        handoff_us[idx.min(handoff_us.len() - 1)]
+    };
+    Json(serde_json::json!({
+        "host_now_us": crate::media::frametrace::now_us(),
+        "n": frames.len(),
+        "capture_to_handoff_p50_us": pct(0.5),
+        "capture_to_handoff_p95_us": pct(0.95),
+        "frames": frames,
+    }))
+    .into_response()
+}
+
 pub async fn admin_rotate_pin(State(st): State<HttpState>) -> Response {
     let pin = st.pairing.rotate_pin();
     (StatusCode::OK, Json(serde_json::json!({ "pin": pin }))).into_response()

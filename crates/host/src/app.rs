@@ -146,6 +146,8 @@ impl HostRuntime {
                                 dgrams = tel.datagrams_seen,
                                 decoded_fps = tel.decoded_fps,
                                 in_kbps = tel.inbound_bitrate_kbps as u32,
+                                lat_p50 = tel.lat_p50_ms,
+                                lat_p95 = tel.lat_p95_ms,
                                 "wt client wire"
                             );
                             stats.ingest_client(tel);

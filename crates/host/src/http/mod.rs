@@ -71,6 +71,7 @@ pub const SESSION_COOKIE: &str = "inphase_session";
 fn admin_routes() -> Router<HttpState> {
     Router::new()
         .route("/api/v1/admin/status", get(api::admin_status))
+        .route("/api/v1/admin/frame-timeline", get(api::admin_frame_timeline))
         .route("/api/v1/admin/disconnect", post(api::admin_disconnect))
         .route("/api/v1/admin/rotate-pin", post(api::admin_rotate_pin))
         .route("/api/v1/admin/revoke-all", post(api::admin_revoke_all))

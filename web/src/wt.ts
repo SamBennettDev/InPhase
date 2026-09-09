@@ -112,6 +112,10 @@ export class WtVideoClient {
    *  EMA over pong samples; null until the first anchored pong. */
   private offsetEmaUs: number | null = null;
   private anchorWarned = false;
+  /** Capture → decode-complete ages (ms) of recent frames, for the
+   *  capture-to-present timeline (research doc §measurement). Bounded to the
+   *  last 512 frames so percentiles reflect the current route, not history. */
+  private latBuf: number[] = [];
   /** Per-frame fragment accounting for loss estimation. Counts frames that
    *  never assemble as well as those that do — see `fragloss.ts` for why that
    *  distinction is the difference between a usable loss signal and one that
@@ -129,8 +133,7 @@ export class WtVideoClient {
     return this.inputWriter !== null || this.inputStreamWriter !== null || this.controlWriter !== null;
   }
 
-  /** Last pong-derived RTT (ms), 0 until the first pong. */
-  rttMs(): number {
+  /** Last pong-derived RTT (ms), 0 until the first pong. */  rttMs(): number {
     return Math.round(this.lastRttMs * 100) / 100;
   }
 
@@ -381,6 +384,16 @@ export class WtVideoClient {
         this.parseFailures = 0;
         this.framesReceived++;
         this.lastFrameAtMs = performance.now();
+        // Capture → decode-complete age, via the pong clock anchor. The
+        // anchor is quantized by RTT/2, so single samples are fuzzy - the
+        // percentiles over hundreds of frames are the measurement.
+        if (this.offsetEmaUs !== null) {
+          const ageMs = (performance.now() * 1000 - (frame.capture_us + this.offsetEmaUs)) / 1000;
+          if (ageMs >= 0 && ageMs < 5_000) {
+            this.latBuf.push(ageMs);
+            if (this.latBuf.length > 512) this.latBuf.shift();
+          }
+        }
         h.onFrame(frame);
       } catch {
         // Stream ended mid-frame (host reset, WebKit truncation, or the
@@ -509,6 +522,12 @@ export class WtVideoClient {
       frames_received: this.framesReceived,
       streams_wedged: this.streamsWedged,
       datagrams_seen: this.datagramsSeen,
+      // Capture → decode-complete latency (docs/research/performance-latency-
+      // 2026-09-09.md §measurement): frame capture_us mapped onto the client
+      // clock via the pong anchor. Percentiles, not an EMA - the spikes define
+      // remote-play quality. Null until the clock syncs (first anchored pong).
+      lat_p50_ms: this.latPercentile(0.5),
+      lat_p95_ms: this.latPercentile(0.95),
       // §13: the host needs real support data from real clients.
       audio_opus_supported: opusSupportProbe(),
     };
@@ -618,6 +637,15 @@ export class WtVideoClient {
   /** Host↔client clock offset (µs, capture-clock aligned) once synced. */
   clockOffsetUs(): number | null {
     return this.offsetEmaUs;
+  }
+
+  /** Percentile (0-1) of recent capture → decode ages, or -1 while unknown
+   *  (clock unsynced or no frames yet). */
+  latPercentile(p: number): number {
+    if (this.offsetEmaUs === null || this.latBuf.length === 0) return -1;
+    const sorted = [...this.latBuf].sort((a, b) => a - b);
+    const idx = Math.min(sorted.length - 1, Math.floor(p * sorted.length));
+    return Math.round((sorted[idx] ?? -1) * 10) / 10;
   }
 
   /** Upper bound on the offset error (ms): the pong midpoint assumption is
