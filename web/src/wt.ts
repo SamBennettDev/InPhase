@@ -35,6 +35,11 @@ export interface WtClientStats {
   codec: string | null;
   framesDecoded: number;
   framesDropped: number;
+  /** Reorder buffer depth (frames held behind a hole) and codec backlog. */
+  held: number;
+  queueSize: number;
+  /** Frames the decoder queue skipped (backpressure drops). */
+  behindEvents: number;
   /** Real freezes (present gaps far beyond the frame interval) - never a
    *  hardcoded zero (review §14). */
   freezeCount: number;
@@ -631,6 +636,11 @@ export class WtVideoClient {
       // remote-play quality. Null until the clock syncs (first anchored pong).
       lat_p50_ms: this.latPercentile(0.5),
       lat_p95_ms: this.latPercentile(0.95),
+      // Decode-side stall diagnosis: frames the reorder buffer holds behind a
+      // hole, frames the decoder queue skipped, and the codec's own backlog.
+      decode_held: stats?.held ?? 0,
+      decode_behind_events: stats?.behindEvents ?? 0,
+      decode_queue_size: stats?.queueSize ?? 0,
       // §13: the host needs real support data from real clients.
       audio_opus_supported: opusSupportProbe(),
     };

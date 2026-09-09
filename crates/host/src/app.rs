@@ -148,6 +148,9 @@ impl HostRuntime {
                                 in_kbps = tel.inbound_bitrate_kbps as u32,
                                 lat_p50 = tel.lat_p50_ms,
                                 lat_p95 = tel.lat_p95_ms,
+                                held = tel.decode_held,
+                                behind = tel.decode_behind_events,
+                                queue = tel.decode_queue_size,
                                 "wt client wire"
                             );
                             stats.ingest_client(tel);

@@ -384,6 +384,18 @@ impl WtVideoTransport {
                         let frag_cnt = (frame.payload.len().div_ceil(budget)).max(1) as u16;
                         let mut ok = true;
                         for idx in 0..frag_cnt {
+                            // Pace the burst: an IDR is hundreds of fragments
+                            // and an unpaced burst overruns the datagram
+                            // queue AND correlates with the cellular burst
+                            // loss window - the encoded keyframe then never
+                            // reassembles and decode waits for the next one
+                            // (the 22:04 stalls). Spread it across the 80 ms
+                            // key budget in 1 ms batches; deltas stay
+                            // immediate.
+                            if frame.key && frag_cnt > 16 && idx % 16 == 15 && idx + 1 < frag_cnt
+                            {
+                                tokio::time::sleep(Duration::from_millis(1)).await;
+                            }
                             let start = idx as usize * budget;
                             let end = ((idx as usize + 1) * budget).min(frame.payload.len());
                             let frag = inphase_protocol::WtFragment {

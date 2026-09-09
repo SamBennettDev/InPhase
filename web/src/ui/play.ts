@@ -833,6 +833,9 @@ export class Session {
             freezeCount: s.freezeCount,
             totalFreezeMs: s.totalFreezeMs,
             framesDropped: s.framesDropped,
+            held: s.held,
+            queueSize: s.queueSize,
+            behindEvents: s.behindEvents,
           };
         });
       })

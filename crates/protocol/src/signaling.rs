@@ -352,6 +352,14 @@ pub struct ClientTelemetry {
     pub lat_p50_ms: f32,
     #[serde(default)]
     pub lat_p95_ms: f32,
+    /// Decode-side stall diagnosis (research doc §measurement): reorder
+    /// buffer depth, frames the decoder queue skipped, codec backlog.
+    #[serde(default)]
+    pub decode_held: u64,
+    #[serde(default)]
+    pub decode_behind_events: u64,
+    #[serde(default)]
+    pub decode_queue_size: u64,
 }
 
 // PartialEq for ClientTelemetry uses f32 fields; Eq is intentionally not derived.

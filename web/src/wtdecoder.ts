@@ -19,6 +19,11 @@ import type { WtFrame } from "./wtvideo.js";
 export interface WtDecoderStats {
   framesDecoded: number;
   framesDropped: number;
+  /** Reorder buffer depth (frames held behind a hole) and codec backlog. */
+  held: number;
+  queueSize: number;
+  /** Frames the decoder queue skipped (backpressure drops). */
+  behindEvents: number;
   /** EMA of submit→output decode latency, ms. */
   decodeMs: number;
   /** Current adaptive present delay, ms. */
@@ -277,10 +282,21 @@ export class WtDecoder {
     // transport keeps delivering. Drop to the next keyframe instead; on a live
     // stream a fresh anchor beats several seconds of late video.
     if (decoderIsBehind(this.decoder.decodeQueueSize)) {
-      this.framesDropped++;
-      this.behindEvents++;
-      this.referenceGap();
-      return;
+      // A keyframe is the exit from a stuck queue, never a candidate for the
+      // backpressure drop: resetting the codec and feeding the anchor
+      // recovers immediately, while dropping it leaves the queue holding
+      // stale deltas whose references are gone - the 22:04 stall decoded
+      // exactly 1 fps because every recovery IDR was discarded here and the
+      // queue only drained as WebKit errored stale chunks one per second.
+      if (f.key) {
+        this.decoder.reset();
+        this.submitTimes.clear();
+      } else {
+        this.framesDropped++;
+        this.behindEvents++;
+        this.referenceGap();
+        return;
+      }
     }
     this.submitTimes.set(f.capture_us, performance.now());
     if (this.submitTimes.size > 256) {
@@ -480,6 +496,11 @@ export class WtDecoder {
     const s = {
       framesDecoded: this.framesDecoded,
       framesDropped: this.framesDropped,
+      // Reorder buffer depth and codec backlog: the 22:04 stall showed
+      // recv=60/s with decoded ~1 fps - these counters are how the next
+      // session's log tells "frames held behind a hole" from "codec stuck".
+      held: this.order.held,
+      queueSize: this.decoder?.decodeQueueSize ?? 0,
       decodeMs: Math.round(this.decodeEmaMs * 100) / 100,
       rendering: this.framesDecoded > 0,
       framesPresented: this.framesPresented,
