@@ -61,6 +61,14 @@ pub(super) async fn handle_incoming(
         anyhow::bail!("auth: token rejected");
     }
 
+    // Every session starts on the reliable stream carrier. The v4 switch is
+    // per-connection: the flag outliving a session (Shared outlives
+    // connections) made the NEXT dial - whose client never asked - inherit
+    // datagram video (21:42 enabled it; the 21:51 dial ran v4 unseen).
+    shared
+        .datagram_video
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+
     // One active video session (ADR-0007) - and the newest valid token wins.
     //
     // This used to refuse a second dial with "busy". That contradicted the very

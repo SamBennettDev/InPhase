@@ -307,6 +307,19 @@ export class WtVideoClient {
         // has the channel are dropped - so ask for a fresh IDR now instead of
         // sitting on deltas that decode into nothing.
         void this.send({ type: "keyframe_request" });
+        // v4 carrier: the channel deliberately goes silent (video moved to
+        // datagrams). Park the reader instead of letting the 2 s watchdog
+        // churn channels - the reopen loop cost one wedged stream and one
+        // keyframe request every ~2.2 s for as long as v4 ran (21:53 log).
+        // When the carrier reverts, the same channel resumes reading - the
+        // host kept its sink, so the fallback needs no re-handshake.
+        while (this.datagramVideoEnabled) {
+          const closed = await Promise.race([
+            gone,
+            new Promise((r) => setTimeout(r, 500)),
+          ]);
+          if (closed === "gone") return;
+        }
         await this.readOneFrame(vch.readable as ReadableStream<Uint8Array>, h);
       } catch {
         // channel reset or connection gone; reopen after a beat
@@ -683,7 +696,11 @@ export class WtVideoClient {
       const hostUs = Number(m.host_us ?? 0);
       if (hostUs > 0) {
         const t2Us = performance.now() * 1000;
-        const sample = hostUs - (this.pingSentUs + t2Us) / 2;
+        // offset maps capture-clock → client clock: client_midpoint −
+        // host_capture_now. The inverse sign fed lat ages ≈ 2× the epoch
+        // gap (≈6 s), which the 0..5 s plausibility gate discarded - every
+        // percentile reported -1 for the whole 21:51 session.
+        const sample = (this.pingSentUs + t2Us) / 2 - hostUs;
         const wasUnsynced = this.offsetEmaUs === null;
         this.offsetEmaUs = this.offsetEmaUs === null ? sample : 0.8 * this.offsetEmaUs + 0.2 * sample;
         if (wasUnsynced) {

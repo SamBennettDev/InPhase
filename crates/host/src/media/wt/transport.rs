@@ -404,6 +404,15 @@ impl WtVideoTransport {
                             sent = sent.saturating_add(1);
                         } else {
                             stalled = stalled.saturating_add(1);
+                            // Datagram queue-full IS the congestion signal on
+                            // the v4 carrier - there is no writer stall to
+                            // measure, and without this the controller sees a
+                            // zero backlog all the way up until fragment loss
+                            // makes frames unassemblable (the 21:51 no-decode
+                            // episode: in_kbps ramped 6→13.5 Mbps before the
+                            // first cut). Publish a synthetic stall so the
+                            // 1 s AIMD sees real backpressure.
+                            stall_window_ms = stall_window_ms.max(300);
                         }
                         shared_for_sender.wt_timeline.lock().push_back([
                             frame.frame_no as u64,
