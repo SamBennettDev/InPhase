@@ -300,6 +300,29 @@ pub(super) async fn handle_incoming(
                             info!("wt: video carrier switched back to the reliable stream");
                         }
                     }
+                    Ok(WtClientMessage::Nack { frame, idx }) => {
+                        // Re-send the exact cached datagram. A miss (evicted,
+                        // or the frame predates the cache) is silent: the
+                        // client abandons the frame and the IDR path takes
+                        // over. The control handler never touches freshness
+                        // here - the client asked for this exact fragment
+                        // because its decode chain is waiting on it, and a
+                        // late-but-complete delta beats a frozen pipeline.
+                        if let Some(conn) = shared.live_connection.borrow().clone() {
+                            let hit = shared
+                                .wt_resend
+                                .lock()
+                                .iter()
+                                .rev()
+                                .find(|(no, idx0, _)| *no == frame && *idx0 == idx)
+                                .map(|(_, _, enc)| enc.clone());
+                            if let Some(enc) = hit {
+                                let _ = crate::media::wt::transport::try_send_datagram(
+                                    &conn, &enc,
+                                );
+                            }
+                        }
+                    }
                     Ok(WtClientMessage::Auth { .. }) => debug!("wt: duplicate Auth ignored"),
                     Err(e) => debug!(%e, "wt: bad control line"),
                 }

@@ -176,4 +176,11 @@ struct Shared {
     /// flowing = the probe, on iOS Safari where server-initiated streams are
     /// broken but datagrams demonstrably work).
     datagram_video: std::sync::atomic::AtomicBool,
+    /// Retransmit cache for the v4 carrier: recent datagram fragments
+    /// `(frame_no, frag_idx, bytes)`. The client NACKs a missing fragment
+    /// over the control stream (reliable, ordered); the control handler
+    /// re-sends it straight from here. A reassembled chain beats an IDR
+    /// wait: at cellular burst loss the IDR reassembly kept failing while
+    /// deltas kept arriving (22:15: held=8, decoded=0 for 7 s).
+    wt_resend: Mutex<std::collections::VecDeque<(u32, u16, Vec<u8>)>>,
 }

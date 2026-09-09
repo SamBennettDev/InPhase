@@ -151,6 +151,8 @@ impl HostRuntime {
                                 held = tel.decode_held,
                                 behind = tel.decode_behind_events,
                                 queue = tel.decode_queue_size,
+                                nacks = tel.nacks_sent,
+                                keys = tel.keys_received,
                                 "wt client wire"
                             );
                             stats.ingest_client(tel);

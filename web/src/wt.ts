@@ -371,16 +371,24 @@ export class WtVideoClient {
   /** Reassembly state for the v4 fragment carrier: frame_no → parts. */
   private v4 = new Map<
     number,
-    { cnt: number; parts: (Uint8Array | null)[]; got: number; captureUs: number; key: boolean; atMs: number }
+    { cnt: number; parts: (Uint8Array | null)[]; got: number; captureUs: number; key: boolean; atMs: number; nacked: boolean }
   >();
   private v4Received = 0;
+  private keysReceived = 0;
+  /** NACKs sent for missing fragments (diagnosis: repair rate vs IDR waits). */
+  private nacksSent = 0;
+  /** Frame numbers already assembled - late re-sends land here and stop. */
+  private v4Done = new Set<number>();
   /** Whether we asked the host for the v4 carrier (and have not asked off). */
   private datagramVideoEnabled = false;
   private datagramVideoToggledAtMs = 0;
 
   /** Insert one v4 fragment; deliver the frame when its last part lands.
-   *  Fragments of a frame missing its 150 ms assembly window are dropped -
-   *  expired video is worthless (research doc freshness budget). */
+   *  A frame incomplete past 150 ms is not abandoned - one NACK per missing
+   *  fragment goes over the reliable control channel, the host re-sends
+   *  from its cache, and the assembly window extends to 500 ms. Repairing
+   *  one fragment costs one RTT; without it the decode chain held 8 frames
+   *  and an IDR storm froze the picture for seconds (22:15 session). */
   private onVideoFragment(d: Uint8Array, h: WtClientHandlers): void {
     const dv = new DataView(d.buffer, d.byteOffset, d.byteLength);
     const frameNo = dv.getUint32(2, true);
@@ -389,29 +397,42 @@ export class WtVideoClient {
     const captureUs = Number(dv.getBigUint64(10, true));
     const key = (dv.getUint8(1) & 1) !== 0;
     const nowMs = performance.now();
-    // Expire stale assemblies first: a frame that never completed past its
-    // playout window is abandoned, and its slot freed.
+    // Expire stale assemblies: first pass NACKs the holes (once), a second
+    // window gives the re-send its RTT; past that the frame is abandoned.
     for (const [no, st] of this.v4) {
-      if (nowMs - st.atMs > 150) {
+      if (nowMs - st.atMs > 500) {
         this.v4.delete(no);
         this.framesAbandoned++;
+      } else if (nowMs - st.atMs > 150 && !st.nacked) {
+        st.nacked = true;
+        for (let i = 0; i < st.cnt; i++) {
+          if (st.parts[i] === null) {
+            this.nacksSent++;
+            void this.send({ type: "nack", frame: no, idx: i });
+          }
+        }
       }
     }
     let st = this.v4.get(frameNo);
     if (st === undefined) {
-      st = { cnt, parts: new Array(cnt).fill(null), got: 0, captureUs, key, atMs: nowMs };
+      st = { cnt, parts: new Array(cnt).fill(null), got: 0, captureUs, key, atMs: nowMs, nacked: false };
       this.v4.set(frameNo, st);
-      if (this.v4.size > 4) {
+      if (this.v4.size > 8) {
         // Keep only the newest frames; an old partial cannot playout anyway.
         const oldest = [...this.v4.keys()].sort((a, b) => a - b)[0];
         if (oldest !== undefined && oldest !== frameNo) this.v4.delete(oldest);
       }
     }
     if (idx >= cnt || st.parts[idx] !== null) return; // duplicate/overflow fragment
+    if (this.v4Done.has(frameNo)) return; // late re-send for a frame already assembled
     st.parts[idx] = d.subarray(18);
     st.got++;
     if (st.got === cnt) {
       this.v4.delete(frameNo);
+      this.v4Done.add(frameNo);
+      if (this.v4Done.size > 64) {
+        this.v4Done.delete(this.v4Done.values().next().value as number);
+      }
       let len = 0;
       for (const p of st.parts) len += p!.byteLength;
       const payload = new Uint8Array(len);
@@ -422,6 +443,7 @@ export class WtVideoClient {
       }
       this.v4Received++;
       this.framesReceived++;
+      if (key) this.keysReceived++;
       this.lastFrameAtMs = nowMs;
       if (this.offsetEmaUs !== null) {
         const ageMs = (performance.now() * 1000 - (captureUs + this.offsetEmaUs)) / 1000;
@@ -641,6 +663,11 @@ export class WtVideoClient {
       decode_held: stats?.held ?? 0,
       decode_behind_events: stats?.behindEvents ?? 0,
       decode_queue_size: stats?.queueSize ?? 0,
+      // v4 fragment repair: NACKs sent + keyframes assembled. held=8 with
+      // keys=0 means the IDR never reassembled; nacks rising with decode
+      // recovering means the repair path is doing its job.
+      nacks_sent: this.nacksSent,
+      keys_received: this.keysReceived,
       // §13: the host needs real support data from real clients.
       audio_opus_supported: opusSupportProbe(),
     };

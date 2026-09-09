@@ -112,7 +112,7 @@ impl FrameQueue {
     }
 }
 
-fn try_send_datagram(conn: &wtransport::Connection, data: &[u8]) -> bool {
+pub(crate) fn try_send_datagram(conn: &wtransport::Connection, data: &[u8]) -> bool {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         match conn.send_datagram(data) {
             Ok(()) => true,
@@ -235,6 +235,7 @@ impl WtVideoTransport {
             write_stall_ms: std::sync::atomic::AtomicU32::new(0),
             wt_timeline: Mutex::new(std::collections::VecDeque::new()),
             datagram_video: std::sync::atomic::AtomicBool::new(false),
+            wt_resend: Mutex::new(std::collections::VecDeque::new()),
         });
 
         // Accept loop: one task per incoming session; auth gates everything.
@@ -405,9 +406,23 @@ impl WtVideoTransport {
                                 capture_us: frame.capture_us,
                                 key: frame.key,
                                 payload: frame.payload[start..end].to_vec(),
+                            };
+                            let enc = frag.encode();
+                            // Cache the encoded datagram for client NACK
+                            // re-sends: the last few hundred fragments cover
+                            // the newest frames, so a single lost delta
+                            // fragment is repaired in one RTT instead of
+                            // triggering the IDR spiral (22:15: held=8,
+                            // decoded=0 for 7 s). Re-sending the encoded
+                            // form keeps frag_cnt/capture_us/key identical.
+                            {
+                                let mut cache = shared_for_sender.wt_resend.lock();
+                                cache.push_back((frame.frame_no, idx, enc.clone()));
+                                while cache.len() > 512 {
+                                    cache.pop_front();
+                                }
                             }
-                            .encode();
-                            if !try_send_datagram(conn, &frag) {
+                            if !try_send_datagram(conn, &enc) {
                                 ok = false;
                                 break; // queue full: the rest is past deadline anyway
                             }
@@ -1151,6 +1166,26 @@ mod tests {
         }
         got.sort_unstable();
         assert_eq!(got, vec![1, 2, 3], "every frame reassembled from datagrams");
+
+        got.sort_unstable();
+        assert_eq!(got, vec![1, 2, 3], "every frame reassembled from datagrams");
+
+        // NACK repair: the client asks for a specific fragment and the exact
+        // cached datagram comes back (frag_cnt/capture_us/key intact).
+        let mut nack = serde_json::to_string(&WtClientMessage::Nack { frame: 1, idx: 0 }).unwrap();
+        nack.push('\n');
+        ctl.write_all(nack.as_bytes()).await.unwrap();
+        let mut repaired = false;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !repaired && Instant::now() < deadline {
+            let d = tokio::time::timeout(Duration::from_secs(5), conn.receive_datagram()).await;
+            let Ok(Ok(d)) = d else { break };
+            let Ok(f) = WtFragment::decode(&d) else { continue };
+            if f.frame_no == 1 && f.frag_idx == 0 {
+                repaired = true;
+            }
+        }
+        assert!(repaired, "NACK re-sent the requested fragment");
 
         // The stream carrier must be silent in v4 mode: no video uni streams.
         drop(conn);

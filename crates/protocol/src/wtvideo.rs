@@ -160,6 +160,15 @@ pub enum WtClientMessage {
     /// reliable stream stays installed as the fallback carrier.
     EnableDatagramVideo,
     DisableDatagramVideo,
+    /// One v4 fragment of `frame` did not arrive; the host re-sends it from
+    /// its resend cache as a datagram. Reliable, ordered control channel, so
+    /// a NACK is never lost — the same property that makes the pong sync
+    /// work on iOS. Repairing one fragment costs one RTT; the alternative is
+    /// holding decode until an IDR reassembles through burst loss.
+    Nack {
+        frame: u32,
+        idx: u16,
+    },
 }
 
 /// Host → client messages on the WT control stream.

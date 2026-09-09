@@ -360,6 +360,13 @@ pub struct ClientTelemetry {
     pub decode_behind_events: u64,
     #[serde(default)]
     pub decode_queue_size: u64,
+    /// v4 fragment repair: NACKs sent by the client and keyframes assembled.
+    /// held>0 with keys=0 and nacks climbing = the repair path working;
+    /// keys=0 with no nacks means the IDR never reassembles at all.
+    #[serde(default)]
+    pub nacks_sent: u64,
+    #[serde(default)]
+    pub keys_received: u64,
 }
 
 // PartialEq for ClientTelemetry uses f32 fields; Eq is intentionally not derived.
