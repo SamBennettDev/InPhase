@@ -405,6 +405,7 @@ impl WtVideoTransport {
                                 frag_cnt,
                                 capture_us: frame.capture_us,
                                 key: frame.key,
+                                parity: 0,
                                 payload: frame.payload[start..end].to_vec(),
                             };
                             let enc = frag.encode();
@@ -431,6 +432,43 @@ impl WtVideoTransport {
                         }
                         if ok {
                             sent = sent.saturating_add(1);
+                            // ---- FEC parity (research doc §target transport):
+                            // 8+1 XOR groups for every frame, 8+2 for
+                            // keyframes. One lost fragment per group is
+                            // rebuilt client-side with no NACK and no RTT —
+                            // the NACK-only repair amplified congestion at
+                            // 9% loss (23:21: nacks 65 -> 10789 in 8 s, the
+                            // re-send storm crowded out fresh video).
+                            let data_frags: Vec<Vec<u8>> = (0..frag_cnt as usize)
+                                .map(|i| {
+                                    let s = i * budget;
+                                    let e = ((i + 1) * budget).min(frame.payload.len());
+                                    frame.payload[s..e].to_vec()
+                                })
+                                .collect();
+                            let parity =
+                                inphase_protocol::fragment_parity(&data_frags, frame.key);
+                            for (round, (row, acc)) in parity.into_iter().enumerate() {
+                                let group = (round
+                                    / if frame.key { 2 } else { 1 })
+                                    as u16;
+                                let pf = inphase_protocol::WtFragment {
+                                    frame_no: frame.frame_no,
+                                    frag_idx: group,
+                                    frag_cnt,
+                                    capture_us: frame.capture_us,
+                                    key: frame.key,
+                                    parity: row,
+                                    payload: acc,
+                                };
+                                let enc = pf.encode();
+                                if !try_send_datagram(conn, &enc) {
+                                    break; // parity is best-effort; NACK remains
+                                }
+                                if frame.key && round % 16 == 15 {
+                                    tokio::time::sleep(Duration::from_millis(1)).await;
+                                }
+                            }
                         } else {
                             stalled = stalled.saturating_add(1);
                             // Datagram queue-full IS the congestion signal on

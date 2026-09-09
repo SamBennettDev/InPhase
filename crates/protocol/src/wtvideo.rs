@@ -544,15 +544,27 @@ pub const WT_VIDEO_PROTOCOL_V4: u8 = 4;
 /// regardless — the property a reliable stream cannot offer.
 ///
 /// Wire layout (little-endian throughout):
-/// `[0]` version = 4, `[1]` flags (bit0 = keyframe), `[2..6)` frame_no,
-/// `[6..8)` frag_idx, `[8..10)` frag_cnt, `[10..18)` capture_us,
-/// `[18..]` payload.
+/// `[0]` version = 4, `[1]` flags (bit0 = keyframe, bit1 = parity row 1,
+/// bit2 = parity row 2), `[2..6)` frame_no, `[6..8)` frag_idx,
+/// `[8..10)` frag_cnt, `[10..18)` capture_us, `[18..]` payload.
+///
+/// Parity fragments (FEC, research doc §target transport): data fragments
+/// are grouped 8 at a time; row 1 carries the XOR of each group's
+/// payloads, so ONE lost fragment in a group is rebuilt locally — no NACK,
+/// no RTT. Keyframes add row 2 (XOR of each group's odd-offset members),
+/// recovering a second loss when the two fall in different row halves.
+/// Re-sends (client NACKs) remain the bounded fallback for the rest.
 pub const WT_FRAGMENT_HEADER_LEN: usize = 18;
 
 /// First payload byte of a server→client audio datagram (transport.rs): a
 /// fragment can never collide with it, so the client's datagram reader can
 /// demultiplex by the first byte alone.
 pub const WT_AUDIO_DATAGRAM_TAG: u8 = 0x41;
+
+/// Flags byte: keyframe (bit 0), parity row 1 (bit 1), parity row 2 (bit 2).
+/// `WT_FRAME_KEY` (bit 0) is shared with the v3 stream header.
+pub const WT_FRAGMENT_PARITY1: u8 = 0x02;
+pub const WT_FRAGMENT_PARITY2: u8 = 0x04;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WtFragment {
@@ -561,6 +573,9 @@ pub struct WtFragment {
     pub frag_cnt: u16,
     pub capture_us: u64,
     pub key: bool,
+    /// 0 = data fragment, 1 = parity row 1 (XOR of the group), 2 = parity
+    /// row 2 (XOR of the group's odd-offset members, keyframes only).
+    pub parity: u8,
     pub payload: Vec<u8>,
 }
 
@@ -568,7 +583,16 @@ impl WtFragment {
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(WT_FRAGMENT_HEADER_LEN + self.payload.len());
         out.push(WT_VIDEO_PROTOCOL_V4);
-        out.push(if self.key { WT_FRAME_KEY } else { 0 });
+        let mut flags = 0u8;
+        if self.key {
+            flags |= WT_FRAME_KEY;
+        }
+        flags |= match self.parity {
+            1 => WT_FRAGMENT_PARITY1,
+            2 => WT_FRAGMENT_PARITY2,
+            _ => 0,
+        };
+        out.push(flags);
         out.extend_from_slice(&self.frame_no.to_le_bytes());
         out.extend_from_slice(&self.frag_idx.to_le_bytes());
         out.extend_from_slice(&self.frag_cnt.to_le_bytes());
@@ -585,6 +609,13 @@ impl WtFragment {
             return Err(WtVideoError::BadVersion(buf[0]));
         }
         let key = buf[1] & WT_FRAME_KEY != 0;
+        let parity = if buf[1] & WT_FRAGMENT_PARITY2 != 0 {
+            2
+        } else if buf[1] & WT_FRAGMENT_PARITY1 != 0 {
+            1
+        } else {
+            0
+        };
         let frame_no = u32::from_le_bytes([buf[2], buf[3], buf[4], buf[5]]);
         let frag_idx = u16::from_le_bytes([buf[6], buf[7]]);
         let frag_cnt = u16::from_le_bytes([buf[8], buf[9]]);
@@ -597,6 +628,7 @@ impl WtFragment {
             frag_cnt,
             capture_us,
             key,
+            parity,
             payload: buf[WT_FRAGMENT_HEADER_LEN..].to_vec(),
         })
     }
@@ -610,6 +642,7 @@ fn fragment_roundtrips_and_rejects_truncation() {
         frag_cnt: 7,
         capture_us: 1_234_567_890,
         key: true,
+        parity: 0,
         payload: vec![7; 600],
     };
     let wire = f.encode();
@@ -639,7 +672,71 @@ fn fragment_tag_never_collides_with_audio() {
         frag_cnt: 1,
         capture_us: 0,
         key: false,
+        parity: 0,
         payload: vec![],
     };
     assert_ne!(f.encode()[0], WT_AUDIO_DATAGRAM_TAG);
+}
+
+/// Parity reconstruction, at the protocol layer so host and client agree on
+/// the exact scheme: row 1 = XOR of each group of 8 payloads (zero-padded to
+/// the group's longest member); row 2 (keyframes) = XOR of the group's
+/// odd-offset members. A single lost fragment in a group is rebuilt from row
+/// 1; a second loss is rebuilt from rows 1+2 when the losses split across
+/// even/odd offsets.
+pub const FRAGMENT_GROUP: usize = 8;
+
+/// Compute the parity payloads for one frame's fragments. `frags` are the
+/// data-fragment payloads in order. Returns one `(parity, payload)` per
+/// group: every frame gets row 1; keyframes additionally get row 2.
+pub fn fragment_parity(frags: &[Vec<u8>], key: bool) -> Vec<(u8, Vec<u8>)> {
+    let mut out = Vec::new();
+    for g in 0..frags.len().div_ceil(FRAGMENT_GROUP) {
+        let lo = g * FRAGMENT_GROUP;
+        let hi = ((g + 1) * FRAGMENT_GROUP).min(frags.len());
+        let width = frags[lo..hi].iter().map(|p| p.len()).max().unwrap_or(0);
+        let mut row1 = vec![0u8; width];
+        let mut row2 = vec![0u8; width];
+        for (off, p) in frags[lo..hi].iter().enumerate() {
+            for (j, b) in p.iter().enumerate() {
+                row1[j] ^= b;
+                if off % 2 == 1 {
+                    row2[j] ^= b;
+                }
+            }
+        }
+        out.push((1, row1));
+        if key {
+            out.push((2, row2));
+        }
+    }
+    out
+}
+
+#[test]
+fn parity_rebuilds_a_single_lost_fragment() {
+    // On the wire every non-final fragment is exactly the datagram budget,
+    // so equal lengths are the realistic shape.
+    let frags: Vec<Vec<u8>> = (0..FRAGMENT_GROUP).map(|i| vec![i as u8 + 1; 24]).collect();
+    let parity = fragment_parity(&frags, false);
+    assert_eq!(parity.len(), 1, "one group of 8 -> one row-1 payload");
+    assert_eq!(parity[0].0, 1);
+    // Rebuild fragment 3 from the parity and the other seven.
+    let mut acc = parity[0].1.clone();
+    for (i, p) in frags.iter().enumerate() {
+        if i != 3 {
+            for (j, b) in p.iter().enumerate() {
+                acc[j] ^= b;
+            }
+        }
+    }
+    assert_eq!(acc, frags[3]);
+}
+
+#[test]
+fn keyframe_parity_has_two_rows() {
+    let frags: Vec<Vec<u8>> = (0..5).map(|i| vec![i as u8 + 3; 20]).collect();
+    let parity = fragment_parity(&frags, true);
+    assert_eq!(parity.len(), 2, "row 1 + row 2 for a keyframe");
+    assert_eq!(parity[1].0, 2);
 }

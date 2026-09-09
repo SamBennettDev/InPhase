@@ -31,6 +31,22 @@ export interface WtVideoConfig {
 }
 
 /** Playout stats from the decoder, reported to the host once per second. */
+/** Assembly state for one v4 frame in flight. */
+interface V4Assembly {
+  cnt: number;
+  parts: (Uint8Array | null)[];
+  got: number;
+  captureUs: number;
+  key: boolean;
+  atMs: number;
+  /** NACK rounds sent for this frame + when the last went out. */
+  nacks: number;
+  lastNackMs: number;
+  /** FEC parity payloads by group index (row 1 / row 2). */
+  p1: Map<number, Uint8Array> | null;
+  p2: Map<number, Uint8Array> | null;
+}
+
 export interface WtClientStats {
   codec: string | null;
   framesDecoded: number;
@@ -371,20 +387,15 @@ export class WtVideoClient {
   /** Reassembly state for the v4 fragment carrier: frame_no → parts. */
   private v4 = new Map<
     number,
-    {
-      cnt: number;
-      parts: (Uint8Array | null)[];
-      got: number;
-      captureUs: number;
-      key: boolean;
-      atMs: number;
-      /** NACK rounds sent for this frame + when the last went out. */
-      nacks: number;
-      lastNackMs: number;
-    }
+    V4Assembly
   >();
   private v4Received = 0;
   private keysReceived = 0;
+  /** Fragments rebuilt locally from FEC parity - no NACK, no RTT. */
+  private v4Repaired = 0;
+  /** Parity fragments that arrived before their frame's first data
+   *  fragment (datagrams reorder); merged on assembly-state creation. */
+  private v4Parity = new Map<number, { p1: Map<number, Uint8Array>; p2: Map<number, Uint8Array>; atMs: number }>();
   /** NACKs sent for missing fragments (diagnosis: repair rate vs IDR waits). */
   private nacksSent = 0;
   /** Frame numbers already assembled - late re-sends land here and stop. */
@@ -393,24 +404,50 @@ export class WtVideoClient {
   private datagramVideoEnabled = false;
   private datagramVideoToggledAtMs = 0;
 
-  /** Insert one v4 fragment; deliver the frame when its last part lands.
-   *  A frame incomplete past 150 ms is not abandoned - NACKs for the holes
-   *  go over the reliable control channel and the host re-sends from its
-   *  cache. NACKs REPEAT every 180 ms (max 4): the 22:34 session showed
-   *  single-shot repair dying when the re-send itself hit the same burst
-   *  loss window (nacks +631, abandoned +29, held=8, decode 0 for 4-7 s).
-   *  Four tries over ~600 ms beats iid loss up to ~40% per fragment. */
+  /** Insert one v4 fragment (data or parity); deliver the frame when its
+   *  data parts are all present. Repair is layered, cheapest first:
+   *  1. FEC parity (8+1 groups, 8+2 keyframes): one lost fragment per group
+   *     is rebuilt locally - no NACK, no RTT. The 23:21 session showed
+   *     NACK-only repair amplifying congestion (nacks 65 -> 10789 in 8 s,
+   *     the re-send storm crowding out fresh video, ending client-silent).
+   *  2. NACK, bounded: at most 8 holes per frame per round, rounds every
+   *     180 ms, max 4 - a fallback, not a flood. */
   private onVideoFragment(d: Uint8Array, h: WtClientHandlers): void {
     const dv = new DataView(d.buffer, d.byteOffset, d.byteLength);
     const frameNo = dv.getUint32(2, true);
     const idx = dv.getUint16(6, true);
     const cnt = dv.getUint16(8, true);
     const captureUs = Number(dv.getBigUint64(10, true));
-    const key = (dv.getUint8(1) & 1) !== 0;
+    const flags = dv.getUint8(1);
+    const key = (flags & 1) !== 0;
+    const parityRow = (flags >> 1) & 3; // 0 data, 1 row1, 2 row2
     const nowMs = performance.now();
     if (this.v4Done.has(frameNo)) return; // late re-send for an assembled frame
-    // Expire stale assemblies: NACK round one at 150 ms, then repeat; a
-    // frame still incomplete after the last retry window is abandoned.
+    if (parityRow !== 0) {
+      // Parity for a frame we are assembling - or may become later
+      // (datagrams reorder, so parity can arrive before OR after data).
+      const st = this.v4.get(frameNo);
+      if (st === undefined) {
+        let pend = this.v4Parity.get(frameNo);
+        if (pend === undefined) {
+          pend = { p1: new Map(), p2: new Map(), atMs: nowMs };
+          this.v4Parity.set(frameNo, pend);
+          if (this.v4Parity.size > 16) {
+            const oldest = [...this.v4Parity.keys()][0];
+            if (oldest !== undefined) this.v4Parity.delete(oldest);
+          }
+        }
+        (parityRow === 1 ? pend.p1 : pend.p2).set(idx, d.subarray(18));
+      } else {
+        if (st.p1 === null) st.p1 = new Map();
+        if (st.p2 === null) st.p2 = new Map();
+        (parityRow === 1 ? st.p1 : st.p2).set(idx, d.subarray(18));
+        this.tryRepair(st);
+        this.maybeDeliver(st, frameNo, h, nowMs);
+      }
+      return;
+    }
+    // Expire stale assemblies: NACK rounds are the bounded fallback.
     for (const [no, st] of this.v4) {
       if (nowMs - st.atMs > 900) {
         this.v4.delete(no);
@@ -422,8 +459,12 @@ export class WtVideoClient {
       ) {
         st.nacks++;
         st.lastNackMs = nowMs;
-        for (let i = 0; i < st.cnt; i++) {
+        // At most 8 holes per round per frame: the 23:21 storm re-NACKed
+        // hundreds of holes per round across 8 partial frames.
+        let budget = 8;
+        for (let i = 0; i < st.cnt && budget > 0; i++) {
           if (st.parts[i] === null) {
+            budget--;
             this.nacksSent++;
             void this.send({ type: "nack", frame: no, idx: i });
           }
@@ -441,8 +482,17 @@ export class WtVideoClient {
         atMs: nowMs,
         nacks: 0,
         lastNackMs: 0,
+        p1: null,
+        p2: null,
       };
       this.v4.set(frameNo, st);
+      // Merge parity that arrived before the first data fragment.
+      const pend = this.v4Parity.get(frameNo);
+      if (pend !== undefined) {
+        st.p1 = pend.p1;
+        st.p2 = pend.p2;
+        this.v4Parity.delete(frameNo);
+      }
       if (this.v4.size > 8) {
         // Keep only the newest frames; an old partial cannot playout anyway.
         const oldest = [...this.v4.keys()].sort((a, b) => a - b)[0];
@@ -452,7 +502,20 @@ export class WtVideoClient {
     if (idx >= cnt || st.parts[idx] !== null) return; // duplicate/overflow fragment
     st.parts[idx] = d.subarray(18);
     st.got++;
-    if (st.got === cnt) {
+    this.tryRepair(st);
+    this.maybeDeliver(st, frameNo, h, nowMs);
+  }
+
+  /** Deliver a v4 frame the moment every data fragment is present (whether
+   *  the last one arrived on the wire or was rebuilt from parity). */
+  private maybeDeliver(
+    st: V4Assembly,
+    frameNo: number,
+    h: WtClientHandlers,
+    nowMs: number,
+  ): void {
+    if (st.got !== st.cnt) return;
+    {
       this.v4.delete(frameNo);
       this.v4Done.add(frameNo);
       if (this.v4Done.size > 64) {
@@ -468,16 +531,76 @@ export class WtVideoClient {
       }
       this.v4Received++;
       this.framesReceived++;
-      if (key) this.keysReceived++;
+      if (st.key) this.keysReceived++;
       this.lastFrameAtMs = nowMs;
       if (this.offsetEmaUs !== null) {
-        const ageMs = (performance.now() * 1000 - (captureUs + this.offsetEmaUs)) / 1000;
+        const ageMs = (performance.now() * 1000 - (st.captureUs + this.offsetEmaUs)) / 1000;
         if (ageMs >= 0 && ageMs < 5_000) {
           this.latBuf.push(ageMs);
           if (this.latBuf.length > 512) this.latBuf.shift();
         }
       }
-      h.onFrame({ frame_no: frameNo, capture_us: captureUs, key, payload });
+      h.onFrame({ frame_no: frameNo, capture_us: st.captureUs, key: st.key, payload });
+    }
+  }
+
+  /** Local fragment rebuild from FEC parity (zero round-trips): row 1
+   *  recovers one hole per 8-fragment group; rows 1+2 recover a second loss
+   *  when the two fall on different even/odd offsets. Restored fragments
+   *  are budget-sized by construction (every non-final fragment is exactly
+   *  the datagram budget), so the XOR is aligned. The frame's final
+   *  fragment is never restored this way - its true length is not derivable
+   *  - and falls to the NACK path instead. */
+  private tryRepair(st: V4Assembly): void {
+    const groups = Math.ceil(st.cnt / 8);
+    const xor = (acc: Uint8Array, p: Uint8Array, skip: (i: number) => boolean, range: [number, number]) => {
+      for (let i = range[0]; i < range[1]; i++) {
+        if (skip(i)) continue;
+        const p0 = st.parts[i]!;
+        for (let j = 0; j < p0.byteLength; j++) acc[j] = (acc[j] ?? 0) ^ (p0[j] ?? 0);
+      }
+    };
+    for (let g = 0; g < groups; g++) {
+      const lo = g * 8;
+      const hi = Math.min(lo + 8, st.cnt);
+      const missing: number[] = [];
+      for (let i = lo; i < hi; i++) {
+        if (st.parts[i] === null) missing.push(i);
+      }
+      if (missing.length === 0 || missing.length > 2) continue;
+      const p1 = st.p1?.get(g);
+      const p2 = st.p2?.get(g);
+      if (missing.length === 1) {
+        const m = missing[0]!;
+        if (p1 === undefined || m === st.cnt - 1) continue;
+        const acc = new Uint8Array(p1);
+        xor(acc, p1, (i) => i === m, [lo, hi]);
+        st.parts[m] = acc;
+        st.got++;
+        this.v4Repaired++;
+      } else if (p1 !== undefined && p2 !== undefined) {
+        // Two losses: rebuildable iff one is even-offset, one odd-offset
+        // within the group (row 2 covers the odd members).
+        const [a, b] = [missing[0]!, missing[1]!];
+        const aOdd = (a - lo) % 2 === 1;
+        const bOdd = (b - lo) % 2 === 1;
+        if (aOdd === bOdd) continue;
+        if (a === st.cnt - 1 || b === st.cnt - 1) continue;
+        const evenMiss = aOdd ? b : a;
+        const oddMiss = aOdd ? a : b;
+        // accOdd = row2 ^ present odds = the lost odd-offset fragment.
+        const accOdd = new Uint8Array(p2);
+        xor(accOdd, p2, (i) => i === evenMiss || i === oddMiss || (i - lo) % 2 === 0, [lo, hi]);
+        // accEven = row1 ^ row2 ^ present evens (row1^row2 = E ^ Σe_present:
+        // O and the odd sums cancel) = the lost even-offset fragment.
+        const accEven = new Uint8Array(p1);
+        for (let j = 0; j < accEven.byteLength; j++) accEven[j] = (accEven[j] ?? 0) ^ (p2[j] ?? 0);
+        xor(accEven, p1, (i) => i === evenMiss || (i - lo) % 2 === 1, [lo, hi]);
+        st.parts[evenMiss] = accEven;
+        st.parts[oddMiss] = accOdd;
+        st.got += 2;
+        this.v4Repaired += 2;
+      }
     }
   }
 
