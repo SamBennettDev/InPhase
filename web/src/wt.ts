@@ -371,7 +371,17 @@ export class WtVideoClient {
   /** Reassembly state for the v4 fragment carrier: frame_no → parts. */
   private v4 = new Map<
     number,
-    { cnt: number; parts: (Uint8Array | null)[]; got: number; captureUs: number; key: boolean; atMs: number; nacked: boolean }
+    {
+      cnt: number;
+      parts: (Uint8Array | null)[];
+      got: number;
+      captureUs: number;
+      key: boolean;
+      atMs: number;
+      /** NACK rounds sent for this frame + when the last went out. */
+      nacks: number;
+      lastNackMs: number;
+    }
   >();
   private v4Received = 0;
   private keysReceived = 0;
@@ -384,11 +394,12 @@ export class WtVideoClient {
   private datagramVideoToggledAtMs = 0;
 
   /** Insert one v4 fragment; deliver the frame when its last part lands.
-   *  A frame incomplete past 150 ms is not abandoned - one NACK per missing
-   *  fragment goes over the reliable control channel, the host re-sends
-   *  from its cache, and the assembly window extends to 500 ms. Repairing
-   *  one fragment costs one RTT; without it the decode chain held 8 frames
-   *  and an IDR storm froze the picture for seconds (22:15 session). */
+   *  A frame incomplete past 150 ms is not abandoned - NACKs for the holes
+   *  go over the reliable control channel and the host re-sends from its
+   *  cache. NACKs REPEAT every 180 ms (max 4): the 22:34 session showed
+   *  single-shot repair dying when the re-send itself hit the same burst
+   *  loss window (nacks +631, abandoned +29, held=8, decode 0 for 4-7 s).
+   *  Four tries over ~600 ms beats iid loss up to ~40% per fragment. */
   private onVideoFragment(d: Uint8Array, h: WtClientHandlers): void {
     const dv = new DataView(d.buffer, d.byteOffset, d.byteLength);
     const frameNo = dv.getUint32(2, true);
@@ -397,14 +408,20 @@ export class WtVideoClient {
     const captureUs = Number(dv.getBigUint64(10, true));
     const key = (dv.getUint8(1) & 1) !== 0;
     const nowMs = performance.now();
-    // Expire stale assemblies: first pass NACKs the holes (once), a second
-    // window gives the re-send its RTT; past that the frame is abandoned.
+    if (this.v4Done.has(frameNo)) return; // late re-send for an assembled frame
+    // Expire stale assemblies: NACK round one at 150 ms, then repeat; a
+    // frame still incomplete after the last retry window is abandoned.
     for (const [no, st] of this.v4) {
-      if (nowMs - st.atMs > 500) {
+      if (nowMs - st.atMs > 900) {
         this.v4.delete(no);
         this.framesAbandoned++;
-      } else if (nowMs - st.atMs > 150 && !st.nacked) {
-        st.nacked = true;
+      } else if (
+        nowMs - st.atMs > 150 &&
+        st.nacks < 4 &&
+        nowMs - st.lastNackMs > 180
+      ) {
+        st.nacks++;
+        st.lastNackMs = nowMs;
         for (let i = 0; i < st.cnt; i++) {
           if (st.parts[i] === null) {
             this.nacksSent++;
@@ -415,7 +432,16 @@ export class WtVideoClient {
     }
     let st = this.v4.get(frameNo);
     if (st === undefined) {
-      st = { cnt, parts: new Array(cnt).fill(null), got: 0, captureUs, key, atMs: nowMs, nacked: false };
+      st = {
+        cnt,
+        parts: new Array(cnt).fill(null),
+        got: 0,
+        captureUs,
+        key,
+        atMs: nowMs,
+        nacks: 0,
+        lastNackMs: 0,
+      };
       this.v4.set(frameNo, st);
       if (this.v4.size > 8) {
         // Keep only the newest frames; an old partial cannot playout anyway.
@@ -424,7 +450,6 @@ export class WtVideoClient {
       }
     }
     if (idx >= cnt || st.parts[idx] !== null) return; // duplicate/overflow fragment
-    if (this.v4Done.has(frameNo)) return; // late re-send for a frame already assembled
     st.parts[idx] = d.subarray(18);
     st.got++;
     if (st.got === cnt) {

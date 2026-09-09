@@ -177,10 +177,12 @@ struct Shared {
     /// broken but datagrams demonstrably work).
     datagram_video: std::sync::atomic::AtomicBool,
     /// Retransmit cache for the v4 carrier: recent datagram fragments
-    /// `(frame_no, frag_idx, bytes)`. The client NACKs a missing fragment
-    /// over the control stream (reliable, ordered); the control handler
-    /// re-sends it straight from here. A reassembled chain beats an IDR
-    /// wait: at cellular burst loss the IDR reassembly kept failing while
-    /// deltas kept arriving (22:15: held=8, decoded=0 for 7 s).
+    /// `(frame_no, frag_idx, encoded_datagram)`. The client NACKs a missing
+    /// fragment over the control stream (reliable, ordered, and it REPEATS
+    /// the NACK while a hole persists - one re-send can hit the same burst
+    /// loss window that ate the original); the control handler re-sends it
+    /// straight from here. A reassembled chain beats an IDR wait: at
+    /// cellular burst loss the IDR reassembly kept failing while deltas
+    /// kept arriving (22:34: nacks +631, abandoned +29, held=8).
     wt_resend: Mutex<std::collections::VecDeque<(u32, u16, Vec<u8>)>>,
 }

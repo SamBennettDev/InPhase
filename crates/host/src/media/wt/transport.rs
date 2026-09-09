@@ -418,7 +418,9 @@ impl WtVideoTransport {
                             {
                                 let mut cache = shared_for_sender.wt_resend.lock();
                                 cache.push_back((frame.frame_no, idx, enc.clone()));
-                                while cache.len() > 512 {
+                                // One 1080p IDR is ~370 fragments; 1024 keeps
+                                // a full IDR plus the newest deltas NACKable.
+                                while cache.len() > 1024 {
                                     cache.pop_front();
                                 }
                             }
