@@ -59,8 +59,9 @@ pub const DEFAULT_DATAGRAM_BUDGET: usize = 1200;
 /// host sees 0% loss while the oldest frame's fragments are destroyed
 /// (05:08 Chrome: smooth at ~4.7k datagrams/s, permanent 1 fps re-key loop
 /// from ~5.5k). 3800 paces every measured session below the collapse point;
-/// the frame sender takes 64-token bursts, big IDRs drain over a fraction of
-/// KEY_FRESHNESS.
+/// the frame sender takes 64-token bursts. Deltas only — forced IDRs ride
+/// the reliable stream (05:38 stutter fix), so the budget is never consumed
+/// by a 700 KB burst. Raise only with a measured faster drain (worker).
 pub const WT_PACE_PPS: f32 = 3800.0;
 /// AIMD ceiling matching the pace: 3800 datagrams/s at the 1082-byte floor
 /// budget (3800 × 1082 × 8 / 1000). Above this the encoder emits fragments

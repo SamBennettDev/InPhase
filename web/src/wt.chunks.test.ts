@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { WtVideoClient } from "./wt.js";
+import { WtVideoClient } from "./wtcore.js";
 
 // The readExact contract, pinned against the WebKit chunk realities observed
 // on the 2026-09-09 phone sessions: excess bytes in a coalesced chunk are

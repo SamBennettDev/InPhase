@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { WtVideoClient } from "./wt.js";
+import { WtVideoClient } from "./wtcore.js";
 
 
 // FEC parity repair for the v4 datagram carrier, pinned against the 23:21

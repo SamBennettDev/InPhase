@@ -46,17 +46,28 @@ const WT_AUDIO_TAG: u8 = 0x41;
 /// flow control backs pressure up to the write); the stream is mid-frame and
 /// unusable, so it is reset and the frame dropped.
 const FRAME_STREAM_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(120);
+/// Forced IDRs ride the reliable stream in v4 mode; a 1440p IDR is ~700 KB
+/// and lands on a client channel that may still be doing its handshake RTT.
+const KEY_STREAM_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Freshness budgets (docs/research/performance-latency-2026-09-09.md, P0):
 /// a frame that has not left the host within its budget is worthless - it
 /// would playout behind the frames captured after it - so every queue between
 /// the encoder and the wire rejects expired work instead of delivering it.
-/// Deltas must move fast; a keyframe gets more room because it is the only
-/// thing that can resume a broken reference chain.
-const DELTA_FRESHNESS: std::time::Duration = std::time::Duration::from_millis(35);
+/// 150 ms on the paced v4 carrier (was 35 ms): at ~98% pace utilization a
+/// recovery burst backs the frame queue up and deltas blow the budget by
+/// tens of ms — expiring them punched permanent holes in the frame_no
+/// sequence, the client cleared its reorder window and re-keyed, and the
+/// re-key IDR restarted the whole loop (05:38 session: expired=7 sent=53
+/// between re-keys). A late-but-complete delta decodes one frame late; a
+/// hole costs a 2.5 s freeze. IDRs no longer share the datagram budget
+/// (they ride the reliable stream), so the burst source is gone — this is
+/// the safety net for the queue behind a scene-change burst.
+const DELTA_FRESHNESS: std::time::Duration = std::time::Duration::from_millis(150);
 /// 500 ms: on the paced v4 carrier a large IDR drains at the client's
 /// measured datagram rate (~850 fragments at ~4k/s ≈ 210 ms), and the IDR is
-/// the anchor — late is fine, unassemblable is not.
+/// the anchor — late is fine, unassemblable is not. (Keyframes now ride the
+/// reliable stream in v4 mode; the budget still bounds queue-side staleness.)
 const KEY_FRESHNESS: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Encoded-frame handoff with latest-value semantics.
@@ -387,9 +398,16 @@ impl WtVideoTransport {
                     // not at all. The reliable stream stays installed as the
                     // fallback carrier; the client toggles this switch off the
                     // same way it toggled it on (research doc Safari matrix).
+                    // Deltas only: forced IDRs ride the client-opened
+                    // reliable stream below (flow-controlled, cannot drop -
+                    // a 700 KB IDR at pace would occupy the whole 3800 pps
+                    // budget for ~210 ms, blow DELTA_FRESHNESS on every delta
+                    // queued behind it, and expire them into permanent
+                    // frame_no holes → re-key → repeat; 05:38 session).
                     if shared_for_sender
                         .datagram_video
                         .load(std::sync::atomic::Ordering::Relaxed)
+                        && !frame.key
                     {
                         let Some(conn) = live.as_ref() else { continue };
                         let budget = conn
@@ -555,6 +573,10 @@ impl WtVideoTransport {
                     // behind catch up.
                     let s = stream.as_mut().expect("stream just ensured");
                     let wstart = std::time::Instant::now();
+                    // Keyframes get 500 ms (KEY_STREAM_TIMEOUT): a 1440p IDR
+                    // is ~700 KB and the client may just have opened the
+                    // channel it rides. Deltas keep the 120 ms budget.
+                    let wtimeout = if frame.key { KEY_STREAM_TIMEOUT } else { FRAME_STREAM_TIMEOUT };
                     // Timeline record: write_us = 0 marks a frame the sender
                     // reset mid-write (timeout / transport error).
                     let mut tl = [
@@ -564,7 +586,7 @@ impl WtVideoTransport {
                         pop_us,
                         0u64,
                     ];
-                    match tokio::time::timeout(FRAME_STREAM_TIMEOUT, s.write_all(&wire)).await {
+                    match tokio::time::timeout(wtimeout, s.write_all(&wire)).await {
                         Ok(Ok(())) => {
                             let wms = wstart.elapsed().as_millis() as u32;
                             stall_window_ms = stall_window_ms.max(wms);
@@ -693,6 +715,11 @@ impl WtVideoTransport {
         self.shared
             .datagram_video
             .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Whether the client-opened video channel sink is installed (tests).
+    pub fn video_sink_is_empty(&self) -> bool {
+        self.shared.video_sink.lock().is_none()
     }
 
     /// Queue one Opus packet as a WT audio datagram (§11-on-WT). Header:
@@ -1208,7 +1235,27 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
 
-        // One keyframe larger than a single datagram, plus two deltas.
+        // One keyframe larger than a single datagram, plus two deltas. In v4
+        // mode the keyframe rides the client-opened reliable stream (it is
+        // the anchor; a 700 KB burst would blow the delta freshness budget
+        // for every frame queued behind it) - so the client opens its video
+        // channel first, exactly as the web client does.
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let vch = conn.open_bi().await.expect("open bi").await.expect("bi accepted");
+        let (mut vtx, mut vrx) = vch;
+        let marker = br#"{"type":"video_channel"}"#;
+        let mut framed = Vec::with_capacity(2 + marker.len());
+        framed.extend_from_slice(&(marker.len() as u16).to_be_bytes());
+        framed.extend_from_slice(marker);
+        vtx.write_all(&framed).await.expect("marker");
+        vtx.finish().await.ok(); // client never writes more
+        // Wait for the host to install the sink before queueing frames.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if !t.video_sink_is_empty() { break; }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
         for n in 1..=3u32 {
             assert!(t.send_frame(OutboundFrame {
                 frame_no: n,
@@ -1221,13 +1268,14 @@ mod tests {
             }));
         }
 
-        // Client side: read datagrams, reassemble fragments into frames.
+        // Client side: read datagrams, reassemble fragments into frames. The
+        // keyframe must NOT be among them - it rides the reliable stream.
         use inphase_protocol::{WtFragment, WT_AUDIO_DATAGRAM_TAG};
         let mut parts: std::collections::HashMap<u32, Vec<Option<Vec<u8>>>> =
             std::collections::HashMap::new();
         let mut got = Vec::new();
         let deadline = Instant::now() + Duration::from_secs(10);
-        while got.len() < 3 && Instant::now() < deadline {
+        while got.len() < 2 && Instant::now() < deadline {
             let d = tokio::time::timeout(Duration::from_secs(5), conn.receive_datagram()).await;
             let Ok(Ok(d)) = d else { break };
             if d.first() == Some(&inphase_protocol::WT_AUDIO_DATAGRAM_TAG) {
@@ -1241,14 +1289,26 @@ mod tests {
             }
         }
         got.sort_unstable();
-        assert_eq!(got, vec![1, 2, 3], "every frame reassembled from datagrams");
+        assert_eq!(got, vec![2, 3], "deltas reassemble from datagrams; keyframe does not ride them");
 
-        got.sort_unstable();
-        assert_eq!(got, vec![1, 2, 3], "every frame reassembled from datagrams");
+        // The keyframe arrives self-delimited on the client-opened channel.
+        let mut head = [0u8; inphase_protocol::WT_VIDEO_HEADER_LEN];
+        tokio::time::timeout(Duration::from_secs(5), vrx.read_exact(&mut head))
+            .await
+            .expect("keyframe header timed out")
+            .expect("keyframe header read");
+        let len = u32::from_le_bytes([head[14], head[15], head[16], head[17]]) as usize;
+        let mut payload = vec![0u8; len];
+        tokio::time::timeout(Duration::from_secs(5), vrx.read_exact(&mut payload))
+            .await
+            .expect("keyframe payload timed out")
+            .expect("keyframe payload read");
+        assert!(payload.iter().all(|b| *b == 1), "keyframe payload intact");
 
         // NACK repair: the client asks for a specific fragment and the exact
-        // cached datagram comes back (frag_cnt/capture_us/key intact).
-        let mut nack = serde_json::to_string(&WtClientMessage::Nack { frame: 1, idx: 0 }).unwrap();
+        // cached datagram comes back (frag_cnt/capture_us/key intact). Deltas
+        // only - the keyframe never entered the fragment cache.
+        let mut nack = serde_json::to_string(&WtClientMessage::Nack { frame: 2, idx: 0 }).unwrap();
         nack.push('\n');
         ctl.write_all(nack.as_bytes()).await.unwrap();
         let mut repaired = false;
@@ -1257,13 +1317,14 @@ mod tests {
             let d = tokio::time::timeout(Duration::from_secs(5), conn.receive_datagram()).await;
             let Ok(Ok(d)) = d else { break };
             let Ok(f) = WtFragment::decode(&d) else { continue };
-            if f.frame_no == 1 && f.frag_idx == 0 {
+            if f.frame_no == 2 && f.frag_idx == 0 {
                 repaired = true;
             }
         }
         assert!(repaired, "NACK re-sent the requested fragment");
 
-        // The stream carrier must be silent in v4 mode: no video uni streams.
+        // Server-initiated uni streams stay silent in v4 mode (the deltas are
+        // datagrams; the keyframe rode the CLIENT-opened channel above).
         drop(conn);
         wait_for(&t, |e| matches!(e, WtClientEvent::Disconnected)).await;
     }
