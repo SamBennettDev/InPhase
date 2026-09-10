@@ -72,9 +72,15 @@ pub const WT_PACE_PPS: f32 = 3800.0;
 /// punched reorder holes every ~2.5 s. 28000 lands the real rate at ~83%
 /// utilization - the band where every measured session ran 60 fps smooth.
 pub const WT_PACED_CEILING_KBPS: u32 = 28_000;
-/// How many frames may sit queued between the pipeline and the wire. Small by
-/// design — this is a leaky bucket, not a buffer.
-pub const DEFAULT_MAX_QUEUED_FRAMES: usize = 4;
+/// How many frames may sit queued between the pipeline and the wire. 4 gave
+/// a 5-frame encoder burst (scene change at 83% pace utilization) nowhere to
+/// wait: the oldest frame was silently EVICTED, punching a frame_no hole the
+/// client could only clear by re-keying — a freeze every ~12 s in the 06:28
+/// session, with zero loss anywhere else (nacks=0, abandoned=1, drain==
+/// inject). 8 frames ≈ 133 ms of runway absorbs the burst; DELTA_FRESHNESS
+/// (150 ms) still rejects the stragglers. This is still a leaky bucket, not
+/// a buffer — sustained overload still sheds at the oldest edge.
+pub const DEFAULT_MAX_QUEUED_FRAMES: usize = 8;
 /// How long a client has to present a valid token after dialing.
 const AUTH_TIMEOUT: Duration = Duration::from_secs(5);
 

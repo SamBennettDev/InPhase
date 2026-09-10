@@ -82,6 +82,11 @@ struct FrameQueue {
     q: parking_lot::Mutex<std::collections::VecDeque<OutboundFrame>>,
     cap: usize,
     notify: tokio::sync::Notify,
+    /// Frames silently discarded to admit newer ones. Every eviction is a
+    /// frame_no hole the client must re-key out of (06:28 session: gaps
+    /// every ~12 s with no other loss signature - the queue was the only
+    /// thing that ever dropped a frame).
+    evicted: std::sync::atomic::AtomicU64,
 }
 
 impl FrameQueue {
@@ -90,6 +95,7 @@ impl FrameQueue {
             q: parking_lot::Mutex::new(std::collections::VecDeque::new()),
             cap: cap.max(1),
             notify: tokio::sync::Notify::new(),
+            evicted: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -101,9 +107,13 @@ impl FrameQueue {
             match q.iter().position(|f| !f.key) {
                 Some(pos) => {
                     q.remove(pos);
+                    self.evicted
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
                 None => {
                     q.pop_front();
+                    self.evicted
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
             }
         }
@@ -123,6 +133,11 @@ impl FrameQueue {
 
     fn len(&self) -> usize {
         self.q.lock().len()
+    }
+
+    /// Cumulative frames discarded to admit newer ones (never sent).
+    fn evicted_total(&self) -> u64 {
+        self.evicted.load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -306,6 +321,9 @@ impl WtVideoTransport {
                 // The sink is injected (client-opened), never opened here.
                 let mut stream: Option<wtransport::stream::SendStream> = None;
                 let (mut sent, mut stalled, mut expired) = (0u32, 0u32, 0u32);
+                // Queue evictions are cumulative; diff them per window.
+                let mut evicted_last = frame_queue_sender.evicted_total();
+                let mut evicted = 0u32;
                 // Paced-injection bucket (05:08 Chrome session): datagram
                 // fragments go out at no more than ~0.8× the client's measured
                 // drain rate. The browser's incoming-datagram queue has NO flow
@@ -321,12 +339,17 @@ impl WtVideoTransport {
                 let mut last_report = std::time::Instant::now();
                 loop {
                     if last_report.elapsed() >= std::time::Duration::from_secs(1) {
-                        if stalled > 0 || expired > 0 {
+                        // Queue evictions are cumulative; diff them per window.
+                        let evicted_total = frame_queue_sender.evicted_total();
+                        evicted = evicted_total.saturating_sub(evicted_last) as u32;
+                        evicted_last = evicted_total;
+                        if stalled > 0 || expired > 0 || evicted > 0 {
                             warn!(
                                 sent,
                                 stalled,
                                 expired,
-                                "wt: frames dropped - client not reading, or past freshness"
+                                evicted,
+                                "wt: frames dropped - client not reading, past freshness, or queue eviction"
                             );
                         } else if sent > 0 {
                             debug!(sent, "wt: frame send rate");
@@ -339,6 +362,7 @@ impl WtVideoTransport {
                         sent = 0;
                         stalled = 0;
                         expired = 0;
+                        evicted = 0;
                         shared_for_sender
                             .write_stall_ms
                             .store(
