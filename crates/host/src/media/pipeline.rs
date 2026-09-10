@@ -481,7 +481,7 @@ fn spawn_stats_poller(
 
                 // --- gather client feedback -------------------------------------
                 let client = stats.client_snapshot();
-                let (lost_delta, recv_kbps, decoded_fps, rtt_ms, have_client) = match &client {
+                let (lost_delta, recv_kbps, decoded_fps, rtt_ms, have_client, client_lat_p95) = match &client {
                     Some(c) => {
                         let ld = match last_lost {
                             Some(prev) => c.packets_lost.saturating_sub(prev),
@@ -513,9 +513,9 @@ fn spawn_stats_poller(
                         };
                         let pkts_per_frame = (bpf / 1100).max(1);
                         let ld = ld + dropped.saturating_mul(pkts_per_frame);
-                        (ld, c.inbound_bitrate_kbps, c.decoded_fps, c.rtt_ms, fresh)
+                        (ld, c.inbound_bitrate_kbps, c.decoded_fps, c.rtt_ms, fresh, c.lat_p95_ms.max(0.0))
                     }
-                    None => (0, 0.0, 0.0, 0.0, false),
+                    None => (0, 0.0, 0.0, 0.0, false, 0.0),
                 };
 
                 if let Some(enc) = venc
@@ -539,7 +539,7 @@ fn spawn_stats_poller(
                         rtt_ms,
                         rtp_backlog_ms: backlog_ms,
                         have_client,
-                        client_lat_p95_ms: c.lat_p95_ms.max(0.0),
+                        client_lat_p95_ms: client_lat_p95,
                     });
                     if adapted_kbps != prev {
                         enc.set_property("bitrate", adapted_kbps);
