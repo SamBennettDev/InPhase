@@ -266,6 +266,7 @@ impl WtVideoTransport {
             datagram_video: std::sync::atomic::AtomicBool::new(false),
             wt_resend: Mutex::new(std::collections::VecDeque::new()),
             wt_resend_tokens: Mutex::new((std::time::Instant::now(), 0)),
+            pace_pps: std::sync::atomic::AtomicU32::new(crate::media::wt::WT_PACE_PPS as u32),
         });
 
         // Accept loop: one task per incoming session; auth gates everything.
@@ -440,7 +441,12 @@ impl WtVideoTransport {
                             .unwrap_or(1082)
                             .max(256);
                         let frag_cnt = (frame.payload.len().div_ceil(budget)).max(1) as u16;
-                        let pace_pps = crate::media::wt::WT_PACE_PPS;
+                        // Per-connection pace: the telemetry handler raises
+                        // this for worker-drain clients (see WORKER_PACE_PPS).
+                        let pace_pps = shared_for_sender
+                            .pace_pps
+                            .load(std::sync::atomic::Ordering::Relaxed)
+                            as f32;
                         let mut ok = true;
                         for idx in 0..frag_cnt {
                             let start = idx as usize * budget;
@@ -757,6 +763,12 @@ impl WtVideoTransport {
     /// Whether the client-opened video channel sink is installed (tests).
     pub fn video_sink_is_empty(&self) -> bool {
         self.shared.video_sink.lock().is_none()
+    }
+
+    /// Current v4 injection pace for this client (the AIMD ceiling derives
+    /// from it — worker-drain clients pace and climb higher).
+    pub fn pace_pps(&self) -> u32 {
+        self.shared.pace_pps.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Queue one Opus packet as a WT audio datagram (§11-on-WT). Header:

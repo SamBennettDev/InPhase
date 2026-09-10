@@ -544,6 +544,7 @@ fn spawn_stats_poller(
                             .as_ref()
                             .map(|t| t.datagram_video_enabled())
                             .unwrap_or(false),
+                        v4_pace_pps: wt_stats.as_ref().map(|t| t.pace_pps()).unwrap_or(0),
                     });
                     if adapted_kbps != prev {
                         enc.set_property("bitrate", adapted_kbps);

@@ -141,6 +141,9 @@ export class WtVideoClient {
   /** Wire-counter snapshot per telemetry tick. The page writes it to
    *  `window.__inphaseWtWire`; the worker shell forwards it. */
   onWire: ((w: Record<string, unknown>) => void) | null = null;
+  /** Set by the worker shell (wtworker.ts): the host paces this connection
+   *  for a dedicated-thread drain when true. */
+  inWorker = false;
   // One-second accounting windows for the telemetry message.
   private winStartedMs = 0;
   private winBytes = 0;
@@ -843,6 +846,10 @@ export class WtVideoClient {
       // window; the host falls back to a conservative default until it
       // sees a real number.
       drain_pps: Math.round(this.winDgrams / dtSec),
+      // Worker-drain flag: the host raises the injection pace for this
+      // connection when true (in-page fallbacks stay at the measured-safe
+      // 3800 pps).
+      worker: this.inWorker,
       // Capture → decode-complete latency (docs/research/performance-latency-
       // 2026-09-09.md §measurement): frame capture_us mapped onto the client
       // clock via the pong anchor. Percentiles, not an EMA - the spikes define

@@ -40,6 +40,10 @@ pub struct Feedback {
     /// `WT_PACE_PPS` and the target must stay under what that pace can carry
     /// — above it, frames expire unsent and reopen sequence holes.
     pub v4_datagram_carrier: bool,
+    /// The connection's v4 injection pace (datagrams/s), from client
+    /// telemetry: worker-drain clients pace higher, so their ceiling is
+    /// higher. 0 = unknown (legacy client) → `WT_PACED_CEILING_KBPS`.
+    pub v4_pace_pps: u32,
 }
 
 /// Crude AIMD bitrate controller. `kbps` is the current encoder target.
@@ -243,12 +247,23 @@ impl BitrateController {
                     .map(|sc| (sc * 0.9) as u32)
                     .unwrap_or(self.ceiling)
                     .clamp(self.floor, self.ceiling);
-                // The paced v4 carrier cannot carry more than the pace allows;
-                // probing above it just queues frames into expiry (05:08
-                // Chrome: 53 Mbps ≈ 5.5k datagrams/s overflowed the browser's
-                // incoming-datagram queue → permanent 1 fps re-key loop).
+                // The paced v4 carrier cannot carry more than the pace allows; probing
+                // above it just queues frames into expiry (05:08 Chrome: 53 Mbps ≈
+                // 5.5k datagrams/s overflowed the browser's incoming-datagram
+                // queue → permanent 1 fps re-key loop). The ceiling derives from
+                // the connection's pace: worker-drain clients pace higher and
+                // climb higher; legacy telemetry (pace unknown) falls back to
+                // the in-page constant.
+                let pace_ceiling = |pps: u32| {
+                    ((pps as f32) * crate::media::wt::WT_PACE_TO_CEILING) as u32
+                };
+                let paced_ceiling = if fb.v4_pace_pps > 0 {
+                    pace_ceiling(fb.v4_pace_pps)
+                } else {
+                    crate::media::wt::WT_PACED_CEILING_KBPS
+                };
                 let probe_cap = if fb.v4_datagram_carrier {
-                    probe_cap.min(crate::media::wt::WT_PACED_CEILING_KBPS.max(self.floor))
+                    probe_cap.min(paced_ceiling.max(self.floor))
                 } else {
                     probe_cap
                 };
@@ -283,9 +298,12 @@ impl BitrateController {
         // walk it under immediately rather than feeding the pacer more than
         // it can inject.
         if fb.v4_datagram_carrier {
-            self.kbps = self
-                .kbps
-                .min(crate::media::wt::WT_PACED_CEILING_KBPS.max(self.floor));
+            let paced_ceiling = if fb.v4_pace_pps > 0 {
+                ((fb.v4_pace_pps as f32) * crate::media::wt::WT_PACE_TO_CEILING) as u32
+            } else {
+                crate::media::wt::WT_PACED_CEILING_KBPS
+            };
+            self.kbps = self.kbps.min(paced_ceiling.max(self.floor));
         }
         self.kbps
     }
@@ -312,6 +330,7 @@ mod tests {
         Feedback {
             client_lat_p95_ms: 0.0,
             v4_datagram_carrier: false,
+            v4_pace_pps: 0,
             lost_delta: lost,
             recv_kbps: recv,
             decoded_fps: fps,
@@ -339,6 +358,7 @@ mod tests {
             let fb = Feedback {
                 client_lat_p95_ms: 0.0,
                 v4_datagram_carrier: false,
+            v4_pace_pps: 0,
                 lost_delta: lost,
                 recv_kbps: delivered,
                 decoded_fps: fps,
@@ -369,6 +389,7 @@ mod tests {
             c.step(&Feedback {
             client_lat_p95_ms: 0.0,
             v4_datagram_carrier: false,
+            v4_pace_pps: 0,
                 lost_delta: 0,
                 recv_kbps: 4_000.0,
                 decoded_fps: 60.0,
@@ -397,6 +418,7 @@ mod tests {
             c.step(&Feedback {
             client_lat_p95_ms: 0.0,
             v4_datagram_carrier: false,
+            v4_pace_pps: 0,
                 lost_delta: lost,
                 recv_kbps: recv,
                 decoded_fps: 58.0,
@@ -422,6 +444,7 @@ mod tests {
             c.step(&Feedback {
             client_lat_p95_ms: 0.0,
             v4_datagram_carrier: false,
+            v4_pace_pps: 0,
                 lost_delta: 0,
                 recv_kbps: 6_000.0,
                 decoded_fps: 60.0,
@@ -436,6 +459,7 @@ mod tests {
             c.step(&Feedback {
             client_lat_p95_ms: 0.0,
             v4_datagram_carrier: false,
+            v4_pace_pps: 0,
                 lost_delta: 400,
                 recv_kbps: 2_000.0,
                 decoded_fps: 4.0, // frames are not reaching the decoder
@@ -459,6 +483,7 @@ mod tests {
             c.step(&Feedback {
             client_lat_p95_ms: 0.0,
             v4_datagram_carrier: false,
+            v4_pace_pps: 0,
                 lost_delta: 0,
                 recv_kbps: 8_200.0, // arriving fine
                 decoded_fps: 0.0,   // and decoding none of it
@@ -481,6 +506,7 @@ mod tests {
             let fb = Feedback {
             client_lat_p95_ms: 0.0,
             v4_datagram_carrier: false,
+            v4_pace_pps: 0,
                 have_client: false,
                 ..Default::default()
             };
@@ -536,6 +562,7 @@ mod tests {
             let fb = Feedback {
                 client_lat_p95_ms: 0.0,
                 v4_datagram_carrier: true,
+                v4_pace_pps: 0,
                 lost_delta: 0,
                 recv_kbps: c.kbps as f32 * 0.95,
                 decoded_fps: 60.0,
@@ -557,6 +584,7 @@ mod tests {
         let fb = Feedback {
             client_lat_p95_ms: 0.0,
             v4_datagram_carrier: true,
+            v4_pace_pps: 0,
             lost_delta: 0,
             recv_kbps: 70_000.0,
             decoded_fps: 60.0,
@@ -579,6 +607,7 @@ mod tests {
             let fb = Feedback {
             client_lat_p95_ms: 0.0,
             v4_datagram_carrier: false,
+            v4_pace_pps: 0,
                 lost_delta: 0,
                 recv_kbps: 120.0, // near-static screen: tiny inbound...
                 decoded_fps: 8.0, // ...and low fps, but not because of bandwidth
@@ -719,6 +748,7 @@ mod tests {
         let fb = Feedback {
             client_lat_p95_ms: 0.0,
             v4_datagram_carrier: false,
+            v4_pace_pps: 0,
             rtp_backlog_ms: 400.0,
             have_client: false,
             ..Default::default()
@@ -736,6 +766,7 @@ mod tests {
         let fb = Feedback {
             client_lat_p95_ms: 0.0,
             v4_datagram_carrier: false,
+            v4_pace_pps: 0,
             lost_delta: 90,
             recv_kbps: 9_000.0,
             decoded_fps: 59.0,
@@ -788,6 +819,7 @@ mod tests {
             c.step(&Feedback {
             client_lat_p95_ms: 0.0,
             v4_datagram_carrier: false,
+            v4_pace_pps: 0,
                 lost_delta: 0,
                 recv_kbps: 6_000.0,
                 decoded_fps: 60.0,
@@ -806,6 +838,7 @@ mod tests {
             c.step(&Feedback {
             client_lat_p95_ms: 0.0,
             v4_datagram_carrier: false,
+            v4_pace_pps: 0,
                 lost_delta: 0,
                 recv_kbps: 6_000.0,
                 decoded_fps: 60.0,

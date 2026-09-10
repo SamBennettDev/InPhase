@@ -268,6 +268,18 @@ pub(super) async fn handle_incoming(
                                     );
                                 }
                             }
+                            // Per-client pace: worker-drain clients own a
+                            // dedicated read thread and tolerate ~6500 pps;
+                            // in-page clients stay at the measured-safe 3800
+                            // (main-thread drain 3.0-3.9k).
+                            let pace = if t.worker {
+                                crate::media::wt::WORKER_PACE_PPS as u32
+                            } else {
+                                crate::media::wt::WT_PACE_PPS as u32
+                            };
+                            shared
+                                .pace_pps
+                                .store(pace, std::sync::atomic::Ordering::Relaxed);
                             let _ = shared.events.send(WtClientEvent::Telemetry(t));
                         }
                     }

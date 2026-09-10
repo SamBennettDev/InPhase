@@ -354,6 +354,12 @@ pub struct ClientTelemetry {
     /// older clients, hence `default`; 0 = unknown.
     #[serde(default)]
     pub drain_pps: u32,
+    /// True when the client drains datagrams in a Dedicated Worker: the
+    /// read loop owns its thread, so the host raises the v4 injection pace
+    /// (WORKER_PACE_PPS) above the in-page 3800. Absent from older clients,
+    /// hence `default`.
+    #[serde(default)]
+    pub worker: bool,
     /// Capture → decode-complete latency percentiles (ms), client-side, via
     /// the pong clock anchor (research doc §measurement). Negative until the
     /// clock syncs. Percentiles rather than an EMA: the spikes define

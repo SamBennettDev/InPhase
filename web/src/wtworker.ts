@@ -48,6 +48,8 @@ ctx.onmessage = (e: MessageEvent) => {
     }
     const c = new WtVideoClient();
     core = c;
+    // Telemetry flag: the host raises this connection's injection pace.
+    c.inWorker = true;
     const h: WtClientHandlers = {
       onVideoConfig: (cfg) => ctx.postMessage({ t: "video-config", cfg }),
       // Zero-copy handoff: the reassembly payload never leaves this thread

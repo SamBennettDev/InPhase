@@ -61,16 +61,23 @@ pub const DEFAULT_DATAGRAM_BUDGET: usize = 1200;
 /// from ~5.5k). 3800 paces every measured session below the collapse point;
 /// the frame sender takes 64-token bursts. Deltas only — forced IDRs ride
 /// the reliable stream (05:38 stutter fix), so the budget is never consumed
-/// by a 700 KB burst. Raise only with a measured faster drain (worker).
+/// by a 700 KB burst. This is the pace for IN-PAGE clients (measured main-
+/// thread drain 3.0-3.9k); worker-drain clients get [`WORKER_PACE_PPS`].
 pub const WT_PACE_PPS: f32 = 3800.0;
-/// AIMD ceiling matching the pace, minus measured encoder overshoot. The
-/// pacer injects 3800 datagrams/s; on the CIN-PC LAN the live budget is
-/// ~1446 B (not the 1082 tunnel floor), so the wire carries ~39 Mbps of
-/// data + parity. But the NVIDIA encoder overshoots its target ~16% on
-/// bursts: at the old ceiling (32892) the 06:13 session measured 39-43 Mbps
-/// inbound = 98% pace utilization, and transient whole-frame datagram loss
-/// punched reorder holes every ~2.5 s. 28000 lands the real rate at ~83%
-/// utilization - the band where every measured session ran 60 fps smooth.
+/// Injection pace for clients that drain datagrams in a Dedicated Worker
+/// (telemetry `worker=true`): the read loop owns its thread, so the main-
+/// thread contention that pinned the 3800 figure is gone. 6500 pps ≈ 72 Mbps
+/// of raw capacity; the AIMD ceiling formula keeps the real rate at ~83%
+/// utilization. Unproven beyond ~4k/s — raise toward 9500 (80 Mbps) only
+/// when a session at this pace shows zero holes (evicted=0, gaps absent).
+pub const WORKER_PACE_PPS: f32 = 6500.0;
+/// AIMD encoder-target ceiling per pace pps (kbps of encoder target per
+/// datagram/s): calibrated to the measured-good 28000 at 3800 pps. The
+/// relationship absorbs NVIDIA overshoot (~16-30%) + FEC parity (~12.5%):
+/// target × 1.25 must stay ≲83% of `pace × ~1377 B × 8`.
+pub const WT_PACE_TO_CEILING: f32 = 7.368;
+/// AIMD ceiling fallback when the client reports no pace (older telemetry):
+/// matches the 3800-pps in-page pace.
 pub const WT_PACED_CEILING_KBPS: u32 = 28_000;
 /// How many frames may sit queued between the pipeline and the wire. 4 gave
 /// a 5-frame encoder burst (scene change at 83% pace utilization) nowhere to
@@ -214,4 +221,8 @@ struct Shared {
     /// Without a cap the re-send stream out-shouts fresh video (23:59: the
     /// storm consumed the datagram queue, decode starved at 0 for 20 s).
     wt_resend_tokens: Mutex<(std::time::Instant, u32)>,
+    /// Current v4 injection pace (datagrams/s), per connection: 3800 for
+    /// in-page drain, 6500 for worker-drain clients (telemetry `worker`).
+    /// The sender reads this per frame; the telemetry handler sets it.
+    pace_pps: std::sync::atomic::AtomicU32,
 }
