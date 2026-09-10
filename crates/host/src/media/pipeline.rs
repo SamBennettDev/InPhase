@@ -539,6 +539,7 @@ fn spawn_stats_poller(
                         rtt_ms,
                         rtp_backlog_ms: backlog_ms,
                         have_client,
+                        client_lat_p95_ms: c.lat_p95_ms.max(0.0),
                     });
                     if adapted_kbps != prev {
                         enc.set_property("bitrate", adapted_kbps);

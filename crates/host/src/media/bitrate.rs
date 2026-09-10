@@ -30,6 +30,12 @@ pub struct Feedback {
     pub rtp_backlog_ms: f32,
     /// Whether fresh client telemetry backed this tick.
     pub have_client: bool,
+    /// Client-measured p95 fragment age (capture→assemble, ms). The one
+    /// signal that sees radio-buffer saturation before the loss it causes:
+    /// 00:19 the client received a 12 Mbps flood while assembling ~2
+    /// frames/s, lat_p95 33 -> 129 -> 293 ms, and the host's own queue
+    /// never stalled - the AIMD climbed on. 0 = unknown.
+    pub client_lat_p95_ms: f32,
 }
 
 /// Crude AIMD bitrate controller. `kbps` is the current encoder target.
@@ -82,6 +88,21 @@ impl BitrateController {
 
         if !fb.have_client {
             // No telemetry yet (startup) — hold, don't guess.
+            return self.kbps;
+        }
+
+        // --- delay-based congestion: the client's p95 fragment age is the
+        //     earliest signal of radio-buffer saturation. The 00:19 death
+        //     never filled the host queue (QUIC buffered instead) and the
+        //     client received every datagram - as a flood too late to
+        //     assemble (p95 33 -> 129 -> 293 ms, ~2 frames/s assembled at
+        //     12 Mbps inbound). Rising tail delay means the encoder is
+        //     outrunning the path: cut before the loss it causes.
+        if fb.client_lat_p95_ms > 120.0 {
+            let factor = if fb.client_lat_p95_ms > 250.0 { 0.6 } else { 0.7 };
+            self.decrease_to((self.kbps as f32 * factor) as u32);
+            self.cooldown = if fb.client_lat_p95_ms > 250.0 { 4 } else { 2 };
+            self.clean_streak = 0;
             return self.kbps;
         }
 
@@ -196,6 +217,7 @@ impl BitrateController {
             } else if decoding
                 && self.kbps < self.ceiling
                 && fb.rtp_backlog_ms < 25.0
+                && fb.client_lat_p95_ms <= 100.0
             {
                 // Climb only while the send queue is empty: a peer that reads
                 // slower than we write buffers the difference somewhere, and
@@ -245,6 +267,7 @@ mod tests {
 
     fn wan(lost: u64, recv: f32, fps: f32) -> Feedback {
         Feedback {
+            client_lat_p95_ms: 0.0,
             lost_delta: lost,
             recv_kbps: recv,
             decoded_fps: fps,
@@ -270,6 +293,7 @@ mod tests {
                 0.0
             };
             let fb = Feedback {
+            client_lat_p95_ms: 0.0,
                 lost_delta: lost,
                 recv_kbps: delivered,
                 decoded_fps: fps,
@@ -298,6 +322,7 @@ mod tests {
         // Warm up past the startup guard on a healthy route.
         for _ in 0..6 {
             c.step(&Feedback {
+            client_lat_p95_ms: 0.0,
                 lost_delta: 0,
                 recv_kbps: 4_000.0,
                 decoded_fps: 60.0,
@@ -324,6 +349,7 @@ mod tests {
         ];
         for (lost, recv) in replay {
             c.step(&Feedback {
+            client_lat_p95_ms: 0.0,
                 lost_delta: lost,
                 recv_kbps: recv,
                 decoded_fps: 58.0,
@@ -347,6 +373,7 @@ mod tests {
         let mut c = BitrateController::new(6_000, 600, 50_000);
         for _ in 0..6 {
             c.step(&Feedback {
+            client_lat_p95_ms: 0.0,
                 lost_delta: 0,
                 recv_kbps: 6_000.0,
                 decoded_fps: 60.0,
@@ -359,6 +386,7 @@ mod tests {
         let before = c.kbps;
         for _ in 0..3 {
             c.step(&Feedback {
+            client_lat_p95_ms: 0.0,
                 lost_delta: 400,
                 recv_kbps: 2_000.0,
                 decoded_fps: 4.0, // frames are not reaching the decoder
@@ -380,6 +408,7 @@ mod tests {
         let mut c = BitrateController::new(6_000, 600, 50_000);
         for _ in 0..30 {
             c.step(&Feedback {
+            client_lat_p95_ms: 0.0,
                 lost_delta: 0,
                 recv_kbps: 8_200.0, // arriving fine
                 decoded_fps: 0.0,   // and decoding none of it
@@ -400,6 +429,7 @@ mod tests {
         let mut c = BitrateController::new(6_000, 600, 50_000);
         for _ in 0..5 {
             let fb = Feedback {
+            client_lat_p95_ms: 0.0,
                 have_client: false,
                 ..Default::default()
             };
@@ -451,6 +481,7 @@ mod tests {
         let mut c = BitrateController::new(6_000, 600, 50_000);
         for tick in 0..30 {
             let fb = Feedback {
+            client_lat_p95_ms: 0.0,
                 lost_delta: 0,
                 recv_kbps: 120.0, // near-static screen: tiny inbound...
                 decoded_fps: 8.0, // ...and low fps, but not because of bandwidth
@@ -494,9 +525,61 @@ mod tests {
     }
 
     #[test]
+    fn rising_client_tail_delay_cuts_before_the_loss_it_causes() {
+        // The 00:19 signature: the client received the full flood but
+        // assembled ~2 frames/s while p95 fragment age climbed 33 -> 129
+        // -> 293 ms. The host queue never stalled, loss_frac stayed ~0 -
+        // only the client's tail delay saw the collapse.
+        let mut c = BitrateController::new(6_000, 600, 50_000);
+        simulate(&mut c, 200_000.0, 8.0, 6);
+        assert_eq!(c.kbps, 50_000);
+        for _ in 0..4 {
+            c.step(&Feedback {
+                client_lat_p95_ms: 160.0,
+                decoded_fps: 0.0,
+                target_fps: 60,
+                have_client: true,
+                ..Default::default()
+            });
+        }
+        assert!(
+            c.kbps < 20_000,
+            "p95 > 120 ms must cut hard ({})",
+            c.kbps
+        );
+        // And it must not charge back up while the tail stays elevated.
+        for _ in 0..6 {
+            c.step(&Feedback {
+                client_lat_p95_ms: 160.0,
+                decoded_fps: 60.0,
+                target_fps: 60,
+                have_client: true,
+                ..Default::default()
+            });
+        }
+        assert!(
+            c.kbps < 20_000,
+            "no climb while p95 > 100 ms ({})",
+            c.kbps
+        );
+        // Tail settles -> climbing resumes (slow ~3 %/s, so give it ticks).
+        for _ in 0..45 {
+            c.step(&Feedback {
+                client_lat_p95_ms: 40.0,
+                decoded_fps: 60.0,
+                target_fps: 60,
+                have_client: true,
+                ..Default::default()
+            });
+        }
+        assert!(c.kbps > 20_000, "recovers once the tail clears ({})", c.kbps);
+    }
+
+    #[test]
     fn backlog_cuts_before_client_report() {
         let mut c = BitrateController::new(20_000, 600, 50_000);
         let fb = Feedback {
+            client_lat_p95_ms: 0.0,
             rtp_backlog_ms: 400.0,
             have_client: false,
             ..Default::default()
@@ -512,6 +595,7 @@ mod tests {
         // 59-61 fps. The old law cut 6000 -> 600 in 5 s; the law must hold,
         // and climb back through the same loss after a real dip.
         let fb = Feedback {
+            client_lat_p95_ms: 0.0,
             lost_delta: 90,
             recv_kbps: 9_000.0,
             decoded_fps: 59.0,
@@ -562,6 +646,7 @@ mod tests {
         // Warmup + clean streak, all signals perfect except the stall.
         for _ in 0..6 {
             c.step(&Feedback {
+            client_lat_p95_ms: 0.0,
                 lost_delta: 0,
                 recv_kbps: 6_000.0,
                 decoded_fps: 60.0,
@@ -578,6 +663,7 @@ mod tests {
         // Queue keeps growing: the mid-tier cut engages.
         for _ in 0..4 {
             c.step(&Feedback {
+            client_lat_p95_ms: 0.0,
                 lost_delta: 0,
                 recv_kbps: 6_000.0,
                 decoded_fps: 60.0,
