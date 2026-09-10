@@ -308,7 +308,29 @@ pub(super) async fn handle_incoming(
                         // here - the client asked for this exact fragment
                         // because its decode chain is waiting on it, and a
                         // late-but-complete delta beats a frozen pipeline.
+                        //
+                        // Budgeted: a re-send may take a token, never more.
+                        // 60/s (burst 60) is a fraction of the ~600-1000/s
+                        // fresh stream, so NACK demand can never starve new
+                        // frames the way it did at 23:59 (decode 0 for 20 s
+                        // under the re-send storm). Beyond-budget NACKs are
+                        // dropped: parity repairs the common case, the
+                        // client repeats at most 4 rounds, and the next IDR
+                        // recovers the rest.
                         if let Some(conn) = shared.live_connection.borrow().clone() {
+                            let mut budget = shared.wt_resend_tokens.lock();
+                            const RATE_PER_SEC: u32 = 60;
+                            const BURST: u32 = 60;
+                            let (refill_at, tokens) = &mut *budget;
+                            let refill_ms = refill_at.elapsed().as_millis() as u32;
+                            *tokens = RATE_PER_SEC.min(
+                                *tokens + refill_ms * RATE_PER_SEC / 1000,
+                            );
+                            *refill_at = std::time::Instant::now();
+                            if *tokens == 0 {
+                                continue;
+                            }
+                            *tokens -= 1;
                             let hit = shared
                                 .wt_resend
                                 .lock()

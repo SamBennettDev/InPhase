@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { WtVideoClient } from "./wt.js";
 
+
 // FEC parity repair for the v4 datagram carrier, pinned against the 23:21
 // session: at ~9% fragment loss a NACK-only repair amplified into a
 // re-send storm (nacks 65 -> 10789 in 8 s). Row 1 parity must rebuild a
@@ -146,4 +147,35 @@ test("a hole the parity cannot cover still NACKs - bounded", async () => {
   }
   const nacks = sent.filter((s) => s.type === "nack");
   assert.ok(nacks.length > 0 && nacks.length <= 8, "NACK round fires, bounded to 8");
+});
+
+test("an expired frame is tombstoned - late re-sends do not resurrect it", () => {
+  // 23:59: expiry deleted the frame WITHOUT tombstoning; the host's
+  // re-sends kept arriving after expiry, each one resurrected a fresh
+  // partial that NACKed again - the unbounded loop behind nacks=7183.
+  const cnt = 2;
+  const budget = 8;
+  const dgrams = [
+    frag(9, 0, cnt, new Uint8Array(budget).fill(1), 0, false),
+    // fragment 1 never arrives; the frame expires at 900 ms
+  ];
+  const { c } = feed(dgrams);
+  const orig = performance.now;
+  const fire = (buf: Uint8Array, atMs: number) => {
+    (performance as { now: () => number }).now = () => orig.call(performance) + 10_000 + 200;
+    try {
+      (c as unknown as { onVideoFragment(d: Uint8Array, h: unknown): void }).onVideoFragment(buf, {
+        onFrame: () => {},
+      });
+    } finally {
+      (performance as { now: () => number }).now = () => orig.call(performance);
+    }
+  };
+  fire(dgrams[0]!, 0);
+  const priv = c as unknown as { framesAbandoned: number; v4Done: Set<number>; v4: Map<number, unknown> };
+  assert.ok(priv.framesAbandoned === 1, "frame expired");
+  // A late re-send of fragment 0 must be ignored, not resurrect the frame.
+  fire(dgrams[0]!, 1);
+  assert.equal(priv.v4.size, 0, "no resurrection");
+  assert.equal(priv.framesAbandoned, 1, "abandon count unchanged");
 });

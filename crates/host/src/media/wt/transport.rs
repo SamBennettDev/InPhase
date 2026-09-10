@@ -236,6 +236,7 @@ impl WtVideoTransport {
             wt_timeline: Mutex::new(std::collections::VecDeque::new()),
             datagram_video: std::sync::atomic::AtomicBool::new(false),
             wt_resend: Mutex::new(std::collections::VecDeque::new()),
+            wt_resend_tokens: Mutex::new((std::time::Instant::now(), 0)),
         });
 
         // Accept loop: one task per incoming session; auth gates everything.

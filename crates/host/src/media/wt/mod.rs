@@ -185,4 +185,8 @@ struct Shared {
     /// cellular burst loss the IDR reassembly kept failing while deltas
     /// kept arriving (22:34: nacks +631, abandoned +29, held=8).
     wt_resend: Mutex<std::collections::VecDeque<(u32, u16, Vec<u8>)>>,
+    /// NACK re-send budget: `tokens` datagrams, refilled at a fixed rate.
+    /// Without a cap the re-send stream out-shouts fresh video (23:59: the
+    /// storm consumed the datagram queue, decode starved at 0 for 20 s).
+    wt_resend_tokens: Mutex<(std::time::Instant, u32)>,
 }

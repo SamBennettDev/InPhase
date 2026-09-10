@@ -447,10 +447,18 @@ export class WtVideoClient {
       }
       return;
     }
-    // Expire stale assemblies: NACK rounds are the bounded fallback.
+    // Expire stale assemblies: NACK rounds are the bounded fallback. The
+    // expired frame goes into v4Done: the host's re-sends for it keep
+    // arriving after expiry, and without the tombstone each one
+    // resurrected a fresh partial frame that NACKed again - the unbounded
+    // loop that ran nacks to 7183 with decode at 0 (23:59 session).
     for (const [no, st] of this.v4) {
       if (nowMs - st.atMs > 900) {
         this.v4.delete(no);
+        this.v4Done.add(no);
+        if (this.v4Done.size > 512) {
+          this.v4Done.delete(this.v4Done.values().next().value as number);
+        }
         this.framesAbandoned++;
       } else if (
         nowMs - st.atMs > 150 &&
@@ -471,6 +479,9 @@ export class WtVideoClient {
         }
       }
     }
+    // This datagram may itself be a re-send for a frame the scan just
+    // expired - the tombstone must win over state creation.
+    if (this.v4Done.has(frameNo)) return;
     let st = this.v4.get(frameNo);
     if (st === undefined) {
       st = {
@@ -496,7 +507,10 @@ export class WtVideoClient {
       if (this.v4.size > 8) {
         // Keep only the newest frames; an old partial cannot playout anyway.
         const oldest = [...this.v4.keys()].sort((a, b) => a - b)[0];
-        if (oldest !== undefined && oldest !== frameNo) this.v4.delete(oldest);
+        if (oldest !== undefined && oldest !== frameNo) {
+          this.v4.delete(oldest);
+          this.v4Done.add(oldest); // tombstone: no resurrection, no re-NACK
+        }
       }
     }
     if (idx >= cnt || st.parts[idx] !== null) return; // duplicate/overflow fragment
@@ -518,7 +532,7 @@ export class WtVideoClient {
     {
       this.v4.delete(frameNo);
       this.v4Done.add(frameNo);
-      if (this.v4Done.size > 64) {
+      if (this.v4Done.size > 512) {
         this.v4Done.delete(this.v4Done.values().next().value as number);
       }
       let len = 0;
