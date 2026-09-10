@@ -63,11 +63,15 @@ pub const DEFAULT_DATAGRAM_BUDGET: usize = 1200;
 /// the reliable stream (05:38 stutter fix), so the budget is never consumed
 /// by a 700 KB burst. Raise only with a measured faster drain (worker).
 pub const WT_PACE_PPS: f32 = 3800.0;
-/// AIMD ceiling matching the pace: 3800 datagrams/s at the 1082-byte floor
-/// budget (3800 × 1082 × 8 / 1000). Above this the encoder emits fragments
-/// the pacer cannot inject, which expire in the frame queue and reopen
-/// sequence holes.
-pub const WT_PACED_CEILING_KBPS: u32 = 32_892;
+/// AIMD ceiling matching the pace, minus measured encoder overshoot. The
+/// pacer injects 3800 datagrams/s; on the CIN-PC LAN the live budget is
+/// ~1446 B (not the 1082 tunnel floor), so the wire carries ~39 Mbps of
+/// data + parity. But the NVIDIA encoder overshoots its target ~16% on
+/// bursts: at the old ceiling (32892) the 06:13 session measured 39-43 Mbps
+/// inbound = 98% pace utilization, and transient whole-frame datagram loss
+/// punched reorder holes every ~2.5 s. 28000 lands the real rate at ~83%
+/// utilization - the band where every measured session ran 60 fps smooth.
+pub const WT_PACED_CEILING_KBPS: u32 = 28_000;
 /// How many frames may sit queued between the pipeline and the wire. Small by
 /// design — this is a leaky bucket, not a buffer.
 pub const DEFAULT_MAX_QUEUED_FRAMES: usize = 4;

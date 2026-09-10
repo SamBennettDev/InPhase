@@ -554,7 +554,20 @@ impl WtVideoTransport {
                     // Take the newest client-opened video channel, if any.
                     // Missing sink = drop the frame; the client (re)opens one
                     // on its own schedule and the next frame picks it up.
-                    if stream.is_none() {
+                    // KEYFRAMES always prefer a FRESH sink: a cached stream
+                    // can be one the client already stopped reading (it
+                    // cancels its reader on wedges/carrier changes), and a
+                    // write into a cancelled stream can succeed silently into
+                    // the void - the 06:13 session lost every forced IDR into
+                    // a dead channel and decoded 0 fps for 30 s. Deltas on
+                    // the v3 carrier keep the cached stream: they need
+                    // write-ordering continuity, and an empty slot means the
+                    // cached stream was the newest one installed.
+                    if frame.key {
+                        if let Some(s) = shared_for_sender.video_sink.lock().take() {
+                            stream = Some(s);
+                        }
+                    } else if stream.is_none() {
                         match shared_for_sender.video_sink.lock().take() {
                             Some(s) => stream = Some(s),
                             None => {

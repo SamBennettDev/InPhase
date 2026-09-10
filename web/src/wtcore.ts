@@ -679,6 +679,10 @@ export class WtVideoClient {
         }
         this.parseFailures = 0;
         this.framesReceived++;
+        // Keys ride the reliable stream in v4 mode; count them where they
+        // actually arrive (the v4 path counts its own), or the wire log's
+        // keys=0 reads as "the IDR never reassembles" when it arrived here.
+        if (frame.key) this.keysReceived++;
         this.lastFrameAtMs = performance.now();
         // Capture → decode-complete age, via the pong clock anchor. The
         // anchor is quantized by RTT/2, so single samples are fuzzy - the
