@@ -16,6 +16,17 @@ import { DecoderRestartPolicy, decoderIsBehind, KeyframeThrottle } from "./decod
 import { FrameOrderer } from "./frameorder.js";
 import type { WtFrame } from "./wtvideo.js";
 
+/** Glass age (ms): now minus the frame's capture time moved onto the client
+ *  clock. Same shape as wt.ts's fragment ages — `captureUs + offset` lands
+ *  the host capture stamp on the client clock. The inverse sign here was
+ *  the bug fixed for the telemetry path in the 21:51 session but missed in
+ *  the decoder: the 0..5 s plausibility gate discarded a −3.5e9 ms age, so
+ *  glassEmaMs/presentEmaMs stayed 0 and the HUD showed "-- ms e2e" for
+ *  every WT session (02:36 Chrome). */
+export function glassAgeMs(nowUs: number, captureUs: number, offsetUs: number): number {
+  return (nowUs - (captureUs + offsetUs)) / 1000;
+}
+
 export interface WtDecoderStats {
   framesDecoded: number;
   framesDropped: number;
@@ -364,7 +375,13 @@ export class WtDecoder {
     // still settling) are ignored.
     const offset = this.clockOffsetUs();
     if (offset !== null) {
-      const ageMs = (performance.now() * 1000 + offset - vf.timestamp) / 1000;
+      // Same shape as wt.ts's fragment ages: capture time moved onto the
+      // client clock, then subtracted from now. The inverse sign here (the
+      // bug fixed for the telemetry path in the 21:51 session but missed in
+      // the decoder) fed the 0..5 s plausibility gate a −3.5e9 ms age, so
+      // glassEmaMs/presentEmaMs stayed 0 and the HUD showed "-- ms e2e"
+      // for every WT session (02:36 Chrome).
+      const ageMs = glassAgeMs(performance.now() * 1000, vf.timestamp, offset);
       this.lastAgeMs = Math.round(ageMs * 10) / 10;
       if (this.firstAgeLogged === false && ageMs >= 0 && ageMs < 5000) {
         this.firstAgeLogged = true;
@@ -450,7 +467,7 @@ export class WtDecoder {
     this.lastPresentMs = nowMs;
     const offset = this.clockOffsetUs();
     if (offset !== null) {
-      const presentAgeMs = (performance.now() * 1000 + offset - vf.timestamp) / 1000;
+      const presentAgeMs = glassAgeMs(performance.now() * 1000, vf.timestamp, offset);
       if (presentAgeMs >= 0 && presentAgeMs < 5000) {
         this.presentEmaMs = this.presentEmaMs === 0 ? presentAgeMs : 0.9 * this.presentEmaMs + 0.1 * presentAgeMs;
         this.presentSamples++;

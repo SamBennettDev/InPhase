@@ -126,9 +126,23 @@ impl HostRuntime {
             let input_pkts = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
             let input_logged = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             tokio::spawn(async move {
+                // ForceKeyUnit is not free: every request produces a full
+                // IDR, and at a high ceiling that frame is megabytes of
+                // fragments (02:37 Chrome session: 11 requests in 10 s =
+                // 12 IDRs sent, none reassembled - each new monster flooded
+                // the assembly path the previous one was still fighting
+                // through). One IDR per 2.5 s is the recovery cadence.
+                let mut last_keyframe =
+                    std::time::Instant::now() - std::time::Duration::from_secs(10);
                 loop {
                     match wt_events.try_next_event() {
                         Some(crate::media::wt::WtClientEvent::KeyframeRequest) => {
+                            if last_keyframe.elapsed()
+                                < std::time::Duration::from_millis(2500)
+                            {
+                                continue;
+                            }
+                            last_keyframe = std::time::Instant::now();
                             sessions.with_player(|p| p.media.request_keyframe());
                         }
                         Some(crate::media::wt::WtClientEvent::Telemetry(tel)) => {

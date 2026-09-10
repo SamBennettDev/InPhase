@@ -197,7 +197,18 @@ impl BitrateController {
             //
             // Frames reaching the decoder is the precondition for believing
             // more bitrate will help.
-            let decoding = fb.decoded_fps > 0.0;
+            //
+            // "Reaching the decoder" means most of the target rate, OR the
+            // client is receiving almost nothing we send (low-motion screen:
+            // the encoder emits a trickle, decode is slow by nature, not by
+            // congestion). The 02:37 Chrome session decoded 1 fps for 10 s
+            // (the 80 Mbps IDR could not reassemble) while receiving the
+            // full flood at 51-68 Mbps - decoded_fps=1.0 passed the old
+            // `> 0` gate and the controller CLIMBED 45 -> 66 Mbps through
+            // the black screen. A collapsed route must never climb.
+            let decoding = fb.decoded_fps > 0.0
+                && (fb.decoded_fps >= fb.target_fps as f32 * 0.5
+                    || fb.recv_kbps < self.kbps as f32 * 0.2);
             self.clean_streak = self.clean_streak.saturating_add(1);
             // Let a remembered loss ceiling drift back up so a genuinely
             // improved path can recover — but slowly (~3 %/s), so the rate
@@ -234,8 +245,18 @@ impl BitrateController {
                 let low_rtt = fb.rtt_ms > 1.0 && fb.rtt_ms < 40.0;
                 if self.kbps < probe_cap {
                     if low_rtt && self.clean_streak >= 2 {
-                        // LAN: double each tick — reach a 50 Mbps ceiling in ~4 s.
-                        self.kbps = self.kbps.saturating_mul(2).min(probe_cap);
+                        // LAN: x1.3 per tick. Doubling (the old x2) hit a
+                        // 2560x1440 encoder with 62 Mbps inside 4 s on the
+                        // 02:36 Chrome session - IDRs turned into
+                        // megabyte-scale fragment floods the client could
+                        // not reassemble (held=8, decode 1 fps) - and the
+                        // rate cut SLOWER than the collapse it caused.
+                        // Fast cut, slow climb.
+                        self.kbps = self
+                            .kbps
+                            .saturating_mul(13)
+                            .saturating_div(10)
+                            .min(probe_cap);
                     } else if self.clean_streak >= 3 {
                         // WAN / relay: crawl, proportional to the current rate.
                         let stepk = (self.kbps / 5).max(200);
@@ -520,8 +541,11 @@ mod tests {
     #[test]
     fn ramps_fast_on_a_clean_lan() {
         let mut c = BitrateController::new(6_000, 600, 50_000);
-        let end = simulate(&mut c, 200_000.0, 8.0, 6);
-        assert_eq!(end, 50_000, "LAN should reach the ceiling within ~5 ticks");
+        let end = simulate(&mut c, 200_000.0, 8.0, 12);
+        assert_eq!(
+            end, 50_000,
+            "LAN x1.3 climb reaches the ceiling in ~10 ticks"
+        );
     }
 
     #[test]
@@ -531,7 +555,7 @@ mod tests {
         // -> 293 ms. The host queue never stalled, loss_frac stayed ~0 -
         // only the client's tail delay saw the collapse.
         let mut c = BitrateController::new(6_000, 600, 50_000);
-        simulate(&mut c, 200_000.0, 8.0, 6);
+        simulate(&mut c, 200_000.0, 8.0, 12);
         assert_eq!(c.kbps, 50_000);
         for _ in 0..4 {
             c.step(&Feedback {
@@ -573,6 +597,44 @@ mod tests {
             });
         }
         assert!(c.kbps > 20_000, "recovers once the tail clears ({})", c.kbps);
+    }
+
+    #[test]
+    fn never_climbs_while_the_client_receives_but_cannot_decode() {
+        // The 02:37 Chrome shape: 45 -> 66 Mbps climbed through a 10 s black
+        // screen. The client received the full flood (recv ~= current rate)
+        // but assembled nothing (decoded 1 fps) - every climb is gasoline.
+        let mut c = BitrateController::new(45_000, 600, 80_000);
+        for _ in 0..8 {
+            let kbps = c.step(&Feedback {
+                client_lat_p95_ms: 20.0,
+                recv_kbps: c.kbps as f32 * 1.15, // everything arrives...
+                decoded_fps: 1.0,                // ...and none of it decodes
+                target_fps: 60,
+                rtt_ms: 4.0,
+                have_client: true,
+                ..Default::default()
+            });
+            assert!(
+                kbps <= 45_000,
+                "climbed to {kbps} while the route was collapsed"
+            );
+        }
+        // Low-motion screen: client receives a trickle of an 8 fps stream -
+        // different situation, climbing is correct.
+        let mut c2 = BitrateController::new(6_000, 600, 50_000);
+        for _ in 0..14 {
+            c2.step(&Feedback {
+                client_lat_p95_ms: 20.0,
+                recv_kbps: 120.0,
+                decoded_fps: 8.0,
+                target_fps: 60,
+                rtt_ms: 4.0,
+                have_client: true,
+                ..Default::default()
+            });
+        }
+        assert_eq!(c2.kbps, 50_000, "low-motion LAN still climbs to the ceiling");
     }
 
     #[test]
