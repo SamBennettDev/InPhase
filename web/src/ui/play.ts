@@ -1055,6 +1055,21 @@ export class Session {
         console.warn("wt watchdog: still frozen after reset — redialing WT path");
         this.wtClose?.();
       }
+    } else if (this.wtDecoder && !this.wtActive) {
+      // Dialed but never presented. (03:55 Chrome: the wedged stream ate the
+      // startup IDR and every later forced IDR lacked in-band SPS/PPS, so
+      // decode() ate chunks and produced nothing.) wtActive flips true only
+      // on first presentation, so the wtStats branch above never armed and
+      // this is the only ladder a never-decoded session gets: observe(0)
+      // resets + demands an IDR at 3 s, redials at 10 s.
+      const action = this.wtRecovery.observe(0);
+      if (action === "reset") {
+        console.warn("wt watchdog: no decode — resetting decoder, requesting IDR");
+        this.wtDecoder.reset();
+      } else if (action === "redial") {
+        console.warn("wt watchdog: still not decoding after reset — redialing WT path");
+        this.wtClose?.();
+      }
     } else {
       this.wtRecovery.reset();
     }

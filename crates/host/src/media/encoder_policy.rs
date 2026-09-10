@@ -116,6 +116,14 @@ pub fn low_latency_properties(
             ("tune", EncProp::Enum("ultra-low-latency")),
             ("preset", EncProp::Enum("p1")),
             ("aud", EncProp::Bool(false)),
+            // Repeat VPS/SPS/PPS before EVERY IDR, forced ones included.
+            // Without it only the startup IDR carries parameter sets, so a
+            // client that missed that one frame (03:55 Chrome session: the
+            // wedged stream ate it) can never bootstrap from a recovery IDR
+            // - decode() consumes chunks, produces nothing, logs nothing.
+            // Ignored if the negotiated stream-format is "hvc1", which this
+            // pipeline never is (Annex-B, see webrtcbin).
+            ("repeat-sequence-header", EncProp::Bool(true)),
             ("bitrate", br),
             ("max-bitrate", EncProp::Uint(bitrate_kbps)), // CBR: cap == target
         ],
