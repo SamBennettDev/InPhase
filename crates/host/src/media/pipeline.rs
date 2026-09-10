@@ -540,6 +540,10 @@ fn spawn_stats_poller(
                         rtp_backlog_ms: backlog_ms,
                         have_client,
                         client_lat_p95_ms: client_lat_p95,
+                        v4_datagram_carrier: wt_stats
+                            .as_ref()
+                            .map(|t| t.datagram_video_enabled())
+                            .unwrap_or(false),
                     });
                     if adapted_kbps != prev {
                         enc.set_property("bitrate", adapted_kbps);

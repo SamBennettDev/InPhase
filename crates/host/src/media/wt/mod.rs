@@ -53,6 +53,20 @@ use tokio::sync::{mpsc, watch};
 /// was silently black-holed. This is only a ceiling: the live connection's
 /// `max_datagram_size()` narrows it further per path (see the frame sender).
 pub const DEFAULT_DATAGRAM_BUDGET: usize = 1200;
+/// v4 injection pace, datagrams/s. The browser's incoming-datagram queue has
+/// NO flow control (RFC 9221) and silently drops from the HEAD when the app
+/// reads slower than the host injects — with the QUIC ACK already sent, the
+/// host sees 0% loss while the oldest frame's fragments are destroyed
+/// (05:08 Chrome: smooth at ~4.7k datagrams/s, permanent 1 fps re-key loop
+/// from ~5.5k). 3800 paces every measured session below the collapse point;
+/// the frame sender takes 64-token bursts, big IDRs drain over a fraction of
+/// KEY_FRESHNESS.
+pub const WT_PACE_PPS: f32 = 3800.0;
+/// AIMD ceiling matching the pace: 3800 datagrams/s at the 1082-byte floor
+/// budget (3800 × 1082 × 8 / 1000). Above this the encoder emits fragments
+/// the pacer cannot inject, which expire in the frame queue and reopen
+/// sequence holes.
+pub const WT_PACED_CEILING_KBPS: u32 = 32_892;
 /// How many frames may sit queued between the pipeline and the wire. Small by
 /// design — this is a leaky bucket, not a buffer.
 pub const DEFAULT_MAX_QUEUED_FRAMES: usize = 4;

@@ -167,6 +167,7 @@ impl HostRuntime {
                                 queue = tel.decode_queue_size,
                                 nacks = tel.nacks_sent,
                                 keys = tel.keys_received,
+                                drain = tel.drain_pps,
                                 "wt client wire"
                             );
                             stats.ingest_client(tel);

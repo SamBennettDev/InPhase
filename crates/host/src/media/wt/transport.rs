@@ -54,7 +54,10 @@ const FRAME_STREAM_TIMEOUT: std::time::Duration = std::time::Duration::from_mill
 /// Deltas must move fast; a keyframe gets more room because it is the only
 /// thing that can resume a broken reference chain.
 const DELTA_FRESHNESS: std::time::Duration = std::time::Duration::from_millis(35);
-const KEY_FRESHNESS: std::time::Duration = std::time::Duration::from_millis(80);
+/// 500 ms: on the paced v4 carrier a large IDR drains at the client's
+/// measured datagram rate (~850 fragments at ~4k/s ≈ 210 ms), and the IDR is
+/// the anchor — late is fine, unassemblable is not.
+const KEY_FRESHNESS: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Encoded-frame handoff with latest-value semantics.
 ///
@@ -292,6 +295,17 @@ impl WtVideoTransport {
                 // The sink is injected (client-opened), never opened here.
                 let mut stream: Option<wtransport::stream::SendStream> = None;
                 let (mut sent, mut stalled, mut expired) = (0u32, 0u32, 0u32);
+                // Paced-injection bucket (05:08 Chrome session): datagram
+                // fragments go out at no more than ~0.8× the client's measured
+                // drain rate. The browser's incoming-datagram queue has NO flow
+                // control (RFC 9221) and silently drops from the HEAD when the
+                // app reads slower than the host injects — with the QUIC ACK
+                // already sent, the host sees 0% loss while every fragment of
+                // the oldest frame is destroyed. 64 tokens of burst lets small
+                // frames through unthrottled; big IDRs drain over a fraction of
+                // KEY_FRESHNESS.
+                let mut pace_tokens: f32 = 64.0;
+                let mut pace_at = std::time::Instant::now();
                 let mut stall_window_ms = 0u32;
                 let mut last_report = std::time::Instant::now();
                 loop {
@@ -384,20 +398,9 @@ impl WtVideoTransport {
                             .unwrap_or(1082)
                             .max(256);
                         let frag_cnt = (frame.payload.len().div_ceil(budget)).max(1) as u16;
+                        let pace_pps = crate::media::wt::WT_PACE_PPS;
                         let mut ok = true;
                         for idx in 0..frag_cnt {
-                            // Pace the burst: an IDR is hundreds of fragments
-                            // and an unpaced burst overruns the datagram
-                            // queue AND correlates with the cellular burst
-                            // loss window - the encoded keyframe then never
-                            // reassembles and decode waits for the next one
-                            // (the 22:04 stalls). Spread it across the 80 ms
-                            // key budget in 1 ms batches; deltas stay
-                            // immediate.
-                            if frame.key && frag_cnt > 16 && idx % 16 == 15 && idx + 1 < frag_cnt
-                            {
-                                tokio::time::sleep(Duration::from_millis(1)).await;
-                            }
                             let start = idx as usize * budget;
                             let end = ((idx as usize + 1) * budget).min(frame.payload.len());
                             let frag = inphase_protocol::WtFragment {
@@ -426,6 +429,25 @@ impl WtVideoTransport {
                                     cache.pop_front();
                                 }
                             }
+                            // Paced injection (see pace_tokens): take a token,
+                            // draining audio while we wait so 10 ms Opus
+                            // frames never queue behind a paced IDR.
+                            while {
+                                let elapsed = pace_at.elapsed().as_secs_f32();
+                                pace_at = std::time::Instant::now();
+                                pace_tokens = (pace_tokens + elapsed * pace_pps).min(64.0);
+                                pace_tokens < 1.0
+                            } {
+                                tokio::select! {
+                                    a = audio_rx.recv() => {
+                                        if let Some(d) = a {
+                                            try_send_datagram(conn, &d);
+                                        }
+                                    }
+                                    _ = tokio::time::sleep(Duration::from_millis(1)) => {}
+                                }
+                            }
+                            pace_tokens -= 1.0;
                             if !try_send_datagram(conn, &enc) {
                                 ok = false;
                                 break; // queue full: the rest is past deadline anyway
@@ -463,11 +485,24 @@ impl WtVideoTransport {
                                     payload: acc,
                                 };
                                 let enc = pf.encode();
+                                while {
+                                    let elapsed = pace_at.elapsed().as_secs_f32();
+                                    pace_at = std::time::Instant::now();
+                                    pace_tokens = (pace_tokens + elapsed * pace_pps).min(64.0);
+                                    pace_tokens < 1.0
+                                } {
+                                    tokio::select! {
+                                        a = audio_rx.recv() => {
+                                            if let Some(d) = a {
+                                                try_send_datagram(conn, &d);
+                                            }
+                                        }
+                                        _ = tokio::time::sleep(Duration::from_millis(1)) => {}
+                                    }
+                                }
+                                pace_tokens -= 1.0;
                                 if !try_send_datagram(conn, &enc) {
                                     break; // parity is best-effort; NACK remains
-                                }
-                                if frame.key && round % 16 == 15 {
-                                    tokio::time::sleep(Duration::from_millis(1)).await;
                                 }
                             }
                         } else {

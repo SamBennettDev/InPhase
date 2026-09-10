@@ -126,6 +126,11 @@ export class WtVideoClient {
   // One-second accounting windows for the telemetry message.
   private winStartedMs = 0;
   private winBytes = 0;
+  /** Datagrams read this window = the client's measured drain rate. The host
+   *  paces injection below it: the browser's incoming-datagram queue silently
+   *  drops from the head when the app reads slower than the host sends
+   *  (no flow control on RFC 9221 datagrams, no loss signal back). */
+  private winDgrams = 0;
   /** Cumulative decoded count at the last telemetry send, for a true rate. */
   private lastFramesDecoded = 0;
   private lastRttMs = 0;
@@ -359,6 +364,7 @@ export class WtVideoClient {
       const { value, done } = await reader.read();
       if (done || value === undefined) break;
       this.datagramsSeen++;
+      this.winDgrams++;
       this.lastDatagramAt = performance.now();
       this.winBytes += value.byteLength;
       // Audio datagrams carry the 0x41 tag (see transport.rs); v4 video
@@ -814,6 +820,10 @@ export class WtVideoClient {
       frames_received: this.framesReceived,
       streams_wedged: this.streamsWedged,
       datagrams_seen: this.datagramsSeen,
+      // Measured drain rate this window (datagrams/s). 0 on the first
+      // window; the host falls back to a conservative default until it
+      // sees a real number.
+      drain_pps: Math.round(this.winDgrams / dtSec),
       // Capture → decode-complete latency (docs/research/performance-latency-
       // 2026-09-09.md §measurement): frame capture_us mapped onto the client
       // clock via the pong anchor. Percentiles, not an EMA - the spikes define
@@ -837,6 +847,7 @@ export class WtVideoClient {
     this.lastFramesDecoded = stats?.framesDecoded ?? this.lastFramesDecoded;
     this.winStartedMs = nowMs;
     this.winBytes = 0;
+    this.winDgrams = 0;
   }
 
   private async readControl(

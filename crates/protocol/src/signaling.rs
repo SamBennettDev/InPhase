@@ -344,6 +344,16 @@ pub struct ClientTelemetry {
     pub streams_wedged: u64,
     #[serde(default)]
     pub datagrams_seen: u64,
+    /// Datagrams the client actually read off `datagrams.readable` this
+    /// telemetry window — its measured drain rate. The host paces v4 datagram
+    /// injection below this (05:08 Chrome: unconstrained injection at
+    /// ~5.5k datagrams/s overflowed the browser's incoming-datagram queue,
+    /// which silently drops from the head; RFC 9221 datagrams have no flow
+    /// control, so the loss is invisible server-side and every large frame
+    /// became a permanent sequence hole → 1 fps re-key loop). Absent from
+    /// older clients, hence `default`; 0 = unknown.
+    #[serde(default)]
+    pub drain_pps: u32,
     /// Capture → decode-complete latency percentiles (ms), client-side, via
     /// the pong clock anchor (research doc §measurement). Negative until the
     /// clock syncs. Percentiles rather than an EMA: the spikes define

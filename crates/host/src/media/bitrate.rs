@@ -36,6 +36,10 @@ pub struct Feedback {
     /// frames/s, lat_p95 33 -> 129 -> 293 ms, and the host's own queue
     /// never stalled - the AIMD climbed on. 0 = unknown.
     pub client_lat_p95_ms: f32,
+    /// The v4 datagram carrier is live, so fragment injection is paced at
+    /// `WT_PACE_PPS` and the target must stay under what that pace can carry
+    /// — above it, frames expire unsent and reopen sequence holes.
+    pub v4_datagram_carrier: bool,
 }
 
 /// Crude AIMD bitrate controller. `kbps` is the current encoder target.
@@ -239,6 +243,15 @@ impl BitrateController {
                     .map(|sc| (sc * 0.9) as u32)
                     .unwrap_or(self.ceiling)
                     .clamp(self.floor, self.ceiling);
+                // The paced v4 carrier cannot carry more than the pace allows;
+                // probing above it just queues frames into expiry (05:08
+                // Chrome: 53 Mbps ≈ 5.5k datagrams/s overflowed the browser's
+                // incoming-datagram queue → permanent 1 fps re-key loop).
+                let probe_cap = if fb.v4_datagram_carrier {
+                    probe_cap.min(crate::media::wt::WT_PACED_CEILING_KBPS.max(self.floor))
+                } else {
+                    probe_cap
+                };
                 // Raise on the absence of loss alone — NOT gated on decoded fps.
                 // A low fps with no loss means capture/encode is the bottleneck,
                 // and keeping the bitrate pinned low only makes that worse.
@@ -265,6 +278,15 @@ impl BitrateController {
                 }
             }
         }
+        // A carrier switched on mid-session (or a rate carried over from a
+        // stream-carrier session) can leave kbps above the paced ceiling;
+        // walk it under immediately rather than feeding the pacer more than
+        // it can inject.
+        if fb.v4_datagram_carrier {
+            self.kbps = self
+                .kbps
+                .min(crate::media::wt::WT_PACED_CEILING_KBPS.max(self.floor));
+        }
         self.kbps
     }
 
@@ -289,6 +311,7 @@ mod tests {
     fn wan(lost: u64, recv: f32, fps: f32) -> Feedback {
         Feedback {
             client_lat_p95_ms: 0.0,
+            v4_datagram_carrier: false,
             lost_delta: lost,
             recv_kbps: recv,
             decoded_fps: fps,
@@ -314,7 +337,8 @@ mod tests {
                 0.0
             };
             let fb = Feedback {
-            client_lat_p95_ms: 0.0,
+                client_lat_p95_ms: 0.0,
+                v4_datagram_carrier: false,
                 lost_delta: lost,
                 recv_kbps: delivered,
                 decoded_fps: fps,
@@ -344,6 +368,7 @@ mod tests {
         for _ in 0..6 {
             c.step(&Feedback {
             client_lat_p95_ms: 0.0,
+            v4_datagram_carrier: false,
                 lost_delta: 0,
                 recv_kbps: 4_000.0,
                 decoded_fps: 60.0,
@@ -371,6 +396,7 @@ mod tests {
         for (lost, recv) in replay {
             c.step(&Feedback {
             client_lat_p95_ms: 0.0,
+            v4_datagram_carrier: false,
                 lost_delta: lost,
                 recv_kbps: recv,
                 decoded_fps: 58.0,
@@ -395,6 +421,7 @@ mod tests {
         for _ in 0..6 {
             c.step(&Feedback {
             client_lat_p95_ms: 0.0,
+            v4_datagram_carrier: false,
                 lost_delta: 0,
                 recv_kbps: 6_000.0,
                 decoded_fps: 60.0,
@@ -408,6 +435,7 @@ mod tests {
         for _ in 0..3 {
             c.step(&Feedback {
             client_lat_p95_ms: 0.0,
+            v4_datagram_carrier: false,
                 lost_delta: 400,
                 recv_kbps: 2_000.0,
                 decoded_fps: 4.0, // frames are not reaching the decoder
@@ -430,6 +458,7 @@ mod tests {
         for _ in 0..30 {
             c.step(&Feedback {
             client_lat_p95_ms: 0.0,
+            v4_datagram_carrier: false,
                 lost_delta: 0,
                 recv_kbps: 8_200.0, // arriving fine
                 decoded_fps: 0.0,   // and decoding none of it
@@ -451,6 +480,7 @@ mod tests {
         for _ in 0..5 {
             let fb = Feedback {
             client_lat_p95_ms: 0.0,
+            v4_datagram_carrier: false,
                 have_client: false,
                 ..Default::default()
             };
@@ -495,6 +525,51 @@ mod tests {
     }
 
     #[test]
+    fn paced_carrier_never_probes_past_the_pace_ceiling() {
+        // 05:08 Chrome session: the AIMD climbed to 53 Mbps ≈ 5.5k datagrams/s
+        // and the browser's incoming-datagram queue silently dropped from the
+        // head — every large frame became a permanent hole and decode fell
+        // into a 1 fps re-key loop at 0% host-side loss. On the paced v4
+        // carrier the target must stop at what WT_PACE_PPS can inject.
+        let mut c = BitrateController::new(6_000, 600, 80_000);
+        for tick in 0..30 {
+            let fb = Feedback {
+                client_lat_p95_ms: 0.0,
+                v4_datagram_carrier: true,
+                lost_delta: 0,
+                recv_kbps: c.kbps as f32 * 0.95,
+                decoded_fps: 60.0,
+                target_fps: 60,
+                rtt_ms: 4.0,
+                rtp_backlog_ms: 0.0,
+                have_client: true,
+            };
+            c.step(&fb);
+            assert!(
+                c.kbps <= crate::media::wt::WT_PACED_CEILING_KBPS,
+                "tick {tick}: climbed to {} on the paced carrier",
+                c.kbps
+            );
+        }
+        assert_eq!(c.kbps, crate::media::wt::WT_PACED_CEILING_KBPS);
+        // A rate carried over from an unpaced session is walked under.
+        let mut c = BitrateController::new(80_000, 600, 80_000);
+        let fb = Feedback {
+            client_lat_p95_ms: 0.0,
+            v4_datagram_carrier: true,
+            lost_delta: 0,
+            recv_kbps: 70_000.0,
+            decoded_fps: 60.0,
+            target_fps: 60,
+            rtt_ms: 4.0,
+            rtp_backlog_ms: 0.0,
+            have_client: true,
+        };
+        c.step(&fb);
+        assert!(c.kbps <= crate::media::wt::WT_PACED_CEILING_KBPS);
+    }
+
+    #[test]
     fn low_motion_lan_ramps_to_the_ceiling_and_stays() {
         // The regression: a clean LAN where the encoder emits far less than its
         // cap (static screen, or capture starved) — inbound is a trickle but
@@ -503,6 +578,7 @@ mod tests {
         for tick in 0..30 {
             let fb = Feedback {
             client_lat_p95_ms: 0.0,
+            v4_datagram_carrier: false,
                 lost_delta: 0,
                 recv_kbps: 120.0, // near-static screen: tiny inbound...
                 decoded_fps: 8.0, // ...and low fps, but not because of bandwidth
@@ -642,6 +718,7 @@ mod tests {
         let mut c = BitrateController::new(20_000, 600, 50_000);
         let fb = Feedback {
             client_lat_p95_ms: 0.0,
+            v4_datagram_carrier: false,
             rtp_backlog_ms: 400.0,
             have_client: false,
             ..Default::default()
@@ -658,6 +735,7 @@ mod tests {
         // and climb back through the same loss after a real dip.
         let fb = Feedback {
             client_lat_p95_ms: 0.0,
+            v4_datagram_carrier: false,
             lost_delta: 90,
             recv_kbps: 9_000.0,
             decoded_fps: 59.0,
@@ -709,6 +787,7 @@ mod tests {
         for _ in 0..6 {
             c.step(&Feedback {
             client_lat_p95_ms: 0.0,
+            v4_datagram_carrier: false,
                 lost_delta: 0,
                 recv_kbps: 6_000.0,
                 decoded_fps: 60.0,
@@ -726,6 +805,7 @@ mod tests {
         for _ in 0..4 {
             c.step(&Feedback {
             client_lat_p95_ms: 0.0,
+            v4_datagram_carrier: false,
                 lost_delta: 0,
                 recv_kbps: 6_000.0,
                 decoded_fps: 60.0,
