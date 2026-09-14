@@ -74,14 +74,18 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          function Invoke-CheckedProcess($File, $Arguments, $Label) {
+          function Invoke-CheckedProcess($File, $Arguments, $Label, $LogName) {
             Write-Host "$Label..."
-            $process = Start-Process $File -ArgumentList $Arguments -PassThru
+            $log = Join-Path $env:RUNNER_TEMP $LogName
+            $allArguments = @($Arguments) + "/LOG=$log"
+            $process = Start-Process $File -ArgumentList $allArguments -PassThru
             if (-not $process.WaitForExit(120000)) {
               taskkill.exe /F /T /PID $process.Id 2>$null
+              if (Test-Path $log) { Get-Content $log -Tail 120 }
               throw "$Label timed out after 120 seconds"
             }
             if ($process.ExitCode -notin @(0, 3010)) {
+              if (Test-Path $log) { Get-Content $log -Tail 120 }
               throw "$Label failed: $($process.ExitCode)"
             }
           }
@@ -91,26 +95,27 @@ jobs:
           $installDir = Join-Path $env:ProgramFiles "InPhase"
           $hostExe = Join-Path $installDir "InPhaseHost.exe"
           try {
-            Invoke-CheckedProcess $setup $setupArgs "Initial install"
+            Invoke-CheckedProcess $setup $setupArgs "Initial install" "inphase-initial-install.log"
             if (-not (Test-Path $hostExe)) { throw "Installed host is missing" }
 
             $host = Start-Process $hostExe -PassThru
             Start-Sleep -Seconds 3
             if ($host.HasExited) { throw "Installed host exited before upgrade test" }
 
-            Invoke-CheckedProcess $setup $setupArgs "Upgrade over running host"
+            Invoke-CheckedProcess $setup $setupArgs "Upgrade over running host" "inphase-upgrade.log"
             $host.Refresh()
             if (-not $host.HasExited) { throw "Upgrade left the old host process running" }
 
             $uninstaller = Join-Path $installDir "unins000.exe"
             if (-not (Test-Path $uninstaller)) { throw "Uninstaller is missing" }
-            Invoke-CheckedProcess $uninstaller @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') "Uninstall"
+            Invoke-CheckedProcess $uninstaller @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') "Uninstall" "inphase-uninstall.log"
           }
           finally {
             taskkill.exe /F /T /IM InPhaseHost.exe 2>$null
             Remove-Item -Recurse -Force $installDir -ErrorAction SilentlyContinue
           }
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: InPhase-windows-candidate
           if-no-files-found: error
@@ -121,3 +126,4 @@ jobs:
             dist/InPhase/MANIFEST.csv
             dist/InPhase/OPEN-SOURCE-COMPONENTS.txt
             dist/InPhase/licenses
+            ${{ runner.temp }}/inphase-*.log
