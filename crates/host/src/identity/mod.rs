@@ -18,7 +18,7 @@ pub mod pairing_invite;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
+use ed25519_dalek::SigningKey;
 
 use crate::config::Config;
 
@@ -103,7 +103,7 @@ impl HostIdentity {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).ok();
         }
-        let blob = wrap_at_rest(&plain);
+        let blob = wrap_at_rest(&plain)?;
         plain.fill(0);
         std::fs::write(path, &blob).with_context(|| format!("writing {}", path.display()))?;
         harden_perms(path);
@@ -134,20 +134,18 @@ pub fn unhex(s: &str) -> Option<Vec<u8>> {
     if s.len() % 2 != 0 {
         return None;
     }
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
-        .collect()
+    s.as_bytes().chunks_exact(2).map(|pair| {
+        let hi = (pair[0] as char).to_digit(16)?;
+        let lo = (pair[1] as char).to_digit(16)?;
+        Some(((hi << 4) | lo) as u8)
+    }).collect()
 }
 
 // ---- at-rest protection --------------------------------------------------
 
 #[cfg(windows)]
-pub(crate) fn wrap_at_rest(plain: &[u8]) -> Vec<u8> {
-    dpapi::protect(plain).unwrap_or_else(|e| {
-        tracing::warn!("DPAPI protect failed ({e:#}) — storing host key unwrapped");
-        plain.to_vec()
-    })
+pub(crate) fn wrap_at_rest(plain: &[u8]) -> Result<Vec<u8>> {
+    dpapi::protect(plain).context("DPAPI protection failed; refusing to persist an unprotected key")
 }
 
 #[cfg(windows)]
@@ -162,8 +160,8 @@ pub(crate) fn unwrap_at_rest(blob: &[u8]) -> Result<Vec<u8>> {
 }
 
 #[cfg(not(windows))]
-pub(crate) fn wrap_at_rest(plain: &[u8]) -> Vec<u8> {
-    plain.to_vec()
+pub(crate) fn wrap_at_rest(plain: &[u8]) -> Result<Vec<u8>> {
+    Ok(plain.to_vec())
 }
 
 #[cfg(not(windows))]
@@ -236,5 +234,16 @@ mod dpapi {
             .map_err(|e| anyhow!("CryptUnprotectData: {e}"))?;
             Ok(take(out))
         }
+    }
+}
+
+#[cfg(test)]
+mod hex_tests {
+    #[test]
+    fn malformed_unicode_hex_cannot_panic() {
+        for value in ["aéa", "😀", "あa", "zz", "0"] {
+            assert!(super::unhex(value).is_none(), "{value}");
+        }
+        assert_eq!(super::unhex("00aAFF"), Some(vec![0, 170, 255]));
     }
 }

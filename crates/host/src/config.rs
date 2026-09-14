@@ -368,14 +368,8 @@ impl TlsConfig {
         if let Some(d) = self.cert_dir.as_deref().filter(|d| !d.is_empty()) {
             return PathBuf::from(d);
         }
-        // Machine-wide for local-ca so the installer (elevated) and the running
-        // host (normal user) share one CA.
-        #[cfg(windows)]
-        if self.mode == TlsMode::LocalCa {
-            if let Ok(pd) = std::env::var("ProgramData") {
-                return PathBuf::from(pd).join("InPhase").join("tls");
-            }
-        }
+        // Keys belong to the Windows user, never a shared writable ProgramData
+        // directory. Existing installations need a one-time certificate re-trust.
         Config::config_dir().join("tls")
     }
 }

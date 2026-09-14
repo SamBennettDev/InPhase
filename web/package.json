@@ -9,16 +9,21 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test": "node --test --import tsx src/",
-    "typecheck": "tsc --noEmit"
+    "test": "node scripts/test.mjs",
+    "typecheck": "tsc --noEmit",
+    "test:browser": "playwright test"
   },
   "devDependencies": {
     "@types/node": "^22.9.0",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3",
-    "vite": "^5.4.10"
+    "vite": "^7.3.6",
+    "@playwright/test": "^1.63.0"
   },
   "dependencies": {
     "lucide": "^1.41.0"
+  },
+  "engines": {
+    "node": ">=22.12"
   }
 }

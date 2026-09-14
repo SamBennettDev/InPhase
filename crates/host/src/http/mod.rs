@@ -121,6 +121,7 @@ pub fn lan_router(state: HttpState) -> Router {
 pub fn admin_router(state: HttpState) -> Router {
     admin_routes()
         .layer(middleware::from_fn(loopback_only))
+        .layer(middleware::from_fn_with_state(state.clone(), security_headers))
         .with_state(state)
 }
 
@@ -139,17 +140,31 @@ async fn security_headers(
     req: Request,
     next: Next,
 ) -> Response {
-    let connect_src = match st.wt.as_ref() {
-        Some(wt) => format!("'self' ws: wss: https://*:{};", wt.port()),
-        None => "'self' ws: wss:".to_string(),
-    };
+    let is_api = req.uri().path().starts_with("/api/");
+    if is_api && !same_origin_request(req.headers()) {
+        return (StatusCode::FORBIDDEN, "cross-origin request rejected").into_response();
+    }
+    let authority = req.headers().get(axum::http::header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .and_then(|h| h.parse::<axum::http::uri::Authority>().ok())
+        .filter(|h| !h.as_str().contains('@'));
+    let mut connect_src = "'self'".to_string();
+    if let Some(authority) = authority {
+        connect_src.push_str(&format!(" ws://{authority} wss://{authority}"));
+        if let Some(wt) = st.wt.as_ref() {
+            connect_src.push_str(&format!(" https://{}:{}", authority.host(), wt.port()));
+        }
+    }
     let mut res = next.run(req).await;
     let h = res.headers_mut();
+    if is_api {
+        h.insert(axum::http::header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    }
     h.insert(
         "content-security-policy",
         HeaderValue::from_str(&format!(
             "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
-             img-src 'self' data:; connect-src {connect_src} media-src 'self' blob:; \
+             img-src 'self' data:; connect-src {connect_src}; media-src 'self' blob:; \
              font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
         ))
         .expect("CSP header content is controlled ASCII"),
@@ -199,11 +214,35 @@ async fn loopback_only(
     req: Request,
     next: Next,
 ) -> Response {
-    if addr.ip().is_loopback() {
+    // Reject DNS rebinding: a loopback connection must name a loopback host.
+    let local_host = req.headers().get(axum::http::header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .and_then(|h| h.parse::<axum::http::uri::Authority>().ok())
+        .map(|h| matches!(h.host().to_ascii_lowercase().as_str(), "localhost" | "127.0.0.1" | "[::1]"))
+        .unwrap_or(false);
+    if addr.ip().is_loopback() && local_host && same_origin_request(req.headers()) {
         next.run(req).await
     } else {
         (StatusCode::FORBIDDEN, "admin API is loopback-only").into_response()
     }
+}
+
+/// Check browser Origin and Fetch Metadata. Native clients may omit Origin;
+/// they still pass the network, pairing and controller-key guards.
+pub(super) fn same_origin_request(headers: &axum::http::HeaderMap) -> bool {
+    use axum::http::{header, uri::Authority, Uri};
+    if headers.get("sec-fetch-site").and_then(|v| v.to_str().ok()) == Some("cross-site") { return false; }
+    let Some(origin) = headers.get(header::ORIGIN) else { return true; };
+    let Some(origin) = origin.to_str().ok().and_then(|v| v.parse::<Uri>().ok()) else { return false; };
+    let Some(scheme @ ("http" | "https")) = origin.scheme_str() else { return false; };
+    let Some(source) = origin.authority() else { return false; };
+    let Some(target) = headers.get(header::HOST).and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<Authority>().ok()) else { return false; };
+    let default_port = if scheme == "https" { 443 } else { 80 };
+    !source.as_str().contains('@') && !target.as_str().contains('@')
+        && source.host().eq_ignore_ascii_case(target.host())
+        && source.port_u16().unwrap_or(default_port) == target.port_u16().unwrap_or(default_port)
+        && origin.path() == "/" && origin.query().is_none()
 }
 
 /// Authenticated-session guard used by the protected handlers.
@@ -230,13 +269,6 @@ pub struct ResolvedTls {
     pub mode: TlsMode,
 }
 
-fn https_url(domain: &str, port: u16) -> String {
-    if port == 443 {
-        format!("https://{domain}/")
-    } else {
-        format!("https://{domain}:{port}/")
-    }
-}
 
 /// Work out whether the host can serve HTTPS and, if so, obtain the cert.
 /// `None` means fall back to plaintext HTTP (dashboard-on-localhost only).
@@ -292,6 +324,7 @@ pub async fn resolve_tls(cfg: &Config) -> Option<ResolvedTls> {
 ///   dashboard so a new device can grab the CA before it trusts HTTPS. The
 ///   player itself needs the HTTPS origin (secure context).
 /// * **admin HTTP** on `127.0.0.1:admin_port` — loopback dashboard/admin.
+///
 /// Bind a listener, or fail with a message that names the cause.
 ///
 /// "Address already in use" almost always means a second host was launched -

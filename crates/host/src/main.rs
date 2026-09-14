@@ -50,6 +50,9 @@ fn main() -> anyhow::Result<()> {
         println!("inphase-host {}", inphase_host::HOST_VERSION);
         return Ok(());
     }
+    if args.iter().any(|a| a == "--enable-startup") {
+        return inphase_host::platform::set_start_at_login(true);
+    }
     if args.iter().any(|a| a == "--print-config") {
         println!("{}", Config::default().to_toml());
         return Ok(());
@@ -97,9 +100,10 @@ fn main() -> anyhow::Result<()> {
                 if ok {
                     "installed"
                 } else {
-                    "NOT installed — run this elevated"
+                    "NOT installed — run --trust-ca as your normal Windows user"
                 }
             );
+            anyhow::ensure!(ok, "Certificate trust was not completed for the user running InPhase");
             Ok(())
         });
     }
@@ -250,6 +254,7 @@ fn point_at_bundled_runtime() {
     }
     std::env::set_var("GST_PLUGIN_PATH", root.join("lib").join("gstreamer-1.0"));
     std::env::set_var("GST_PLUGIN_SYSTEM_PATH", "");
+    std::env::set_var("GST_REGISTRY_FORK", "no");
     if let Some(local) = dirs_local_appdata() {
         std::env::set_var(
             "GST_REGISTRY",

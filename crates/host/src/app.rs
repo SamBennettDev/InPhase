@@ -255,12 +255,11 @@ impl HostRuntime {
                  player cannot pair. Check `[tls]` in config.toml."
             );
         }
-        let (pin, ttl) = self.pairing.current_pin();
+        let (_, ttl) = self.pairing.current_pin();
         info!(
-            pin = %pin,
             ttl_secs = ttl.map(|d| d.as_secs() as i64).unwrap_or(-1),
             sessions = self.pairing.session_count(),
-            "current pairing PIN (ttl -1 = no expiry)"
+            "pairing ready; view the PIN in the local dashboard or tray"
         );
 
         // ---- tray icon + control menu ------------------------------------
@@ -278,7 +277,7 @@ impl HostRuntime {
         }
         let tray_actions = platform::TrayActions {
             open_dashboard: {
-                let url = play_url.clone();
+                let url = format!("http://127.0.0.1:{}/?dashboard", self.cfg.network.http_port);
                 Box::new(move || open_url(&url))
             },
             set_remote_access: {
@@ -415,6 +414,18 @@ impl HostRuntime {
             }
         });
 
+        if std::env::args().any(|arg| arg == "--open-dashboard") {
+            let port = self.cfg.network.http_port;
+            tokio::spawn(async move {
+                for _ in 0..40 {
+                    if tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).await.is_ok() {
+                        open_url(&format!("http://127.0.0.1:{port}/?dashboard"));
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                }
+            });
+        }
         http::serve(state, tls).await.context("http server")
     }
 }

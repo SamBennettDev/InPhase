@@ -51,7 +51,7 @@ const DEFAULTS: StreamSettings = {
   volume: 1,
   muted: false,
   audioOutputId: "",
-  showMetrics: true,
+  showMetrics: false,
 };
 
 // Bump when a stored default becomes actively harmful and must be re-migrated
@@ -73,14 +73,14 @@ export function loadSettings(): StreamSettings {
         height: clampDimension(Number(s.height) || DEFAULTS.height, 360, 2160),
         fps: clampFps(Number(s.fps) || DEFAULTS.fps),
         maxBitrateKbps: clampBitrate(Number(s.maxBitrateKbps) || DEFAULTS.maxBitrateKbps),
-        preset: (s.preset as Preset) || DEFAULTS.preset,
+        preset: ['low_latency','balanced','quality','custom'].includes(String(s.preset)) ? s.preset as Preset : DEFAULTS.preset,
         // A stored `bufferMs` (pre-v3) is deliberately not read: there is no
         // jitter-buffer setting any more — see the SCHEMA notes.
         streamTarget: parseStreamTarget(s.streamTarget),
         volume: Math.max(0, Math.min(1, numOr(s.volume, DEFAULTS.volume))),
-        muted: s.muted ?? DEFAULTS.muted,
+        muted: typeof s.muted === 'boolean' ? s.muted : DEFAULTS.muted,
         audioOutputId: typeof s.audioOutputId === "string" ? s.audioOutputId : "",
-        showMetrics: s.showMetrics ?? DEFAULTS.showMetrics,
+        showMetrics: typeof s.showMetrics === 'boolean' ? s.showMetrics : DEFAULTS.showMetrics,
       };
     }
   } catch {

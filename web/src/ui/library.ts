@@ -102,6 +102,7 @@ export interface Library {
   items: LibraryItem[];
   /** Host is still fetching cover art; caller should poll again. */
   artPending: boolean;
+  error?: boolean;
 }
 
 export async function fetchLibrary(): Promise<Library> {
@@ -112,8 +113,8 @@ export async function fetchLibrary(): Promise<Library> {
     poster_url: DESKTOP_POSTER,
   };
   try {
-    const r = await fetch("/api/v1/library");
-    if (!r.ok) return { items: [desktop], artPending: false };
+    const r = await fetch("/api/v1/library", { signal: AbortSignal.timeout(7000) });
+    if (!r.ok) return { items: [desktop], artPending: false, error: true };
     const data = (await r.json()) as { items?: LibraryItem[]; art_pending?: boolean };
     // Most recently played first; titles whose launcher records no recency
     // sort after the dated ones, alphabetically.
@@ -127,7 +128,7 @@ export async function fetchLibrary(): Promise<Library> {
       });
     return { items: [desktop, ...games], artPending: data.art_pending === true };
   } catch {
-    return { items: [desktop], artPending: false };
+    return { items: [desktop], artPending: false, error: true };
   }
 }
 
@@ -172,12 +173,16 @@ export function mountLibraryGrid(
     (i) => i.kind === "desktop" || !q || i.name.toLowerCase().includes(q),
   );
 
-  if (visible.length <= 1 && q) {
+  if (visible.length === 0 && q) {
     host.innerHTML = `<p class="library-empty">No games match “${escapeHtml(state.query)}”.</p>`;
     return;
   }
 
-  host.innerHTML = `<div class="library-grid" role="listbox" aria-label="Choose what to stream">
+  if (!visible.length) {
+    host.innerHTML='<div class="library-empty"><strong>Your desktop is ready.</strong><p>No games found. Open a launcher on your PC, or stream the desktop to get started.</p></div>';
+    return;
+  }
+  host.innerHTML = `<div class="library-grid" role="group" aria-label="Choose what to stream">
     ${visible
       .map((item) => {
         const t = targetFor(item);
@@ -186,7 +191,7 @@ export function mountLibraryGrid(
         const hasSrc = item.kind === "game" && item.source;
         return `<button type="button"
           class="lib-card${isSel ? " sel" : ""}${item.kind === "desktop" ? " desktop" : ""}"
-          data-id="${escapeAttr(item.id)}" role="option" aria-selected="${isSel}">
+          data-id="${escapeAttr(item.id)}" aria-pressed="${isSel}" aria-label="Select ${escapeAttr(item.name)}">
           <span class="lib-cover">
             <img src="${escapeAttr(posterFor(item))}" alt="" loading="lazy" decoding="async" />
             ${
@@ -212,10 +217,10 @@ export function mountLibraryGrid(
       onPick(targetFor(item));
       for (const b of host.querySelectorAll(".lib-card")) {
         b.classList.remove("sel");
-        b.setAttribute("aria-selected", "false");
+        b.setAttribute("aria-pressed", "false");
       }
       btn.classList.add("sel");
-      btn.setAttribute("aria-selected", "true");
+      btn.setAttribute("aria-pressed", "true");
     });
   }
 
@@ -223,7 +228,7 @@ export function mountLibraryGrid(
     img.addEventListener("error", () => {
       const name = img.closest(".lib-card")?.querySelector(".lib-name")?.textContent ?? "";
       img.src = generatedPoster(name);
-    });
+    }, { once: true });
   }
 }
 

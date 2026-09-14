@@ -4,6 +4,8 @@
 // Per-platform "install and trust the InPhase certificate" steps. Shared by the
 // http→setup landing page (main.ts) and the dashboard's "other devices" card.
 
+import { escapeHtml, safeHttpUrl } from "./html.js";
+
 export type Platform = "ios" | "macos" | "android" | "windows" | "other";
 
 export function detectPlatform(ua = navigator.userAgent): Platform {
@@ -47,6 +49,8 @@ export function certInstructionsHtml(
   httpsUrl: string,
   caHref = "/ca.crt",
 ): string {
+  httpsUrl=escapeHtml(safeHttpUrl(httpsUrl));
+  caHref=escapeHtml(safeHttpUrl(new URL(caHref,location.origin).href));
   const items = [
     ...STEPS[platform].map((s) =>
       s.includes("Download the certificate")

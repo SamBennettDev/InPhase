@@ -70,7 +70,7 @@ async fn spawn(st: HttpState) -> SocketAddr {
 async fn get_status(addr: SocketAddr, path: &str) -> String {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
-    let req = format!("GET {path} HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n");
+    let req = format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
     s.write_all(req.as_bytes()).await.unwrap();
     let mut buf = Vec::new();
     let _ = s.read_to_end(&mut buf).await;
@@ -255,4 +255,29 @@ async fn opting_in_allows_remote_invites_and_https_remote_pins() {
         StatusCode::FORBIDDEN,
         "remote PIN pairing must require HTTPS"
     );
+}
+
+#[tokio::test]
+async fn browser_cross_origin_and_rebinding_cannot_mutate_admin_state() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let addr = spawn(state(false)).await;
+    for (host, origin, metadata) in [
+        (addr.to_string(), "https://attacker.example".to_string(), ""),
+        ("attacker.example".to_string(), "http://attacker.example".to_string(), ""),
+        (addr.to_string(), format!("http://{addr}"), "Sec-Fetch-Site: cross-site\r\n"),
+        (addr.to_string(), "null".to_string(), ""),
+    ] {
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let request = format!("POST /api/v1/admin/rotate-pin HTTP/1.1\r\nHost: {host}\r\nOrigin: {origin}\r\n{metadata}Content-Length: 0\r\nConnection: close\r\n\r\n");
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut output = String::new();
+        stream.read_to_string(&mut output).await.unwrap();
+        assert!(output.starts_with("HTTP/1.1 403"), "{output}");
+    }
+    let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    stream.write_all(format!("POST /api/v1/admin/rotate-pin HTTP/1.1\r\nHost: {addr}\r\nOrigin: http://{addr}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+    let mut output = String::new();
+    stream.read_to_string(&mut output).await.unwrap();
+    assert!(output.starts_with("HTTP/1.1 200"), "{output}");
+    assert!(output.to_lowercase().contains("cache-control: no-store"));
 }

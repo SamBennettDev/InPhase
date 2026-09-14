@@ -6,7 +6,7 @@
 //!
 //! [`local_ca`] is how: the host generates its own CA once and a leaf cert for
 //! `<machine>.local` + the LAN IPs. The installer adds the CA to the machine
-//! trust store (silent, elevated); other devices install it once from
+//! current-user trust store (with consent); other devices install it once from
 //! `GET /ca.crt`.
 
 use std::path::PathBuf;
@@ -91,7 +91,7 @@ pub mod local_ca {
                     return Ok((pem, kp));
                 }
             }
-            tracing::warn!("local CA unreadable — regenerating (other devices must re-trust)");
+            anyhow::bail!("local CA unreadable; restore its matching certificate and key instead of silently replacing device trust");
         }
 
         let kp = KeyPair::generate().context("generate CA key")?;
@@ -100,7 +100,7 @@ pub mod local_ca {
         std::fs::write(&crt, &pem)?;
         std::fs::write(
             &key,
-            crate::identity::wrap_at_rest(kp.serialize_pem().as_bytes()),
+            crate::identity::wrap_at_rest(kp.serialize_pem().as_bytes())?,
         )?;
         harden(&key);
         tracing::info!(path = %crt.display(), "generated local CA");
@@ -204,12 +204,8 @@ pub mod local_ca {
         }
     }
 
-    /// Best-effort: add the CA to the OS trust store so this machine's browsers
-    /// trust it with no warning. Silent from an elevated context (the installer);
-    /// from a normal user it may raise a one-time Windows consent prompt.
-    /// `force` = true only from the elevated installer (`--trust-ca`): always
-    /// (re)install into the Root store. From a per-user boot it is false — we
-    /// just verify and, if it is missing, log a hint rather than failing.
+    /// Explicit setup adds the CA to the current user's trust store. Normal
+    /// startup checks trust without changing it or prompting in the background.
     pub async fn trust_ca(dir: &Path, force: bool) -> bool {
         let crt = dir.join("ca.crt");
         if !crt.is_file() {
@@ -231,19 +227,12 @@ pub mod local_ca {
 
             // Per-user boot: if a Root store already carries our CA, leave it —
             // adding to Root needs elevation and would just log noise.
-            if !force
-                && (certutil(&["-user", "-store", "Root", "InPhase Local CA"]).await
-                    || certutil(&["-store", "Root", "InPhase Local CA"]).await)
-            {
-                return true;
+            if !force {
+                return certutil(&["-user", "-store", "Root", "InPhase Local CA"]).await;
             }
 
-            // Adding to the *Root* store is what the elevated installer step
-            // (`--trust-ca`) is for — a per-user launch cannot do it silently
-            // (Windows shows a trust prompt). Try anyway in case we *are*
-            // elevated, but do not treat failure as an error here.
+            // --trust-ca runs as the user who will run the host.
             if try_addstore(&["-user", "-addstore", "-f", "Root"], &crt).await
-                || try_addstore(&["-addstore", "-f", "Root"], &crt).await
             {
                 tracing::info!("local CA trusted");
                 return true;

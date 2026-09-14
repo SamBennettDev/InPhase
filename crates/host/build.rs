@@ -22,6 +22,9 @@ fn main() {
     let dist = Path::new(&manifest).join("../../web/dist");
     let index = dist.join("index.html");
 
+    if !index.exists() && std::env::var("PROFILE").as_deref() == Ok("release") {
+        panic!("Release build requires npm --prefix web ci and npm --prefix web run build");
+    }
     if !index.exists() {
         let _ = std::fs::create_dir_all(&dist);
         let _ = std::fs::write(

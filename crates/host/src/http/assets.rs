@@ -21,7 +21,7 @@ pub fn serve(path: &str) -> Response {
     match WebAssets::get(candidate) {
         Some(file) => {
             let mime = mime_guess::from_path(candidate).first_or_octet_stream();
-            let cache = if candidate == "index.html" {
+            let cache = if !candidate.starts_with("assets/") {
                 "no-cache"
             } else {
                 "public, max-age=31536000, immutable"

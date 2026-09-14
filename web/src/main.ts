@@ -9,6 +9,9 @@
 //     the live metrics come from the loopback-only admin API (§16).
 
 import "./ui/style.css";
+import "./ui/polish.css";
+import { escapeHtml, safeHttpUrl } from "./ui/html.js";
+import { brandLogo } from "./ui/brand.js";
 
 // A restored tab renders the OLD bundle from memory cache (no revalidation),
 // which can be a wire-format mismatch with the host. Reload once; after a
@@ -56,17 +59,17 @@ async function renderCertSetup(el: HTMLElement) {
   let httpsUrl = `https://${location.host}/`;
   try {
     const s = await fetch("/api/v1/status").then((r) => r.json());
-    if (s.play_url) httpsUrl = s.play_url;
+    if (typeof s.play_url === "string") httpsUrl = safeHttpUrl(s.play_url);
   } catch {
     /* keep the guess */
   }
   el.innerHTML = `
     <div class="center">
-      <h1>InPhase</h1>
+      ${brandLogo()}<h1>Trust your gaming PC</h1>
       <p class="sub">One-time setup for this device — install the InPhase certificate so your browser trusts this PC.</p>
       <div class="card" style="text-align:left;max-width:34rem">
         ${certInstructionsHtml(detectPlatform(), httpsUrl)}
-        <button id="go" style="margin-top:1rem">Open ${httpsUrl}</button>
+        <button id="go" style="margin-top:1rem">Continue to ${escapeHtml(new URL(httpsUrl).hostname)}</button>
       </div>
     </div>`;
   el.querySelector("#go")!.addEventListener("click", () => (location.href = httpsUrl));

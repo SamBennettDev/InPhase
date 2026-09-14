@@ -121,17 +121,8 @@ async fn bridge_inbound(socket: WebSocket, st: HttpState, peer: PeerDesc) {
     inb.abort();
 }
 
-fn origin_ok(st: &HttpState, headers: &HeaderMap) -> bool {
-    let Some(origin) = headers
-        .get(axum::http::header::ORIGIN)
-        .and_then(|v| v.to_str().ok())
-    else {
-        // A browser always sends Origin on a WS upgrade; a missing one is a
-        // non-browser client, which is fine on the LAN/tailnet.
-        let _ = st;
-        return true;
-    };
-    origin.starts_with("http://") || origin.starts_with("https://")
+fn origin_ok(_st: &HttpState, headers: &HeaderMap) -> bool {
+    super::same_origin_request(headers)
 }
 
 /// Run one browser↔Host signaling session over the text channels. Ends when
