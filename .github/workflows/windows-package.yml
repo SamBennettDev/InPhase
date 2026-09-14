@@ -111,7 +111,8 @@ jobs:
             Invoke-CheckedProcess $uninstaller @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') "Uninstall" "inphase-uninstall.log"
           }
           finally {
-            taskkill.exe /F /T /IM InPhaseHost.exe 2>$null
+            Get-Process InPhaseHost -ErrorAction SilentlyContinue |
+              Stop-Process -Force -ErrorAction SilentlyContinue
             Remove-Item -Recurse -Force $installDir -ErrorAction SilentlyContinue
           }
       - uses: actions/upload-artifact@v4
