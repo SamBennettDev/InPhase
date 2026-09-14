@@ -10,7 +10,7 @@
     libraries that do not appear in the import table.
   * Never copies "$gst\bin\*.dll" wholesale.
   * Refuses to include GPL x264 / x265 / FFmpeg components, and fails the build
-    if any GPL/AGPL/unknown-license file ends up in the bundle.
+    if an unreviewed media plugin or unknown-license binary enters the bundle.
   * Emits MANIFEST.csv (path, size, sha256, origin, license) and
     OPEN-SOURCE-COMPONENTS.txt.
 
@@ -22,9 +22,11 @@ param(
     [string]$GstRoot = [Environment]::GetEnvironmentVariable("GSTREAMER_1_0_ROOT_MSVC_X86_64", "Machine")
 )
 $ErrorActionPreference = "Stop"
+$PSNativeCommandUseErrorActionPreference = $true
 $scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
 $root = Split-Path -Parent $scriptDir
 if (-not $OutDir)  { $OutDir  = Join-Path $root "dist\InPhase" }
+if (-not $GstRoot) { $GstRoot = $env:GSTREAMER_1_0_ROOT_MSVC_X86_64 }
 if (-not $GstRoot) { throw "GSTREAMER_1_0_ROOT_MSVC_X86_64 not set and -GstRoot not given" }
 $GstRoot   = $GstRoot.TrimEnd('\')
 $gstBin    = Join-Path $GstRoot "bin"
@@ -44,6 +46,9 @@ $plugins = @(
     "gstplayback", "gstautodetect",
     "gstd3d11",               # d3d11screencapturesrc, d3d11convert (gst-plugins-bad)
     "gstnvcodec",             # nvd3d11h264enc  -> loads NVIDIA NVENC from the driver
+    "gstamfcodec",            # AMD AMF hardware encoder
+    "gstqsv",                 # Intel Quick Sync hardware encoder
+    "gstmediafoundation",     # Windows Media Foundation fallback
     "gstwasapi2",             # wasapi2src loopback                 (gst-plugins-bad)
     "gstwebrtc",              # webrtcbin                           (gst-plugins-bad)
     "gstsctp",                # SCTP data channels for webrtcbin    (gst-plugins-bad)
@@ -64,7 +69,7 @@ $runtimeLoaded = @(
     "libcrypto-3-x64.dll", "libssl-3-x64.dll"   # OpenSSL, via gstdtls
 )
 
-# Files we must never ship (GPL / patent-encumbered / not used by InPhase).
+# Media components excluded from this hardware-encoder-only distribution.
 $forbidden = @(
     "x264*.dll", "x265*.dll", "libx264*", "libx265*",
     "avcodec*.dll", "avformat*.dll", "avdevice*.dll", "avfilter*.dll",
@@ -90,7 +95,9 @@ if (-not $dumpbin) {
 if (-not $dumpbin) { throw "dumpbin.exe not found (install VS Build Tools 'MSVC' + 'C++ tools')" }
 
 function Get-PEImports([string]$Path) {
-    (& $dumpbin /nologo /dependents $Path) 2>$null |
+    $imports = & $dumpbin /nologo /dependents $Path
+    if ($LASTEXITCODE -ne 0) { throw "Cannot inspect PE imports: $Path" }
+    $imports |
         Where-Object { $_ -match '^\s{4,}\S+\.dll\s*$' } |
         ForEach-Object { $_.Trim().ToLowerInvariant() } |
         # API-set forwarders / OS umbrellas — always provided by the OS, never
@@ -99,44 +106,80 @@ function Get-PEImports([string]$Path) {
 }
 
 $sysRoots = @("$env:WINDIR\System32", "$env:WINDIR\SysWOW64") | ForEach-Object { $_.ToLowerInvariant() }
+# VC runtimes on the build machine are not Windows system components.
+# Resolve them from the redistributable directory instead of silently omitting them.
+$redistRoots = @()
+$vswhere = Join-Path ([Environment]::GetFolderPath("ProgramFilesX86")) "Microsoft Visual Studio\Installer\vswhere.exe"
+if (Test-Path $vswhere) {
+    $vsRoot = & $vswhere -latest -products * -property installationPath
+    if ($LASTEXITCODE -ne 0) { throw "vswhere failed." }
+    if ($vsRoot) {
+        $redistRoots = @(Get-ChildItem "$vsRoot\VC\Redist\MSVC\*\x64\Microsoft.VC*.CRT" -Directory -ErrorAction SilentlyContinue |
+            Sort-Object FullName -Descending | ForEach-Object { $_.FullName })
+    }
+}
 $resolved = [System.Collections.Generic.HashSet[string]]::new()
+$sources = @{}
 $queue    = [System.Collections.Generic.Queue[string]]::new()
 
 # seeds: the host EXE + every allowlisted plugin DLL
 $queue.Enqueue($exe)
+$inspector = Join-Path $gstBin "gst-inspect-1.0.exe"
+if (-not (Test-Path $inspector)) { throw "GStreamer inspection tool missing." }
+$queue.Enqueue($inspector)
+foreach ($rl in $runtimeLoaded) {
+    $src = Join-Path $gstBin $rl
+    if (-not (Test-Path $src)) { throw "Required runtime library missing: $rl" }
+    [void]$resolved.Add($rl.ToLowerInvariant())
+    $sources[$rl.ToLowerInvariant()] = $src
+    $queue.Enqueue($src)
+}
 foreach ($p in $plugins) {
     $dll = Join-Path $gstPlug "$p.dll"
-    if (Test-Path $dll) { $queue.Enqueue($dll) } else { Write-Warning "plugin not in GStreamer install: $p" }
+    if (Test-Path $dll) { $queue.Enqueue($dll) } else { throw "Required plugin missing from GStreamer install: $p" }
 }
 
 while ($queue.Count -gt 0) {
     $cur = $queue.Dequeue()
     foreach ($imp in Get-PEImports $cur) {
         if ($resolved.Contains($imp)) { continue }
-        # skip Windows system DLLs
-        $inSys = $false
-        foreach ($s in $sysRoots) { if (Test-Path (Join-Path $s $imp)) { $inSys = $true; break } }
-        if ($inSys) { continue }
-        # must come from the GStreamer bin dir to be a bundle candidate
         $src = Join-Path $gstBin $imp
-        if (-not (Test-Path $src)) { Write-Warning "unresolved import (not in gst bin, not system): $imp  <- $(Split-Path $cur -Leaf)"; continue }
-        [void]$resolved.Add($imp)
-        $queue.Enqueue($src)
+        $isVcRuntime = $imp -match '^(vcruntime|msvcp|concrt)'
+        if (-not (Test-Path $src) -and $isVcRuntime) {
+            $src = $null
+            foreach ($redist in $redistRoots) {
+                $candidate = Join-Path $redist $imp
+                if (Test-Path $candidate) { $src = $candidate; break }
+            }
+            if (-not $src) { throw "VC++ redistributable DLL missing: $imp" }
+        }
+        if ($src -and (Test-Path $src)) {
+            [void]$resolved.Add($imp)
+            $sources[$imp] = $src
+            $queue.Enqueue($src)
+            continue
+        }
+        $inSys = $false
+        foreach ($systemRoot in $sysRoots) {
+            if (Test-Path (Join-Path $systemRoot $imp)) { $inSys = $true; break }
+        }
+        if (-not $inSys) { throw "Unresolved DLL $imp imported by $cur" }
     }
 }
-foreach ($rl in $runtimeLoaded) { [void]$resolved.Add($rl.ToLowerInvariant()) }
 
 # ---------------------------------------------------------------------------
 # 3. Assemble.
 # ---------------------------------------------------------------------------
 Remove-Item -Recurse -Force $OutDir -ErrorAction SilentlyContinue
-foreach ($d in @("runtime\gstreamer\bin", "runtime\gstreamer\lib\gstreamer-1.0", "licenses")) {
+foreach ($d in @("runtime\gstreamer\lib\gstreamer-1.0", "licenses")) {
     $null = New-Item -ItemType Directory -Force -Path (Join-Path $OutDir $d)
 }
 
 Copy-Item $exe (Join-Path $OutDir "InPhaseHost.exe")
+Copy-Item $inspector $OutDir
 
-$binOut  = Join-Path $OutDir "runtime\gstreamer\bin"
+# Windows resolves linked DLLs before main(): keep dependencies beside the EXE.
+$binOut  = $OutDir
 $plugOut = Join-Path $OutDir "runtime\gstreamer\lib\gstreamer-1.0"
 
 function Test-Forbidden([string]$name) {
@@ -146,8 +189,7 @@ function Test-Forbidden([string]$name) {
 
 foreach ($imp in ($resolved | Sort-Object)) {
     if (Test-Forbidden $imp) { throw "PANIC: dependency walk pulled a forbidden library: $imp" }
-    $src = Join-Path $gstBin $imp
-    if (Test-Path $src) { Copy-Item $src $binOut } else { Write-Warning "runtime-loaded lib missing from gst bin: $imp" }
+    Copy-Item $sources[$imp] $binOut
 }
 foreach ($p in $plugins) {
     $src = Join-Path $gstPlug "$p.dll"
@@ -163,7 +205,8 @@ foreach ($p in $plugins) {
 # ---------------------------------------------------------------------------
 # name-glob -> @{ License ; Source }.  '' license => flagged as UNKNOWN.
 $lic = [ordered]@{
-    "inphasehost.exe"        = @{ L = "LicenseRef-InPhase-Proprietary"; S = "InPhase" }
+    "inphasehost.exe"        = @{ L = "GPL-3.0-or-later"; S = "https://github.com/SamBennettDev/InPhase" }
+    "gst-inspect-1.0.exe"   = @{ L = "LGPL-2.1-or-later"; S = "https://gitlab.freedesktop.org/gstreamer/gstreamer" }
     "gst*.dll"               = @{ L = "LGPL-2.1-or-later"; S = "https://gitlab.freedesktop.org/gstreamer/gstreamer" }
     "gstreamer-1.0-0.dll"    = @{ L = "LGPL-2.1-or-later"; S = "https://gitlab.freedesktop.org/gstreamer/gstreamer" }
     "gst*-1.0-0.dll"         = @{ L = "LGPL-2.1-or-later"; S = "https://gitlab.freedesktop.org/gstreamer/gstreamer" }
@@ -222,23 +265,33 @@ $rows | Sort-Object path | Export-Csv (Join-Path $OutDir "MANIFEST.csv") -NoType
 InPhase Host — open-source components in this build
 Generated $(Get-Date -Format o)
 
-InPhase-owned code: proprietary (see licenses\InPhase-LICENSE.txt).
+InPhase-owned code: GPL-3.0-or-later (see licenses\InPhase-LICENSE.txt).
 
 Third-party (dynamically linked / bundled):
-$($rows | Where-Object { $_.license -notin @("n/a","LicenseRef-InPhase-Proprietary","UNKNOWN") } |
+$($rows | Where-Object { $_.license -notin @("n/a","GPL-3.0-or-later","UNKNOWN") } |
     Group-Object license | Sort-Object Name | ForEach-Object {
         "  [$($_.Name)]`n" + ($_.Group | ForEach-Object { "    - $($_.path)  ($($_.source))" } | Sort-Object -Unique | Out-String)
     } | Out-String)
 
-Corresponding source for LGPL / MPL components is archived per release at the
-InPhase source-offer URL.
+This is a binary component inventory, not a substitute for corresponding source.
+The public release must include matching source and third-party notices as
+specified in docs/RELEASING.md. This candidate is not a completed source offer.
 "@ | Set-Content (Join-Path $OutDir "OPEN-SOURCE-COMPONENTS.txt") -Encoding utf8
 
 Copy-Item (Join-Path $root "LICENSE") (Join-Path $OutDir "licenses\InPhase-LICENSE.txt")
+Copy-Item (Join-Path $root "NOTICE") (Join-Path $OutDir "licenses\NOTICE.txt")
+# Preserve notices supplied by the exact GStreamer distribution used to build.
+$gstLicenses = Join-Path $GstRoot "share\licenses"
+if (Test-Path $gstLicenses) {
+    Copy-Item $gstLicenses (Join-Path $OutDir "licenses\gstreamer-distribution") -Recurse
+} else {
+    Write-Warning "GStreamer distribution has no share\licenses directory. Review source/notices before publishing."
+}
 # Rust dependency license inventory (compiled into the exe, not separate files).
 Push-Location $root
-& "$env:USERPROFILE\.cargo\bin\cargo.exe" tree -e no-dev --prefix none --no-default-features --features virtual-hid -p inphase-host 2>$null |
+& cargo tree --locked -e no-dev --prefix none -p inphase-host |
     Sort-Object -Unique | Set-Content (Join-Path $OutDir "licenses\rust-crates.txt")
+if ($LASTEXITCODE -ne 0) { throw "Rust dependency inventory failed." }
 Pop-Location
 
 # ---------------------------------------------------------------------------
@@ -246,9 +299,8 @@ Pop-Location
 # ---------------------------------------------------------------------------
 $fail = $false
 if ($forbiddenHit.Count) { Write-Host "FORBIDDEN files in bundle:" -ForegroundColor Red; $forbiddenHit | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }; $fail = $true }
-if ($unknown.Count)      { Write-Host "UNKNOWN-license files (add to the table or remove):" -ForegroundColor Yellow; $unknown | ForEach-Object { Write-Host "  $_" -ForegroundColor Yellow } }
+if ($unknown.Count)      { $fail = $true; Write-Host "UNKNOWN-license files (add to the table or remove):" -ForegroundColor Yellow; $unknown | ForEach-Object { Write-Host "  $_" -ForegroundColor Yellow } }
 
 $size = "{0:N1} MB" -f ((Get-ChildItem $OutDir -Recurse | Measure-Object Length -Sum).Sum / 1MB)
 Write-Host "Packaged -> $OutDir  ($size, $($rows.Count) files, $($resolved.Count) support DLLs, $($plugins.Count) plugins)" -ForegroundColor Green
-if ($fail) { throw "packaging gate failed - see FORBIDDEN files above" }
-if ($unknown.Count) { Write-Warning "packaging completed with UNKNOWN-license files - resolve before release" }
+if ($fail) { throw "packaging gate failed - resolve forbidden or unknown-license files" }

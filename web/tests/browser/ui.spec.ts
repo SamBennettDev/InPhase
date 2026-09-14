@@ -1,0 +1,83 @@
+import { test, expect } from "@playwright/test";
+import { mockHost, openPlayer } from "./fixtures.js";
+
+test("dashboard shows pairing data, safe device names and a usable QR image", async ({ page }, info) => {
+  const errors: string[] = [];
+  page.on("pageerror", e => errors.push(e.message));
+  await mockHost(page);
+  await page.goto("/");
+  await expect(page.locator("#pin")).toHaveText("482916");
+  await expect(page.locator("#play-url")).toHaveText("https://gaming-pc.local/");
+  await expect(page.locator("#controllers")).toContainText("Living room <TV>");
+  await expect(page.locator("#controllers tv")).toHaveCount(0);
+  await expect(page.locator("#raw")).not.toContainText("482916");
+  await page.screenshot({ path: info.outputPath("dashboard.png"), fullPage: true });
+  await page.locator("#rotate").click();
+  await expect(page.locator("#pin")).toHaveText("194826");
+  await page.locator("#new-device").click();
+  await expect(page.getByAltText("Scan to pair this device")).toBeVisible();
+  await expect(page.getByAltText("Scan to pair this device")).toHaveJSProperty("naturalWidth", 120);
+  expect(errors).toEqual([]);
+});
+test("failed dashboard actions are visible and can be retried", async ({ page }) => {
+  await mockHost(page, { rotateError: true });
+  await page.goto("/");
+  await expect(page.locator("#pin")).toHaveText("482916");
+  await page.locator("#rotate").click();
+  await expect(page.locator("#message")).toBeVisible();
+  await expect(page.locator("#message")).toContainText("unavailable");
+  await expect(page.locator("#rotate")).toBeEnabled();
+  await expect(page.locator("#pin")).toHaveText("482916");
+});
+test("library search and settings preserve selected quality and game", async ({ page }, info) => {
+  const errors: string[] = [];
+  page.on("pageerror", e => errors.push(e.message));
+  await mockHost(page);
+  await openPlayer(page);
+  await expect(page.getByRole("button", { name: "Stream desktop", exact: true })).toBeEnabled();
+  await expect(page.locator(".lib-card")).toHaveCount(6);
+  await page.screenshot({ path: info.outputPath("library.png"), fullPage: true });
+  await page.getByRole("button", { name: "Stream settings", exact: true }).click();
+  await page.getByLabel("Resolution", { exact: true }).selectOption("1440");
+  await page.getByLabel("Frame rate", { exact: true }).selectOption("120");
+  await page.getByRole("button", { name: "Close settings" }).click();
+  await page.getByLabel("Search games").fill("hades");
+  await expect(page.locator(".lib-card")).toHaveCount(1);
+  await page.getByRole("button", { name: "Select Hades II", exact: true }).click();
+  await expect(page.locator("#picklabel")).toHaveText("Hades II");
+  await expect(page.locator("#stream-summary")).toContainText("1440p · 120 fps");
+  await page.getByLabel("Search games").fill("does-not-exist");
+  await expect(page.locator("#library")).toContainText("No games match");
+  const settings = await page.evaluate(() => JSON.parse(localStorage.getItem("inphase.settings")!));
+  expect(settings).toMatchObject({ height: 1440, fps: 120, streamTarget: { type: "game", id: "0" } });
+  expect(errors).toEqual([]);
+});
+test("busy host prevents starting a second session", async ({ page }) => {
+  await mockHost(page, { busy: true });
+  await openPlayer(page);
+  await expect(page.getByRole("button", { name: "PC in use", exact: true })).toBeDisabled();
+  await expect(page.locator("#home-help")).toContainText("Another device");
+});
+test("library failure still permits desktop play and offers retry", async ({ page }) => {
+  await mockHost(page, { libraryError: true });
+  await openPlayer(page);
+  await expect(page.getByRole("button", { name: "Stream desktop", exact: true })).toBeEnabled();
+  await expect(page.locator("#library")).toContainText("could not be loaded");
+  await expect(page.locator("#retry-library")).toBeVisible();
+});
+test("mobile layout fits and settings dialog supports keyboard dismissal", async ({ page }, info) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mockHost(page);
+  await openPlayer(page);
+  await expect(page.locator(".lib-card")).toHaveCount(6);
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  await page.screenshot({ path: info.outputPath("library-mobile.png"), fullPage: true });
+  await page.getByRole("button", { name: "Stream settings", exact: true }).click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).not.toBeVisible();
+  await expect(page.getByRole("button", { name: "Stream settings", exact: true })).toBeFocused();
+  await page.goto("/");
+  await expect(page.locator("#pin")).toHaveText("482916");
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+});

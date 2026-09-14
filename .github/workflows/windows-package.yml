@@ -1,0 +1,74 @@
+name: Windows package
+on:
+  workflow_call:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: windows-latest
+    timeout-minutes: 50
+    env:
+      INPHASE_BUILD_ID: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Rust toolchain
+        run: rustup show
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-cargo-${{ hashFiles('Cargo.lock') }}
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}\gstreamer.exe
+          key: gstreamer-1.28.6-msvc-x64-complete
+      - name: Install GStreamer 1.28.6 runtime and development files
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $exe = "$env:RUNNER_TEMP\gstreamer.exe"
+          if (-not (Test-Path $exe) -or (Get-Item $exe).Length -lt 100MB) {
+            curl.exe --fail --silent --show-error --location --retry 3 -o $exe "https://gstreamer.freedesktop.org/data/pkg/windows/1.28.6/msvc/gstreamer-1.0-msvc-x86_64-1.28.6.exe"
+            if ($LASTEXITCODE -ne 0) { throw "GStreamer download failed" }
+          }
+          $install = Start-Process $exe -Wait -PassThru -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-','/NOCANCEL','/TYPE=complete'
+          if ($install.ExitCode -notin @(0, 3010)) { throw "GStreamer install failed: $($install.ExitCode)" }
+          $gst = "C:\Program Files\gstreamer\1.0\msvc_x86_64"
+          if (-not (Test-Path "$gst\lib\pkgconfig\gstreamer-1.0.pc")) { throw "GStreamer development files missing" }
+          "GSTREAMER_1_0_ROOT_MSVC_X86_64=$gst\" | Out-File -Append $env:GITHUB_ENV
+          "PKG_CONFIG_PATH=$gst\lib\pkgconfig" | Out-File -Append $env:GITHUB_ENV
+          "$gst\bin" | Out-File -Append $env:GITHUB_PATH
+          Get-ChildItem "$gst\share" -Directory | Select-Object Name
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+      - name: Build installer
+        shell: pwsh
+        run: ./scripts/build-installer.ps1
+      - name: Verify isolated package
+        shell: pwsh
+        run: ./scripts/verify-package.ps1
+      - name: Generate checksum
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash dist\InPhaseSetup.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          Set-Content -Encoding ascii dist\InPhaseSetup.exe.sha256 "$hash  InPhaseSetup.exe"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: InPhase-windows-candidate
+          if-no-files-found: error
+          path: |
+            dist/InPhaseSetup.exe
+            dist/InPhaseSetup.exe.sha256
+            dist/PACKAGE-CHECK.txt
+            dist/InPhase/MANIFEST.csv
+            dist/InPhase/OPEN-SOURCE-COMPONENTS.txt
+            dist/InPhase/licenses

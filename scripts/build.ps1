@@ -1,42 +1,43 @@
 <#
-.SYNOPSIS  Build the InPhase host + web client.
-.DESCRIPTION
-  1. Builds the web client (Vite) -> web/dist/
-  2. Builds the Rust host -> target/<profile>/inphase-host.exe
-  Refreshes GStreamer / PATH env from the machine scope so it works in a fresh
-  non-interactive shell.
-.PARAMETER Release   Build the optimised release binary.
-.PARAMETER SkipWeb   Skip the web build (reuse the existing web/dist/).
+.SYNOPSIS Build the embedded web client and Windows host.
+.PARAMETER Release Build the optimized binary.
+.PARAMETER SkipWeb Reuse an existing web build (development only).
 #>
 [CmdletBinding()]
 param([switch]$Release, [switch]$SkipWeb)
 $ErrorActionPreference = "Stop"
+$PSNativeCommandUseErrorActionPreference = $true
+Set-StrictMode -Version Latest
 $root = Split-Path -Parent $PSScriptRoot
+if ($Release -and $SkipWeb) { throw "Release builds must build the web client from the same source." }
 
-# Fold the machine + user PATH into whatever this shell already has, so a fresh
-# non-interactive shell still finds GStreamer without dropping the caller's PATH.
 $env:Path = ($env:Path, [Environment]::GetEnvironmentVariable("Path","Machine"),
              [Environment]::GetEnvironmentVariable("Path","User") -join ";")
-$env:PKG_CONFIG_PATH = [Environment]::GetEnvironmentVariable("PKG_CONFIG_PATH","Machine")
-$env:GSTREAMER_1_0_ROOT_MSVC_X86_64 = [Environment]::GetEnvironmentVariable("GSTREAMER_1_0_ROOT_MSVC_X86_64","Machine")
-$cargo = "$env:USERPROFILE\.cargo\bin\cargo.exe"
-
-if (-not $SkipWeb) {
-  Write-Host "== web client ==" -ForegroundColor Cyan
-  Push-Location "$root\web"
-  if (-not (Test-Path node_modules)) { npm ci --no-audit --no-fund }
-  npm run build
-  Pop-Location
+foreach ($name in @("PKG_CONFIG_PATH", "GSTREAMER_1_0_ROOT_MSVC_X86_64")) {
+    if (-not [Environment]::GetEnvironmentVariable($name, "Process")) {
+        [Environment]::SetEnvironmentVariable($name, [Environment]::GetEnvironmentVariable($name, "Machine"), "Process")
+    }
 }
-
-Write-Host "== host ==" -ForegroundColor Cyan
+$cargo = (Get-Command cargo.exe -ErrorAction Stop).Source
 Push-Location $root
-$args = @("build", "-p", "inphase-host")
-if ($Release) { $args += "--release" }
-& $cargo @args
-$profile = if ($Release) { "release" } else { "debug" }
-$exe = "$root\target\$profile\inphase-host.exe"
-Pop-Location
-
-Write-Host "`nBuilt: $exe" -ForegroundColor Green
-Get-Item $exe | Select-Object Length, LastWriteTime
+try {
+    if (-not $env:INPHASE_BUILD_ID) {
+        $env:INPHASE_BUILD_ID = (& git rev-parse HEAD).Trim()
+        if ($LASTEXITCODE -ne 0) { throw "Cannot determine build revision." }
+    }
+    if (-not $SkipWeb) {
+        Push-Location (Join-Path $root "web")
+        try {
+            npm ci --no-audit --no-fund
+            if ($LASTEXITCODE -ne 0) { throw "Web dependency installation failed." }
+            npm run build
+            if ($LASTEXITCODE -ne 0) { throw "Web build failed." }
+        } finally { Pop-Location }
+    }
+    $cargoArgs = @("build", "--locked", "-p", "inphase-host")
+    if ($Release) { $cargoArgs += "--release" }
+    & $cargo @cargoArgs
+    if ($LASTEXITCODE -ne 0) { throw "Host build failed; nothing was packaged." }
+    $profile = if ($Release) { "release" } else { "debug" }
+    Get-Item (Join-Path $root "target\$profile\inphase-host.exe") | Select-Object FullName, Length, LastWriteTime
+} finally { Pop-Location }

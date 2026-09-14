@@ -24,3 +24,7 @@ Cargo.lock.orig
 /deploy/player/
 /deploy/cloudflared/*.json
 node_modules/
+
+# Browser test output
+web/test-results/
+web/playwright-report/
