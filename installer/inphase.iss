@@ -82,7 +82,7 @@ Type: filesandordirs; Name: "{commonappdata}\InPhase\tls"
 [Run]
 Filename: "{sys}\certutil.exe"; Parameters: "-delstore -f Root ""InPhase Local CA"""; Flags: runhidden waituntilterminated
 Filename: "{app}\{#AppExe}"; Parameters: "--setup-firewall"; StatusMsg: "Configuring Windows Firewall..."; Flags: runhidden waituntilterminated
-Filename: "{app}\{#AppExe}"; Parameters: "--trust-ca"; StatusMsg: "Setting up your InPhase certificate..."; Flags: runhidden waituntilterminated runasoriginaluser
+Filename: "{app}\{#AppExe}"; Parameters: "--trust-ca"; StatusMsg: "Setting up your InPhase certificate..."; Flags: runhidden waituntilterminated runasoriginaluser; Check: ShouldConfigureCertificate
 Filename: "{app}\{#AppExe}"; Parameters: "--enable-startup"; Flags: runhidden waituntilterminated runasoriginaluser; Tasks: startup
 Filename: "{app}\{#AppExe}"; Parameters: "--open-dashboard"; Description: "Open InPhase and pair a device"; Flags: postinstall nowait runasoriginaluser skipifsilent
 
@@ -101,6 +101,13 @@ Type: filesandordirs; Name: "{localappdata}\InPhase\gst-registry.bin"
 Type: filesandordirs; Name: "{commonappdata}\InPhase\tls"
 
 [Code]
+// The package regression test isolates upgrade behavior from certificate-store
+// behavior on GitHub's headless Windows runner. Normal installs never set this.
+function ShouldConfigureCertificate: Boolean;
+begin
+  Result := Lowercase(ExpandConstant('{param:SkipCertificateSetup|no}')) <> 'yes';
+end;
+
 // Stop the running tray host deterministically before [Files] is processed.
 // Setup is elevated, so this also handles a host started by the original user.
 // taskkill returns 128 when no matching process exists.
