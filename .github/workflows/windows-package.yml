@@ -70,6 +70,37 @@ jobs:
         run: |
           $hash = (Get-FileHash dist\InPhaseSetup.exe -Algorithm SHA256).Hash.ToLowerInvariant()
           Set-Content -Encoding ascii dist\InPhaseSetup.exe.sha256 "$hash  InPhaseSetup.exe"
+      - name: Verify upgrade while host is running
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $setup = (Resolve-Path "dist\InPhaseSetup.exe").Path
+          $setupArgs = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/TASKS=""')
+          $installDir = Join-Path $env:ProgramFiles "InPhase"
+          $hostExe = Join-Path $installDir "InPhaseHost.exe"
+          try {
+            $first = Start-Process $setup -ArgumentList $setupArgs -Wait -PassThru
+            if ($first.ExitCode -notin @(0, 3010)) { throw "Initial install failed: $($first.ExitCode)" }
+            if (-not (Test-Path $hostExe)) { throw "Installed host is missing" }
+
+            $host = Start-Process $hostExe -PassThru
+            Start-Sleep -Seconds 3
+            if ($host.HasExited) { throw "Installed host exited before upgrade test" }
+
+            $upgrade = Start-Process $setup -ArgumentList $setupArgs -Wait -PassThru
+            if ($upgrade.ExitCode -notin @(0, 3010)) { throw "In-place upgrade failed: $($upgrade.ExitCode)" }
+            $host.Refresh()
+            if (-not $host.HasExited) { throw "Upgrade left the old host process running" }
+
+            $uninstaller = Join-Path $installDir "unins000.exe"
+            if (-not (Test-Path $uninstaller)) { throw "Uninstaller is missing" }
+            $remove = Start-Process $uninstaller -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru
+            if ($remove.ExitCode -notin @(0, 3010)) { throw "Uninstall failed: $($remove.ExitCode)" }
+          }
+          finally {
+            taskkill.exe /F /T /IM InPhaseHost.exe 2>$null
+            Remove-Item -Recurse -Force $installDir -ErrorAction SilentlyContinue
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: InPhase-windows-candidate
