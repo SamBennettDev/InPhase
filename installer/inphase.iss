@@ -47,8 +47,10 @@ ArchitecturesAllowed=x64os
 ArchitecturesInstallIn64BitMode=x64os
 WizardStyle=modern
 MinVersion=10.0.19041
-CloseApplications=yes
-CloseApplicationsFilter=InPhaseHost.exe
+; The host is a windowless tray application and does not reliably participate in
+; Restart Manager shutdown. PrepareToInstall below stops it explicitly before
+; Setup attempts to replace the executable.
+CloseApplications=no
 RestartApplications=no
 #ifdef SignTool
 SignTool=byname
@@ -99,6 +101,34 @@ Type: filesandordirs; Name: "{localappdata}\InPhase\gst-registry.bin"
 Type: filesandordirs; Name: "{commonappdata}\InPhase\tls"
 
 [Code]
+// Stop the running tray host deterministically before [Files] is processed.
+// Setup is elevated, so this also handles a host started by the original user.
+// taskkill returns 128 when no matching process exists.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+begin
+  Result := '';
+  if not Exec(ExpandConstant('{sys}\\taskkill.exe'),
+              '/F /T /IM "{#AppExe}"', '',
+              SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+  begin
+    Result := 'Setup could not start Windows taskkill to close InPhase Host. ' +
+              'Close InPhase Host from the system tray and run Setup again.';
+    exit;
+  end;
+
+  if (ResultCode <> 0) and (ResultCode <> 128) then
+  begin
+    Result := 'Setup could not close InPhase Host (taskkill exit code ' +
+              IntToStr(ResultCode) + '). Close it from the system tray or Task Manager, then try again.';
+    exit;
+  end;
+
+  // Process termination can complete just before Windows releases the image file.
+  Sleep(750);
+end;
+
 // Offer to remove user data (config + host log) on uninstall.
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
