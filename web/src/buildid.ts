@@ -32,7 +32,9 @@ const RELOADED_FOR = "inphase_reloaded_for_build";
  * a difference proves nothing), `"unknown"` (status unreachable or from a host
  * too old to report an id), or `"reloading"`.
  */
-export async function checkBuildId(): Promise<"match" | "skipped" | "unknown" | "reloading"> {
+export async function checkBuildId(): Promise<
+  "match" | "skipped" | "unknown" | "reloading"
+> {
   if (BUILD_ID === "dev") return "skipped";
 
   let hostId: string | undefined;
@@ -45,7 +47,8 @@ export async function checkBuildId(): Promise<"match" | "skipped" | "unknown" | 
   }
 
   // A host that does not report an id predates this check; nothing to compare.
-  if (typeof hostId !== "string" || hostId === "" || hostId === "dev") return "skipped";
+  if (typeof hostId !== "string" || hostId === "" || hostId === "dev")
+    return "skipped";
   if (hostId === BUILD_ID) return "match";
 
   // Reload at most once per host build. If we already reloaded for this exact
@@ -65,10 +68,14 @@ export async function checkBuildId(): Promise<"match" | "skipped" | "unknown" | 
   } catch {
     // Private mode with storage blocked: reloading without the guard risks a
     // loop, so prefer a stale page that logs over a page that thrashes.
-    console.error(`inphase: bundle ${BUILD_ID} != host ${hostId}, but cannot record a reload guard`);
+    console.error(
+      `inphase: bundle ${BUILD_ID} != host ${hostId}, but cannot record a reload guard`,
+    );
     return "unknown";
   }
-  console.warn(`inphase: bundle ${BUILD_ID} != host ${hostId} — host was updated; reloading`);
+  console.warn(
+    `inphase: bundle ${BUILD_ID} != host ${hostId} — host was updated; reloading`,
+  );
   location.reload();
   return "reloading";
 }

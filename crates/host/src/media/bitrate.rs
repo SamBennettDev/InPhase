@@ -107,7 +107,11 @@ impl BitrateController {
         //     12 Mbps inbound). Rising tail delay means the encoder is
         //     outrunning the path: cut before the loss it causes.
         if fb.client_lat_p95_ms > 120.0 {
-            let factor = if fb.client_lat_p95_ms > 250.0 { 0.6 } else { 0.7 };
+            let factor = if fb.client_lat_p95_ms > 250.0 {
+                0.6
+            } else {
+                0.7
+            };
             self.decrease_to((self.kbps as f32 * factor) as u32);
             self.cooldown = if fb.client_lat_p95_ms > 250.0 { 4 } else { 2 };
             self.clean_streak = 0;
@@ -254,9 +258,8 @@ impl BitrateController {
                 // the connection's pace: worker-drain clients pace higher and
                 // climb higher; legacy telemetry (pace unknown) falls back to
                 // the in-page constant.
-                let pace_ceiling = |pps: u32| {
-                    ((pps as f32) * crate::media::wt::WT_PACE_TO_CEILING) as u32
-                };
+                let pace_ceiling =
+                    |pps: u32| ((pps as f32) * crate::media::wt::WT_PACE_TO_CEILING) as u32;
                 let paced_ceiling = if fb.v4_pace_pps > 0 {
                     pace_ceiling(fb.v4_pace_pps)
                 } else {
@@ -358,7 +361,7 @@ mod tests {
             let fb = Feedback {
                 client_lat_p95_ms: 0.0,
                 v4_datagram_carrier: false,
-            v4_pace_pps: 0,
+                v4_pace_pps: 0,
                 lost_delta: lost,
                 recv_kbps: delivered,
                 decoded_fps: fps,
@@ -387,9 +390,9 @@ mod tests {
         // Warm up past the startup guard on a healthy route.
         for _ in 0..6 {
             c.step(&Feedback {
-            client_lat_p95_ms: 0.0,
-            v4_datagram_carrier: false,
-            v4_pace_pps: 0,
+                client_lat_p95_ms: 0.0,
+                v4_datagram_carrier: false,
+                v4_pace_pps: 0,
                 lost_delta: 0,
                 recv_kbps: 4_000.0,
                 decoded_fps: 60.0,
@@ -416,9 +419,9 @@ mod tests {
         ];
         for (lost, recv) in replay {
             c.step(&Feedback {
-            client_lat_p95_ms: 0.0,
-            v4_datagram_carrier: false,
-            v4_pace_pps: 0,
+                client_lat_p95_ms: 0.0,
+                v4_datagram_carrier: false,
+                v4_pace_pps: 0,
                 lost_delta: lost,
                 recv_kbps: recv,
                 decoded_fps: 58.0,
@@ -442,9 +445,9 @@ mod tests {
         let mut c = BitrateController::new(6_000, 600, 50_000);
         for _ in 0..6 {
             c.step(&Feedback {
-            client_lat_p95_ms: 0.0,
-            v4_datagram_carrier: false,
-            v4_pace_pps: 0,
+                client_lat_p95_ms: 0.0,
+                v4_datagram_carrier: false,
+                v4_pace_pps: 0,
                 lost_delta: 0,
                 recv_kbps: 6_000.0,
                 decoded_fps: 60.0,
@@ -457,9 +460,9 @@ mod tests {
         let before = c.kbps;
         for _ in 0..3 {
             c.step(&Feedback {
-            client_lat_p95_ms: 0.0,
-            v4_datagram_carrier: false,
-            v4_pace_pps: 0,
+                client_lat_p95_ms: 0.0,
+                v4_datagram_carrier: false,
+                v4_pace_pps: 0,
                 lost_delta: 400,
                 recv_kbps: 2_000.0,
                 decoded_fps: 4.0, // frames are not reaching the decoder
@@ -481,9 +484,9 @@ mod tests {
         let mut c = BitrateController::new(6_000, 600, 50_000);
         for _ in 0..30 {
             c.step(&Feedback {
-            client_lat_p95_ms: 0.0,
-            v4_datagram_carrier: false,
-            v4_pace_pps: 0,
+                client_lat_p95_ms: 0.0,
+                v4_datagram_carrier: false,
+                v4_pace_pps: 0,
                 lost_delta: 0,
                 recv_kbps: 8_200.0, // arriving fine
                 decoded_fps: 0.0,   // and decoding none of it
@@ -504,9 +507,9 @@ mod tests {
         let mut c = BitrateController::new(6_000, 600, 50_000);
         for _ in 0..5 {
             let fb = Feedback {
-            client_lat_p95_ms: 0.0,
-            v4_datagram_carrier: false,
-            v4_pace_pps: 0,
+                client_lat_p95_ms: 0.0,
+                v4_datagram_carrier: false,
+                v4_pace_pps: 0,
                 have_client: false,
                 ..Default::default()
             };
@@ -605,9 +608,9 @@ mod tests {
         let mut c = BitrateController::new(6_000, 600, 50_000);
         for tick in 0..30 {
             let fb = Feedback {
-            client_lat_p95_ms: 0.0,
-            v4_datagram_carrier: false,
-            v4_pace_pps: 0,
+                client_lat_p95_ms: 0.0,
+                v4_datagram_carrier: false,
+                v4_pace_pps: 0,
                 lost_delta: 0,
                 recv_kbps: 120.0, // near-static screen: tiny inbound...
                 decoded_fps: 8.0, // ...and low fps, but not because of bandwidth
@@ -671,11 +674,7 @@ mod tests {
                 ..Default::default()
             });
         }
-        assert!(
-            c.kbps < 20_000,
-            "p95 > 120 ms must cut hard ({})",
-            c.kbps
-        );
+        assert!(c.kbps < 20_000, "p95 > 120 ms must cut hard ({})", c.kbps);
         // And it must not charge back up while the tail stays elevated.
         for _ in 0..6 {
             c.step(&Feedback {
@@ -686,11 +685,7 @@ mod tests {
                 ..Default::default()
             });
         }
-        assert!(
-            c.kbps < 20_000,
-            "no climb while p95 > 100 ms ({})",
-            c.kbps
-        );
+        assert!(c.kbps < 20_000, "no climb while p95 > 100 ms ({})", c.kbps);
         // Tail settles -> climbing resumes (slow ~3 %/s, so give it ticks).
         for _ in 0..45 {
             c.step(&Feedback {
@@ -701,7 +696,11 @@ mod tests {
                 ..Default::default()
             });
         }
-        assert!(c.kbps > 20_000, "recovers once the tail clears ({})", c.kbps);
+        assert!(
+            c.kbps > 20_000,
+            "recovers once the tail clears ({})",
+            c.kbps
+        );
     }
 
     #[test]
@@ -739,7 +738,10 @@ mod tests {
                 ..Default::default()
             });
         }
-        assert_eq!(c2.kbps, 50_000, "low-motion LAN still climbs to the ceiling");
+        assert_eq!(
+            c2.kbps, 50_000,
+            "low-motion LAN still climbs to the ceiling"
+        );
     }
 
     #[test]
@@ -817,9 +819,9 @@ mod tests {
         // Warmup + clean streak, all signals perfect except the stall.
         for _ in 0..6 {
             c.step(&Feedback {
-            client_lat_p95_ms: 0.0,
-            v4_datagram_carrier: false,
-            v4_pace_pps: 0,
+                client_lat_p95_ms: 0.0,
+                v4_datagram_carrier: false,
+                v4_pace_pps: 0,
                 lost_delta: 0,
                 recv_kbps: 6_000.0,
                 decoded_fps: 60.0,
@@ -836,9 +838,9 @@ mod tests {
         // Queue keeps growing: the mid-tier cut engages.
         for _ in 0..4 {
             c.step(&Feedback {
-            client_lat_p95_ms: 0.0,
-            v4_datagram_carrier: false,
-            v4_pace_pps: 0,
+                client_lat_p95_ms: 0.0,
+                v4_datagram_carrier: false,
+                v4_pace_pps: 0,
                 lost_delta: 0,
                 recv_kbps: 6_000.0,
                 decoded_fps: 60.0,

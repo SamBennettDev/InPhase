@@ -8,7 +8,8 @@ export function brandLogo(className = "brand-logo"): string {
 
 /** True when Keyboard Lock is unavailable — Esc always exits fullscreen. */
 export function escExitsFullscreen(): boolean {
-  const kb = (navigator as Navigator & { keyboard?: { lock?: unknown } }).keyboard;
+  const kb = (navigator as Navigator & { keyboard?: { lock?: unknown } })
+    .keyboard;
   return !window.isSecureContext || typeof kb?.lock !== "function";
 }
 

@@ -50,17 +50,23 @@ export function renderPairPage(root: HTMLElement) {
     root.innerHTML = `<div class="center"><h1>InPhase</h1>
       <p class="sub">This browser is paired.</p>
       <div class="card"><button id="home">Open InPhase</button></div></div>`;
-    root.querySelector("#home")!.addEventListener("click", () => (location.href = "/"));
+    root
+      .querySelector("#home")!
+      .addEventListener("click", () => (location.href = "/"));
   };
 
   const submit = async () => {
     go.disabled = true;
     err.textContent = "";
     const ident = await getControllerIdentity().catch(() => null);
-    if (!ident) return fail("This browser can't hold a device key — update it and retry.");
+    if (!ident)
+      return fail(
+        "This browser can't hold a device key — update it and retry.",
+      );
 
     const invite = qrSecret ?? (codeEl?.value ?? "").trim().toUpperCase();
-    if (!invite || (!qrSecret && invite.length < 8)) return fail("Enter the full code from the PC.");
+    if (!invite || (!qrSecret && invite.length < 8))
+      return fail("Enter the full code from the PC.");
 
     try {
       const res = await fetch("/api/v1/pair", {
@@ -87,5 +93,8 @@ export function renderPairPage(root: HTMLElement) {
   };
 
   go.addEventListener("click", () => void submit());
-  codeEl?.addEventListener("keydown", (e) => e.key === "Enter" && void submit());
+  codeEl?.addEventListener(
+    "keydown",
+    (e) => e.key === "Enter" && void submit(),
+  );
 }

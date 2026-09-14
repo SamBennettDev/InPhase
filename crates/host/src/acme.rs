@@ -46,7 +46,9 @@ impl ResolvesServerCert for DualResolver {
         if let Some(acme) = self.acme.get() {
             if let Some(cert) = acme.resolve(hello) {
                 if !self.logged.swap(true, Ordering::Relaxed) {
-                    tracing::info!("acme certificate in use - the public hostname is now trusted by browsers");
+                    tracing::info!(
+                        "acme certificate in use - the public hostname is now trusted by browsers"
+                    );
                 }
                 return Some(cert);
             }
@@ -73,7 +75,10 @@ pub fn sslip_hostname(ipv6: &str) -> Option<String> {
 }
 
 /// The local-CA leaf, parsed once for the dual resolver's fallback arm.
-pub fn load_local_certified_key(cert_pem: &Path, key_pem: &Path) -> anyhow::Result<Arc<CertifiedKey>> {
+pub fn load_local_certified_key(
+    cert_pem: &Path,
+    key_pem: &Path,
+) -> anyhow::Result<Arc<CertifiedKey>> {
     let cert_pem = std::fs::read(cert_pem).context("reading the leaf cert pem")?;
     let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut &*cert_pem)
         .collect::<Result<_, _>>()
@@ -119,7 +124,10 @@ pub fn spawn_autostart(
 ) {
     tokio::spawn(async move {
         if !configured.is_empty() {
-            if slot.set(spawn_acme(configured.clone(), &cache_dir)).is_err() {
+            if slot
+                .set(spawn_acme(configured.clone(), &cache_dir))
+                .is_err()
+            {
                 return;
             }
             tracing::info!(%configured, "acme enabled for the configured hostname");
@@ -134,7 +142,9 @@ pub fn spawn_autostart(
             }
             let ext = remote.read().external.clone();
             let Some(ext) = ext else { continue };
-            let Some(addr) = ext.split("]:").next() else { continue };
+            let Some(addr) = ext.split("]:").next() else {
+                continue;
+            };
             let addr = addr.trim_start_matches('[');
             let Some(host) = sslip_hostname(addr) else {
                 tracing::debug!(%addr, "acme: external address is not IPv6 - sslip.io name unavailable");

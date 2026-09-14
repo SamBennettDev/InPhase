@@ -21,7 +21,11 @@ interface FakeSupport {
 function install(s: FakeSupport): void {
   const g = globalThis as Record<string, unknown>;
   g.VideoDecoder = s.videoDecoder
-    ? { isConfigSupported: async (c: { codec: string }) => ({ supported: s.videoDecoder!(c.codec) }) }
+    ? {
+        isConfigSupported: async (c: { codec: string }) => ({
+          supported: s.videoDecoder!(c.codec),
+        }),
+      }
     : undefined;
   // `navigator` is a getter-only global in Node.
   Object.defineProperty(g, "navigator", {
@@ -30,22 +34,35 @@ function install(s: FakeSupport): void {
       mediaCapabilities: {
         decodingInfo: async (cfg: { type: string }) => {
           if (cfg.type === "webrtc")
-            return { supported: s.webrtcHevc ?? false, smooth: false, powerEfficient: false };
+            return {
+              supported: s.webrtcHevc ?? false,
+              smooth: false,
+              powerEfficient: false,
+            };
           return { supported: true, smooth: true, powerEfficient: true };
         },
       },
     },
   });
   g.RTCRtpReceiver = {
-    getCapabilities: () => ({ codecs: (s.rtpReceiverCodecs ?? []).map((m) => ({ mimeType: m, clockRate: 90000 })) }),
+    getCapabilities: () => ({
+      codecs: (s.rtpReceiverCodecs ?? []).map((m) => ({
+        mimeType: m,
+        clockRate: 90000,
+      })),
+    }),
   };
 }
 
-const MODES = [{ codec: "h265" as const, width: 1920, height: 1080, framerate: 60 }];
+const MODES = [
+  { codec: "h265" as const, width: 1920, height: 1080, framerate: 60 },
+];
 
 async function load() {
   // Fresh module each time: the probe reads the globals installed above.
-  return (await import(`./capabilities.js?t=${Math.random()}`)) as typeof import("./capabilities.js");
+  return (await import(
+    `./capabilities.js?t=${Math.random()}`
+  )) as typeof import("./capabilities.js");
 }
 
 test("Chrome decodes HEVC through WebCodecs even with no HEVC in WebRTC", async () => {
@@ -56,7 +73,11 @@ test("Chrome decodes HEVC through WebCodecs even with no HEVC in WebRTC", async 
   });
   const { decodeHints, usableVideoCodecs } = await load();
   const hints = await decodeHints(MODES);
-  assert.equal(hints[0]?.supported, true, "WebCodecs decodes it - the hint must say so");
+  assert.equal(
+    hints[0]?.supported,
+    true,
+    "WebCodecs decodes it - the hint must say so",
+  );
   const codecs = usableVideoCodecs(MODES, hints);
   assert.ok(
     codecs.some((c) => /h265/i.test(c.mime_type)),
@@ -65,7 +86,10 @@ test("Chrome decodes HEVC through WebCodecs even with no HEVC in WebRTC", async 
 });
 
 test("a browser with no HEVC decoder is reported unsupported", async () => {
-  install({ videoDecoder: (c) => c.startsWith("avc1"), rtpReceiverCodecs: ["video/H264"] });
+  install({
+    videoDecoder: (c) => c.startsWith("avc1"),
+    rtpReceiverCodecs: ["video/H264"],
+  });
   const { decodeHints, usableVideoCodecs } = await load();
   const hints = await decodeHints(MODES);
   assert.equal(hints[0]?.supported, false);

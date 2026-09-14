@@ -364,12 +364,10 @@ impl WtVideoTransport {
                         stalled = 0;
                         expired = 0;
                         evicted = 0;
-                        shared_for_sender
-                            .write_stall_ms
-                            .store(
-                                std::mem::take(&mut stall_window_ms),
-                                std::sync::atomic::Ordering::Relaxed,
-                            );
+                        shared_for_sender.write_stall_ms.store(
+                            std::mem::take(&mut stall_window_ms),
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
                         last_report = std::time::Instant::now();
                     }
                     let frame = tokio::select! {
@@ -517,12 +515,9 @@ impl WtVideoTransport {
                                     frame.payload[s..e].to_vec()
                                 })
                                 .collect();
-                            let parity =
-                                inphase_protocol::fragment_parity(&data_frags, frame.key);
+                            let parity = inphase_protocol::fragment_parity(&data_frags, frame.key);
                             for (round, (row, acc)) in parity.into_iter().enumerate() {
-                                let group = (round
-                                    / if frame.key { 2 } else { 1 })
-                                    as u16;
+                                let group = (round / if frame.key { 2 } else { 1 }) as u16;
                                 let pf = inphase_protocol::WtFragment {
                                     frame_no: frame.frame_no,
                                     frag_idx: group,
@@ -570,7 +565,11 @@ impl WtVideoTransport {
                             frame.capture_host_us,
                             frame.enq_us,
                             pop_us,
-                            if ok { crate::media::frametrace::now_us() } else { 0 },
+                            if ok {
+                                crate::media::frametrace::now_us()
+                            } else {
+                                0
+                            },
                         ]);
                         continue;
                     }
@@ -619,7 +618,11 @@ impl WtVideoTransport {
                     // Keyframes get 500 ms (KEY_STREAM_TIMEOUT): a 1440p IDR
                     // is ~700 KB and the client may just have opened the
                     // channel it rides. Deltas keep the 120 ms budget.
-                    let wtimeout = if frame.key { KEY_STREAM_TIMEOUT } else { FRAME_STREAM_TIMEOUT };
+                    let wtimeout = if frame.key {
+                        KEY_STREAM_TIMEOUT
+                    } else {
+                        FRAME_STREAM_TIMEOUT
+                    };
                     // Timeline record: write_us = 0 marks a frame the sender
                     // reset mid-write (timeout / transport error).
                     let mut tl = [
@@ -737,7 +740,8 @@ impl WtVideoTransport {
         let mut frame = frame;
         let enq_us = crate::media::frametrace::now_us();
         frame.enq_us = enq_us;
-        frame.capture_host_us = enq_us.saturating_sub(frame.captured_at.elapsed().as_micros() as u64);
+        frame.capture_host_us =
+            enq_us.saturating_sub(frame.captured_at.elapsed().as_micros() as u64);
         self.frame_queue.push(frame);
         true
     }
@@ -768,7 +772,9 @@ impl WtVideoTransport {
     /// Current v4 injection pace for this client (the AIMD ceiling derives
     /// from it — worker-drain clients pace and climb higher).
     pub fn pace_pps(&self) -> u32 {
-        self.shared.pace_pps.load(std::sync::atomic::Ordering::Relaxed)
+        self.shared
+            .pace_pps
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Queue one Opus packet as a WT audio datagram (§11-on-WT). Header:
@@ -1009,8 +1015,7 @@ mod tests {
             assert!(t.send_frame(make(201, false)), "deltas keep flowing");
         }
         let q: &FrameQueue = &t.frame_queue;
-        let snapshot: Vec<u32> =
-            q.q.lock().iter().map(|f| f.frame_no).collect();
+        let snapshot: Vec<u32> = q.q.lock().iter().map(|f| f.frame_no).collect();
         assert!(
             snapshot.contains(&200),
             "keyframe survives eviction pressure: {snapshot:?}"
@@ -1046,7 +1051,12 @@ mod tests {
         // deliver (server-initiated streams are not). Opened BEFORE frames
         // are queued: a frame with no sink is dropped.
         use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-        let vch = conn.open_bi().await.expect("open bi").await.expect("bi accepted");
+        let vch = conn
+            .open_bi()
+            .await
+            .expect("open bi")
+            .await
+            .expect("bi accepted");
         let (mut vtx, mut vrx) = vch;
         let marker = br#"{"type":"video_channel"}"#;
         let mut framed = Vec::with_capacity(2 + marker.len());
@@ -1290,7 +1300,12 @@ mod tests {
         // for every frame queued behind it) - so the client opens its video
         // channel first, exactly as the web client does.
         use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-        let vch = conn.open_bi().await.expect("open bi").await.expect("bi accepted");
+        let vch = conn
+            .open_bi()
+            .await
+            .expect("open bi")
+            .await
+            .expect("bi accepted");
         let (mut vtx, mut vrx) = vch;
         let marker = br#"{"type":"video_channel"}"#;
         let mut framed = Vec::with_capacity(2 + marker.len());
@@ -1298,10 +1313,12 @@ mod tests {
         framed.extend_from_slice(marker);
         vtx.write_all(&framed).await.expect("marker");
         vtx.finish().await.ok(); // client never writes more
-        // Wait for the host to install the sink before queueing frames.
+                                 // Wait for the host to install the sink before queueing frames.
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
-            if !t.video_sink_is_empty() { break; }
+            if !t.video_sink_is_empty() {
+                break;
+            }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
 
@@ -1312,8 +1329,8 @@ mod tests {
                 key: n == 1,
                 payload: vec![n as u8; if n == 1 { 6_000 } else { 900 }],
                 captured_at: std::time::Instant::now(),
-                    enq_us: 0,
-                    capture_host_us: 0,
+                enq_us: 0,
+                capture_host_us: 0,
             }));
         }
 
@@ -1331,14 +1348,20 @@ mod tests {
                 continue; // audio piggybacks on the same reader; not video
             }
             let f = WtFragment::decode(&d).expect("fragment decodes");
-            let e = parts.entry(f.frame_no).or_insert(vec![None; f.frag_cnt as usize]);
+            let e = parts
+                .entry(f.frame_no)
+                .or_insert(vec![None; f.frag_cnt as usize]);
             e[f.frag_idx as usize] = Some(f.payload);
             if e.iter().all(|p| p.is_some()) && !got.contains(&f.frame_no) {
                 got.push(f.frame_no);
             }
         }
         got.sort_unstable();
-        assert_eq!(got, vec![2, 3], "deltas reassemble from datagrams; keyframe does not ride them");
+        assert_eq!(
+            got,
+            vec![2, 3],
+            "deltas reassemble from datagrams; keyframe does not ride them"
+        );
 
         // The keyframe arrives self-delimited on the client-opened channel.
         let mut head = [0u8; inphase_protocol::WT_VIDEO_HEADER_LEN];
@@ -1365,7 +1388,9 @@ mod tests {
         while !repaired && Instant::now() < deadline {
             let d = tokio::time::timeout(Duration::from_secs(5), conn.receive_datagram()).await;
             let Ok(Ok(d)) = d else { break };
-            let Ok(f) = WtFragment::decode(&d) else { continue };
+            let Ok(f) = WtFragment::decode(&d) else {
+                continue;
+            };
             if f.frame_no == 2 && f.frag_idx == 0 {
                 repaired = true;
             }

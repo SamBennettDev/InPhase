@@ -28,7 +28,9 @@ const SOURCE_LABEL: Record<string, string> = {
 
 function sourceLabel(s?: string | null): string {
   if (!s) return "";
-  return SOURCE_LABEL[s.toLowerCase()] ?? s.replace(/^\w/, (c) => c.toUpperCase());
+  return (
+    SOURCE_LABEL[s.toLowerCase()] ?? s.replace(/^\w/, (c) => c.toUpperCase())
+  );
 }
 
 const DESKTOP_POSTER =
@@ -70,7 +72,10 @@ function generatedPoster(name: string): string {
   // Size to fit the widest line inside ~250px (bold system font ≈ 0.6em/char),
   // then clamp so short and long titles both look deliberate.
   const widest = Math.max(...lines.map((l) => l.length), 1);
-  const size = Math.max(24, Math.min(lines.length >= 3 ? 34 : 44, Math.floor(250 / (widest * 0.6))));
+  const size = Math.max(
+    24,
+    Math.min(lines.length >= 3 ? 34 : 44, Math.floor(250 / (widest * 0.6))),
+  );
   const startY = 225 - ((lines.length - 1) * size * 1.15) / 2;
   const tspans = lines
     .map(
@@ -95,7 +100,10 @@ function generatedPoster(name: string): string {
 }
 
 function escapeXml(s: string): string {
-  return s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]!);
+  return s.replace(
+    /[&<>]/g,
+    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]!,
+  );
 }
 
 export interface Library {
@@ -113,9 +121,14 @@ export async function fetchLibrary(): Promise<Library> {
     poster_url: DESKTOP_POSTER,
   };
   try {
-    const r = await fetch("/api/v1/library", { signal: AbortSignal.timeout(7000) });
+    const r = await fetch("/api/v1/library", {
+      signal: AbortSignal.timeout(7000),
+    });
     if (!r.ok) return { items: [desktop], artPending: false, error: true };
-    const data = (await r.json()) as { items?: LibraryItem[]; art_pending?: boolean };
+    const data = (await r.json()) as {
+      items?: LibraryItem[];
+      art_pending?: boolean;
+    };
     // Most recently played first; titles whose launcher records no recency
     // sort after the dated ones, alphabetically.
     const games = (data.items ?? [])
@@ -126,7 +139,10 @@ export async function fetchLibrary(): Promise<Library> {
         if (at !== bt) return bt - at;
         return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
       });
-    return { items: [desktop, ...games], artPending: data.art_pending === true };
+    return {
+      items: [desktop, ...games],
+      artPending: data.art_pending === true,
+    };
   } catch {
     return { items: [desktop], artPending: false, error: true };
   }
@@ -149,7 +165,10 @@ export function sameTarget(a: StreamTarget, b: StreamTarget): boolean {
 }
 
 /** Resolve a target to something worth showing the user. */
-export function targetLabel(t: StreamTarget | null | undefined, items: LibraryItem[]): string {
+export function targetLabel(
+  t: StreamTarget | null | undefined,
+  items: LibraryItem[],
+): string {
   if (!t) return "";
   if (t.type === "desktop") return "Whole desktop";
   return items.find((i) => i.id === t.id)?.name ?? t.name ?? "a game";
@@ -179,7 +198,8 @@ export function mountLibraryGrid(
   }
 
   if (!visible.length) {
-    host.innerHTML='<div class="library-empty"><strong>Your desktop is ready.</strong><p>No games found. Open a launcher on your PC, or stream the desktop to get started.</p></div>';
+    host.innerHTML =
+      '<div class="library-empty"><strong>Your desktop is ready.</strong><p>No games found. Open a launcher on your PC, or stream the desktop to get started.</p></div>';
     return;
   }
   host.innerHTML = `<div class="library-grid" role="group" aria-label="Choose what to stream">
@@ -225,17 +245,26 @@ export function mountLibraryGrid(
   }
 
   for (const img of host.querySelectorAll<HTMLImageElement>(".lib-cover img")) {
-    img.addEventListener("error", () => {
-      const name = img.closest(".lib-card")?.querySelector(".lib-name")?.textContent ?? "";
-      img.src = generatedPoster(name);
-    }, { once: true });
+    img.addEventListener(
+      "error",
+      () => {
+        const name =
+          img.closest(".lib-card")?.querySelector(".lib-name")?.textContent ??
+          "";
+        img.src = generatedPoster(name);
+      },
+      { once: true },
+    );
   }
 }
 
 function escapeHtml(s: string): string {
   return s.replace(
     /[&<>"']/g,
-    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!,
+    (c) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[
+        c
+      ]!,
   );
 }
 function escapeAttr(s: string): string {

@@ -64,12 +64,14 @@ ctx.onmessage = (e: MessageEvent) => {
           workerNowUs: Math.round(performance.now() * 1000),
           staleMs: c.staleMs(),
         }),
-      onRouteWarning: (detail) => ctx.postMessage({ t: "route-warning", detail }),
+      onRouteWarning: (detail) =>
+        ctx.postMessage({ t: "route-warning", detail }),
       onAudio: (opus, ptsUs) => {
         const copy = opus.slice();
         ctx.postMessage({ t: "audio", opus: copy, ptsUs }, [copy.buffer]);
       },
-      onControlMessage: (line) => ctx.postMessage({ t: "control-message", line }),
+      onControlMessage: (line) =>
+        ctx.postMessage({ t: "control-message", line }),
       onReload: () => ctx.postMessage({ t: "reload" }),
     };
     c.onWire = (w) => ctx.postMessage({ t: "wire", w, kbps: c.inboundKbps() });

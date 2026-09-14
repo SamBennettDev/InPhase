@@ -71,7 +71,10 @@ pub const SESSION_COOKIE: &str = "inphase_session";
 fn admin_routes() -> Router<HttpState> {
     Router::new()
         .route("/api/v1/admin/status", get(api::admin_status))
-        .route("/api/v1/admin/frame-timeline", get(api::admin_frame_timeline))
+        .route(
+            "/api/v1/admin/frame-timeline",
+            get(api::admin_frame_timeline),
+        )
         .route("/api/v1/admin/disconnect", post(api::admin_disconnect))
         .route("/api/v1/admin/rotate-pin", post(api::admin_rotate_pin))
         .route("/api/v1/admin/revoke-all", post(api::admin_revoke_all))
@@ -121,7 +124,10 @@ pub fn lan_router(state: HttpState) -> Router {
 pub fn admin_router(state: HttpState) -> Router {
     admin_routes()
         .layer(middleware::from_fn(loopback_only))
-        .layer(middleware::from_fn_with_state(state.clone(), security_headers))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            security_headers,
+        ))
         .with_state(state)
 }
 
@@ -144,7 +150,9 @@ async fn security_headers(
     if is_api && !same_origin_request(req.headers()) {
         return (StatusCode::FORBIDDEN, "cross-origin request rejected").into_response();
     }
-    let authority = req.headers().get(axum::http::header::HOST)
+    let authority = req
+        .headers()
+        .get(axum::http::header::HOST)
         .and_then(|h| h.to_str().ok())
         .and_then(|h| h.parse::<axum::http::uri::Authority>().ok())
         .filter(|h| !h.as_str().contains('@'));
@@ -158,7 +166,10 @@ async fn security_headers(
     let mut res = next.run(req).await;
     let h = res.headers_mut();
     if is_api {
-        h.insert(axum::http::header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        h.insert(
+            axum::http::header::CACHE_CONTROL,
+            HeaderValue::from_static("no-store"),
+        );
     }
     h.insert(
         "content-security-policy",
@@ -215,10 +226,17 @@ async fn loopback_only(
     next: Next,
 ) -> Response {
     // Reject DNS rebinding: a loopback connection must name a loopback host.
-    let local_host = req.headers().get(axum::http::header::HOST)
+    let local_host = req
+        .headers()
+        .get(axum::http::header::HOST)
         .and_then(|h| h.to_str().ok())
         .and_then(|h| h.parse::<axum::http::uri::Authority>().ok())
-        .map(|h| matches!(h.host().to_ascii_lowercase().as_str(), "localhost" | "127.0.0.1" | "[::1]"))
+        .map(|h| {
+            matches!(
+                h.host().to_ascii_lowercase().as_str(),
+                "localhost" | "127.0.0.1" | "[::1]"
+            )
+        })
         .unwrap_or(false);
     if addr.ip().is_loopback() && local_host && same_origin_request(req.headers()) {
         next.run(req).await
@@ -231,18 +249,35 @@ async fn loopback_only(
 /// they still pass the network, pairing and controller-key guards.
 pub(super) fn same_origin_request(headers: &axum::http::HeaderMap) -> bool {
     use axum::http::{header, uri::Authority, Uri};
-    if headers.get("sec-fetch-site").and_then(|v| v.to_str().ok()) == Some("cross-site") { return false; }
-    let Some(origin) = headers.get(header::ORIGIN) else { return true; };
-    let Some(origin) = origin.to_str().ok().and_then(|v| v.parse::<Uri>().ok()) else { return false; };
-    let Some(scheme @ ("http" | "https")) = origin.scheme_str() else { return false; };
-    let Some(source) = origin.authority() else { return false; };
-    let Some(target) = headers.get(header::HOST).and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<Authority>().ok()) else { return false; };
+    if headers.get("sec-fetch-site").and_then(|v| v.to_str().ok()) == Some("cross-site") {
+        return false;
+    }
+    let Some(origin) = headers.get(header::ORIGIN) else {
+        return true;
+    };
+    let Some(origin) = origin.to_str().ok().and_then(|v| v.parse::<Uri>().ok()) else {
+        return false;
+    };
+    let Some(scheme @ ("http" | "https")) = origin.scheme_str() else {
+        return false;
+    };
+    let Some(source) = origin.authority() else {
+        return false;
+    };
+    let Some(target) = headers
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<Authority>().ok())
+    else {
+        return false;
+    };
     let default_port = if scheme == "https" { 443 } else { 80 };
-    !source.as_str().contains('@') && !target.as_str().contains('@')
+    !source.as_str().contains('@')
+        && !target.as_str().contains('@')
         && source.host().eq_ignore_ascii_case(target.host())
         && source.port_u16().unwrap_or(default_port) == target.port_u16().unwrap_or(default_port)
-        && origin.path() == "/" && origin.query().is_none()
+        && origin.path() == "/"
+        && origin.query().is_none()
 }
 
 /// Authenticated-session guard used by the protected handlers.
@@ -268,7 +303,6 @@ pub struct ResolvedTls {
     pub play_url: String,
     pub mode: TlsMode,
 }
-
 
 /// Work out whether the host can serve HTTPS and, if so, obtain the cert.
 /// `None` means fall back to plaintext HTTP (dashboard-on-localhost only).
@@ -435,18 +469,14 @@ pub async fn serve(state: HttpState, tls: Option<ResolvedTls>) -> anyhow::Result
     // One config answers everything: `acme-tls/1` ALPN → the challenge cert
     // (served by the ACME resolver once a validation is pending), browser
     // traffic → issued ACME cert, or the local-CA leaf before issuance.
-    let mut public_cfg = rustls::ServerConfig::builder_with_provider(
-        Arc::new(rustls::crypto::ring::default_provider().into()),
-    )
+    let mut public_cfg = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider().into(),
+    ))
     .with_safe_default_protocol_versions()
     .expect("tls versions")
     .with_no_client_auth()
     .with_cert_resolver(dual);
-    public_cfg.alpn_protocols = vec![
-        b"acme-tls/1".to_vec(),
-        b"h2".to_vec(),
-        b"http/1.1".to_vec(),
-    ];
+    public_cfg.alpn_protocols = vec![b"acme-tls/1".to_vec(), b"h2".to_vec(), b"http/1.1".to_vec()];
     let public_cfg = axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(public_cfg));
     crate::acme::spawn_autostart(
         state.cfg.tls.acme_hostname.clone(),

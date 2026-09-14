@@ -16,7 +16,9 @@ import { brandLogo } from "./ui/brand.js";
 // A restored tab renders the OLD bundle from memory cache (no revalidation),
 // which can be a wire-format mismatch with the host. Reload once; after a
 // reload the entry type is "reload", so this cannot loop.
-const nav = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
+const nav = performance.getEntriesByType("navigation")[0] as
+  | PerformanceNavigationTiming
+  | undefined;
 if (nav?.type === "back_forward") {
   location.reload();
 }
@@ -72,5 +74,8 @@ async function renderCertSetup(el: HTMLElement) {
         <button id="go" style="margin-top:1rem">Continue to ${escapeHtml(new URL(httpsUrl).hostname)}</button>
       </div>
     </div>`;
-  el.querySelector("#go")!.addEventListener("click", () => (location.href = httpsUrl));
+  el.querySelector("#go")!.addEventListener(
+    "click",
+    () => (location.href = httpsUrl),
+  );
 }

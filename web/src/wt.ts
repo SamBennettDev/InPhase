@@ -45,15 +45,19 @@ export class WtVideoClient {
   private winKbps = 0;
 
   get active(): boolean {
-    return this.worker !== null ? this.dialed : this.core?.active ?? false;
+    return this.worker !== null ? this.dialed : (this.core?.active ?? false);
   }
 
   inputReady(): boolean {
-    return this.worker !== null ? this.dialed : this.core?.inputReady() ?? false;
+    return this.worker !== null
+      ? this.dialed
+      : (this.core?.inputReady() ?? false);
   }
 
   rttMs(): number {
-    return this.worker !== null ? Math.round(this.lastRtt * 100) / 100 : this.core!.rttMs();
+    return this.worker !== null
+      ? Math.round(this.lastRtt * 100) / 100
+      : this.core!.rttMs();
   }
 
   inboundKbps(): number {
@@ -90,13 +94,16 @@ export class WtVideoClient {
         // The decoder + FrameOrderer live on this thread: push their stats to
         // the worker once a second so its telemetry merges wire + decode.
         this.statsPusher = setInterval(() => {
-          if (this.statsProvider) this.worker?.postMessage({ t: "stats", s: this.statsProvider() });
+          if (this.statsProvider)
+            this.worker?.postMessage({ t: "stats", s: this.statsProvider() });
         }, 1000);
         return;
       } catch (e) {
         this.killWorker();
         if (!String(e).includes("unsupported")) throw e;
-        console.info("wt: WebTransport unavailable in workers - running on the main thread");
+        console.info(
+          "wt: WebTransport unavailable in workers - running on the main thread",
+        );
       }
     }
     this.dialed = true;
@@ -111,12 +118,17 @@ export class WtVideoClient {
   }
 
   private dialViaWorker(info: WtVideoInfo, h: WtClientHandlers): Promise<void> {
-    const worker = new Worker(new URL("./wtworker.ts", import.meta.url), { type: "module" });
+    const worker = new Worker(new URL("./wtworker.ts", import.meta.url), {
+      type: "module",
+    });
     this.worker = worker;
     worker.onmessage = (e: MessageEvent) => this.onWorkerMessage(e.data);
     worker.onerror = () => h.onClosed("wt worker crashed");
     return new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error("wt worker dial timed out")), 15_000);
+      const timeout = setTimeout(
+        () => reject(new Error("wt worker dial timed out")),
+        15_000,
+      );
       const settle = (fn: () => void) => {
         clearTimeout(timeout);
         fn();
@@ -128,7 +140,8 @@ export class WtVideoClient {
           this.killWorker();
           return reject(new Error("WebTransport unsupported in worker"));
         }
-        if (m.t === "dial-err") return reject(new Error(m.msg ?? "worker dial failed"));
+        if (m.t === "dial-err")
+          return reject(new Error(m.msg ?? "worker dial failed"));
         this.onWorkerMessage(m);
       };
       worker.postMessage({ t: "dial", info });
@@ -146,7 +159,9 @@ export class WtVideoClient {
         h.onAudio?.(m.opus as Uint8Array, m.ptsUs as number);
         break;
       case "video-config":
-        h.onVideoConfig(m.cfg as Parameters<WtClientHandlers["onVideoConfig"]>[0]);
+        h.onVideoConfig(
+          m.cfg as Parameters<WtClientHandlers["onVideoConfig"]>[0],
+        );
         break;
       case "closed":
         h.onClosed(m.why as string);
@@ -175,7 +190,10 @@ export class WtVideoClient {
           this.deltaSeeded = true;
           this.offsetPageUs = (m.offsetUs as number) + this.clockDeltaEmaUs;
         }
-        this.stale = { atPage: performance.now(), staleMs: m.staleMs as number };
+        this.stale = {
+          atPage: performance.now(),
+          staleMs: m.staleMs as number,
+        };
         h.onRtt?.(m.rttMs as number);
         break;
       }
@@ -194,7 +212,9 @@ export class WtVideoClient {
   /** Host↔client clock offset (µs, capture-clock aligned) once synced,
    *  adjusted onto the PAGE clock for the decoder's glass ages. */
   clockOffsetUs(): number | null {
-    return this.worker !== null ? this.offsetPageUs : this.core!.clockOffsetUs();
+    return this.worker !== null
+      ? this.offsetPageUs
+      : this.core!.clockOffsetUs();
   }
 
   /** Upper bound on the offset error (ms). null while unsynced. */

@@ -358,8 +358,9 @@ fn parse_epic_manifest(path: &Path) -> Option<GameInfo> {
         exe_name: exe,
         poster_url,
         poster_path,
-    
-        last_played: None,})
+
+        last_played: None,
+    })
 }
 
 fn epic_poster(v: &serde_json::Value) -> Option<String> {
@@ -498,8 +499,9 @@ fn parse_gog_info(path: &Path) -> Option<GameInfo> {
         exe_name,
         poster_url,
         poster_path,
-    
-        last_played: None,})
+
+        last_played: None,
+    })
 }
 
 fn scan_xbox() -> anyhow::Result<Vec<GameInfo>> {
@@ -574,8 +576,9 @@ fn parse_xbox_manifest(path: &Path, install_dir: &Path) -> Option<GameInfo> {
         exe_name: launch,
         poster_url,
         poster_path,
-    
-        last_played: None,})
+
+        last_played: None,
+    })
 }
 
 /// The first `<Application Id="…" … Executable="…">` in an appxmanifest.
@@ -730,8 +733,9 @@ fn parse_ubisoft_config(path: &Path) -> Option<GameInfo> {
         exe_name,
         poster_url,
         poster_path,
-    
-        last_played: None,})
+
+        last_played: None,
+    })
 }
 
 fn scan_ea() -> anyhow::Result<Vec<GameInfo>> {
@@ -826,8 +830,9 @@ fn parse_ea_game_entry(key: &str, item: &serde_json::Value) -> Option<GameInfo> 
         exe_name,
         poster_url,
         poster_path,
-    
-        last_played: None,})
+
+        last_played: None,
+    })
 }
 
 fn scan_riot() -> anyhow::Result<Vec<GameInfo>> {
@@ -906,8 +911,9 @@ fn parse_riot_installs(v: &serde_json::Value) -> Vec<GameInfo> {
                 exe_name: None,
                 poster_url,
                 poster_path,
-            
-        last_played: None,});
+
+                last_played: None,
+            });
         }
     }
     out
@@ -938,8 +944,9 @@ fn parse_riot_metadata(path: &Path, fallback_slug: &str) -> Option<GameInfo> {
             exe_name: None,
             poster_url,
             poster_path,
-        
-        last_played: None,});
+
+            last_played: None,
+        });
     }
     let name = yaml_field(&text, "product_name")
         .or_else(|| yaml_field(&text, "name"))
@@ -957,8 +964,9 @@ fn parse_riot_metadata(path: &Path, fallback_slug: &str) -> Option<GameInfo> {
         exe_name: None,
         poster_url,
         poster_path,
-    
-        last_played: None,})
+
+        last_played: None,
+    })
 }
 
 fn scan_amazon() -> anyhow::Result<Vec<GameInfo>> {
@@ -1032,8 +1040,9 @@ fn parse_amazon_manifest(path: &Path) -> Option<GameInfo> {
         exe_name: None,
         poster_url,
         poster_path,
-    
-        last_played: None,})
+
+        last_played: None,
+    })
 }
 
 fn scan_registry_games() -> anyhow::Result<Vec<GameInfo>> {
@@ -1076,8 +1085,9 @@ fn game_from_uninstall(source: &str, entry: &windows_registry::UninstallEntry) -
         exe_name,
         poster_url,
         poster_path,
-    
-        last_played: None,})
+
+        last_played: None,
+    })
 }
 
 fn looks_like_game(entry: &windows_registry::UninstallEntry) -> bool {

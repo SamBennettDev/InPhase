@@ -134,11 +134,14 @@ pub fn unhex(s: &str) -> Option<Vec<u8>> {
     if s.len() % 2 != 0 {
         return None;
     }
-    s.as_bytes().chunks_exact(2).map(|pair| {
-        let hi = (pair[0] as char).to_digit(16)?;
-        let lo = (pair[1] as char).to_digit(16)?;
-        Some(((hi << 4) | lo) as u8)
-    }).collect()
+    s.as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let hi = (pair[0] as char).to_digit(16)?;
+            let lo = (pair[1] as char).to_digit(16)?;
+            Some(((hi << 4) | lo) as u8)
+        })
+        .collect()
 }
 
 // ---- at-rest protection --------------------------------------------------

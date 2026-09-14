@@ -263,8 +263,16 @@ async fn browser_cross_origin_and_rebinding_cannot_mutate_admin_state() {
     let addr = spawn(state(false)).await;
     for (host, origin, metadata) in [
         (addr.to_string(), "https://attacker.example".to_string(), ""),
-        ("attacker.example".to_string(), "http://attacker.example".to_string(), ""),
-        (addr.to_string(), format!("http://{addr}"), "Sec-Fetch-Site: cross-site\r\n"),
+        (
+            "attacker.example".to_string(),
+            "http://attacker.example".to_string(),
+            "",
+        ),
+        (
+            addr.to_string(),
+            format!("http://{addr}"),
+            "Sec-Fetch-Site: cross-site\r\n",
+        ),
         (addr.to_string(), "null".to_string(), ""),
     ] {
         let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();

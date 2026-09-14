@@ -232,8 +232,7 @@ pub mod local_ca {
             }
 
             // --trust-ca runs as the user who will run the host.
-            if try_addstore(&["-user", "-addstore", "-f", "Root"], &crt).await
-            {
+            if try_addstore(&["-user", "-addstore", "-f", "Root"], &crt).await {
                 tracing::info!("local CA trusted");
                 return true;
             }

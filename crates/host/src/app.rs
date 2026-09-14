@@ -137,9 +137,7 @@ impl HostRuntime {
                 loop {
                     match wt_events.try_next_event() {
                         Some(crate::media::wt::WtClientEvent::KeyframeRequest) => {
-                            if last_keyframe.elapsed()
-                                < std::time::Duration::from_millis(2500)
-                            {
+                            if last_keyframe.elapsed() < std::time::Duration::from_millis(2500) {
                                 continue;
                             }
                             last_keyframe = std::time::Instant::now();
@@ -418,7 +416,10 @@ impl HostRuntime {
             let port = self.cfg.network.http_port;
             tokio::spawn(async move {
                 for _ in 0..40 {
-                    if tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).await.is_ok() {
+                    if tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port))
+                        .await
+                        .is_ok()
+                    {
                         open_url(&format!("http://127.0.0.1:{port}/?dashboard"));
                         break;
                     }

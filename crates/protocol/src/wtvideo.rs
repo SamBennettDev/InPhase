@@ -100,8 +100,7 @@ impl WtFrame {
         if buf.len() < WT_VIDEO_HEADER_LEN {
             return Err(WtVideoError::Truncated);
         }
-        let payload_len =
-            u32::from_le_bytes([buf[14], buf[15], buf[16], buf[17]]) as usize;
+        let payload_len = u32::from_le_bytes([buf[14], buf[15], buf[16], buf[17]]) as usize;
         if buf.len() < WT_VIDEO_HEADER_LEN + payload_len {
             return Err(WtVideoError::Truncated);
         }

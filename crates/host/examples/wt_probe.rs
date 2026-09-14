@@ -315,11 +315,7 @@ async fn run() -> Result<()> {
             if Instant::now() >= until {
                 return;
             }
-            let r = tokio::time::timeout(
-                Duration::from_secs(2),
-                vch_rx.read_exact(&mut hdr),
-            )
-            .await;
+            let r = tokio::time::timeout(Duration::from_secs(2), vch_rx.read_exact(&mut hdr)).await;
             match r {
                 Ok(Ok(())) => {}
                 Ok(Err(_)) => {
@@ -330,16 +326,12 @@ async fn run() -> Result<()> {
                 }
                 Err(_) => continue, // idle second; the carrier may have moved
             }
-            let payload_len =
-                u32::from_le_bytes([hdr[14], hdr[15], hdr[16], hdr[17]]) as usize;
+            let payload_len = u32::from_le_bytes([hdr[14], hdr[15], hdr[16], hdr[17]]) as usize;
             let mut payload = vec![0u8; payload_len];
-            if tokio::time::timeout(
-                Duration::from_secs(2),
-                vch_rx.read_exact(&mut payload),
-            )
-            .await
-            .map(|r| r.is_err())
-            .unwrap_or(true)
+            if tokio::time::timeout(Duration::from_secs(2), vch_rx.read_exact(&mut payload))
+                .await
+                .map(|r| r.is_err())
+                .unwrap_or(true)
             {
                 eprintln!("probe: channel read timed out mid-payload");
                 return;
@@ -365,16 +357,12 @@ async fn run() -> Result<()> {
             if Instant::now() >= until {
                 return;
             }
-            let d = match tokio::time::timeout(
-                Duration::from_secs(2),
-                conn.receive_datagram(),
-            )
-            .await
-            {
-                Ok(Ok(d)) => d,
-                Ok(Err(_)) => return, // connection closed
-                Err(_) => continue,   // idle second
-            };
+            let d =
+                match tokio::time::timeout(Duration::from_secs(2), conn.receive_datagram()).await {
+                    Ok(Ok(d)) => d,
+                    Ok(Err(_)) => return, // connection closed
+                    Err(_) => continue,   // idle second
+                };
             if d.first() == Some(&WT_AUDIO_DATAGRAM_TAG) {
                 continue; // audio piggybacking on the same reader
             }
@@ -423,7 +411,11 @@ async fn run() -> Result<()> {
         format!("{}.arrivals.json", args.out),
         serde_json::to_string(&trace)?,
     )?;
-    let carrier = if s.datagram_frames > 0 { "datagrams" } else { "stream" };
+    let carrier = if s.datagram_frames > 0 {
+        "datagrams"
+    } else {
+        "stream"
+    };
     println!(
         "{{\"frames\":{},\"stream_frames\":{},\"datagram_frames\":{},\"carrier\":\"{}\",\"keyframes\":{},\"bytes\":{},\"out\":{:?}}}",
         s.stream_frames + s.datagram_frames,

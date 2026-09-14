@@ -103,7 +103,10 @@ fn main() -> anyhow::Result<()> {
                     "NOT installed — run --trust-ca as your normal Windows user"
                 }
             );
-            anyhow::ensure!(ok, "Certificate trust was not completed for the user running InPhase");
+            anyhow::ensure!(
+                ok,
+                "Certificate trust was not completed for the user running InPhase"
+            );
             Ok(())
         });
     }

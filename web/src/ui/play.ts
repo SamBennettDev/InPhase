@@ -29,7 +29,11 @@ import {
   targetLabel,
   type LibraryItem,
 } from "./library.js";
-import { getControllerIdentity, forgetControllerIdentity, deviceLabel } from "../controller-key.js";
+import {
+  getControllerIdentity,
+  forgetControllerIdentity,
+  deviceLabel,
+} from "../controller-key.js";
 import { checkBuildId } from "../buildid.js";
 import {
   loadSettings,
@@ -53,7 +57,8 @@ import {
   mediaCapabilities,
 } from "../capabilities.js";
 
-const isTouch = matchMedia("(pointer: coarse)").matches || "ontouchstart" in window;
+const isTouch =
+  matchMedia("(pointer: coarse)").matches || "ontouchstart" in window;
 
 /** Drop `?play` from the address bar without navigating.
  *
@@ -72,12 +77,18 @@ export async function renderPlay(root: HTMLElement) {
   root.innerHTML = `<div class="center">${brandLogo()}<p class="sub">Checking pairing…</p></div>`;
   let paired = false;
   try {
-    const r=await fetch('/api/v1/session',{signal:AbortSignal.timeout(7000),cache:'no-store'});
-    if(!r.ok&&r.status!==401) throw Error('Host unavailable');
-    paired=r.ok;
+    const r = await fetch("/api/v1/session", {
+      signal: AbortSignal.timeout(7000),
+      cache: "no-store",
+    });
+    if (!r.ok && r.status !== 401) throw Error("Host unavailable");
+    paired = r.ok;
   } catch {
-    root.innerHTML=`<main class="center">${brandLogo()}<h1>Let’s find your PC.</h1><p class="sub">Check that your gaming PC is awake and InPhase is running.</p><button id="retry">Try again</button></main>`;
-    root.querySelector('#retry')!.addEventListener('click',()=>void renderPlay(root)); return;
+    root.innerHTML = `<main class="center">${brandLogo()}<h1>Let’s find your PC.</h1><p class="sub">Check that your gaming PC is awake and InPhase is running.</p><button id="retry">Try again</button></main>`;
+    root
+      .querySelector("#retry")!
+      .addEventListener("click", () => void renderPlay(root));
+    return;
   }
 
   // `?play` — auto-connect in this tab, no home screen, no auto-fullscreen
@@ -100,102 +111,221 @@ function showHome(root: HTMLElement) {
     <main class="home app-shell">
       <header class="app-header">${brandLogo("brand-logo brand-logo--home")}<span class="header-divider"></span><span class="header-label">Remote play</span>
         <span class="connection-pill" id="host-status" role="status"><span class="dot"></span>Checking PC</span>
-        <button class="icon-btn" id="cfgbtn" aria-label="Stream settings" title="Stream settings">${icon('settings')}</button>
+        <button class="icon-btn" id="cfgbtn" aria-label="Stream settings" title="Stream settings">${icon("settings")}</button>
       </header>
-      <div class="page-heading"><div><p class="eyebrow">YOUR SPACE TO PLAY</p><h1>Library</h1><p class="sub">Your games. Your desktop. Right where you left them.</p></div><span class="quiet-tag">${icon('shield')} Paired device</span></div>
+      <div class="page-heading"><div><p class="eyebrow">YOUR SPACE TO PLAY</p><h1>Library</h1><p class="sub">Your games. Your desktop. Right where you left them.</p></div><span class="quiet-tag">${icon("shield")} Paired device</span></div>
       <section class="desktop-hero" aria-label="Gaming PC">
-        <div class="desktop-visual" aria-hidden="true"><div class="monitor-frame"><div class="monitor-wallpaper">${icon('monitor')}</div></div><div class="monitor-stand"></div></div>
-        <div class="desktop-copy"><p class="eyebrow" id="pc-name">YOUR GAMING PC</p><h2>Make yourself at home.</h2><p>Stream your whole desktop, open any launcher, and play your way.</p><button class="secondary compact" id="select-desktop">${icon('monitor')} Select desktop ${icon('chevron')}</button></div>
+        <div class="desktop-visual" aria-hidden="true"><div class="monitor-frame"><div class="monitor-wallpaper">${icon("monitor")}</div></div><div class="monitor-stand"></div></div>
+        <div class="desktop-copy"><p class="eyebrow" id="pc-name">YOUR GAMING PC</p><h2>Make yourself at home.</h2><p>Stream your whole desktop, open any launcher, and play your way.</p><button class="secondary compact" id="select-desktop">${icon("monitor")} Select desktop ${icon("chevron")}</button></div>
       </section>
       <section aria-labelledby="games-heading"><div class="library-toolbar"><div class="section-title"><h2 id="games-heading">Your games</h2><span id="game-count" class="count-badge">0</span></div>
-        <div class="library-filters"><label class="search-field">${icon('search')}<input id="game-search" type="search" aria-label="Search games" placeholder="Search your library" autocomplete="off" /></label>
+        <div class="library-filters"><label class="search-field">${icon("search")}<input id="game-search" type="search" aria-label="Search games" placeholder="Search your library" autocomplete="off" /></label>
         <select id="source-filter" aria-label="Game launcher"><option value="">All launchers</option></select></div></div>
         <div class="library-shell" id="library"><p class="library-empty">Loading your library…</p></div></section>
       <p class="home-help" id="home-help" role="status">Keep InPhase running on your gaming PC to connect.</p>
-      <footer class="home-bar"><span class="selected-icon">${icon('gamepad')}</span><div class="home-bar-target"><span class="home-bar-cap">READY TO STREAM</span><span class="home-bar-name" id="picklabel">Whole desktop</span></div><span class="stream-summary" id="stream-summary"></span><button id="connect" disabled>Checking PC…</button></footer>
-      <div class="page-footer"><span>Direct connection. Your PC stays yours.</span><button class="link" id="forget">${icon('logout')} Unpair this device</button></div>
-      <dialog class="settings-dialog" id="settings-dialog" aria-labelledby="settings-title"><div class="dialog-heading"><h2 id="settings-title">Stream settings</h2><button class="icon-btn" id="settings-close" aria-label="Close settings">${icon('close')}</button></div><p class="sub">Saved on this device. Changes apply to your next stream.</p><div id="panel"></div></dialog>
+      <footer class="home-bar"><span class="selected-icon">${icon("gamepad")}</span><div class="home-bar-target"><span class="home-bar-cap">READY TO STREAM</span><span class="home-bar-name" id="picklabel">Whole desktop</span></div><span class="stream-summary" id="stream-summary"></span><button id="connect" disabled>Checking PC…</button></footer>
+      <div class="page-footer"><span>Direct connection. Your PC stays yours.</span><button class="link" id="forget">${icon("logout")} Unpair this device</button></div>
+      <dialog class="settings-dialog" id="settings-dialog" aria-labelledby="settings-title"><div class="dialog-heading"><h2 id="settings-title">Stream settings</h2><button class="icon-btn" id="settings-close" aria-label="Close settings">${icon("close")}</button></div><p class="sub">Saved on this device. Changes apply to your next stream.</p><div id="panel"></div></dialog>
     </main>`;
-  const $=<T extends HTMLElement>(s:string)=>root.querySelector<T>(s)!;
-  const connect=$<HTMLButtonElement>('#connect');
-  const search=$<HTMLInputElement>('#game-search');
-  const source=$<HTMLSelectElement>('#source-filter');
-  const dialog=$<HTMLDialogElement>('#settings-dialog');
-  let settings=loadSettings(), items:LibraryItem[]=[], activeStream:StreamTarget|null=null;
-  let available=false, stopped=false, poll=0, libraryPoll=0;
-  const stop=()=>{stopped=true;clearTimeout(poll);clearTimeout(libraryPoll);};
-  const updateSelection=()=>{
-    settings=loadSettings(); $('#picklabel').textContent=targetLabel(settings.streamTarget,items);
-    $('#stream-summary').textContent=settingsSummary(settings);
-    if(available) connect.textContent=settings.streamTarget.type==='desktop'?'Stream desktop':'Play now';
-    $('#select-desktop').classList.toggle('is-selected',settings.streamTarget.type==='desktop');
+  const $ = <T extends HTMLElement>(s: string) => root.querySelector<T>(s)!;
+  const connect = $<HTMLButtonElement>("#connect");
+  const search = $<HTMLInputElement>("#game-search");
+  const source = $<HTMLSelectElement>("#source-filter");
+  const dialog = $<HTMLDialogElement>("#settings-dialog");
+  let settings = loadSettings(),
+    items: LibraryItem[] = [],
+    activeStream: StreamTarget | null = null;
+  let available = false,
+    stopped = false,
+    poll = 0,
+    libraryPoll = 0;
+  const stop = () => {
+    stopped = true;
+    clearTimeout(poll);
+    clearTimeout(libraryPoll);
   };
-  const pick=(target:StreamTarget)=>{saveSettings({...loadSettings(),streamTarget:target});updateSelection();render();};
-  const render=()=>mountLibraryGrid($('#library'),{items:items.filter(i=>i.kind==='game'&&(!source.value||i.source===source.value)),selected:settings.streamTarget,active:activeStream,query:search.value},pick);
+  const updateSelection = () => {
+    settings = loadSettings();
+    $("#picklabel").textContent = targetLabel(settings.streamTarget, items);
+    $("#stream-summary").textContent = settingsSummary(settings);
+    if (available)
+      connect.textContent =
+        settings.streamTarget.type === "desktop"
+          ? "Stream desktop"
+          : "Play now";
+    $("#select-desktop").classList.toggle(
+      "is-selected",
+      settings.streamTarget.type === "desktop",
+    );
+  };
+  const pick = (target: StreamTarget) => {
+    saveSettings({ ...loadSettings(), streamTarget: target });
+    updateSelection();
+    render();
+  };
+  const render = () =>
+    mountLibraryGrid(
+      $("#library"),
+      {
+        items: items.filter(
+          (i) =>
+            i.kind === "game" && (!source.value || i.source === source.value),
+        ),
+        selected: settings.streamTarget,
+        active: activeStream,
+        query: search.value,
+      },
+      pick,
+    );
   updateSelection();
-  $('#select-desktop').addEventListener('click',()=>pick({type:'desktop'}));
-  search.addEventListener('input',render);source.addEventListener('change',render);
-  const loadLibrary=async(tries=0)=>{
-    const result=await fetchLibrary(); if(stopped||!root.contains(connect)) return;
-    items=result.items; const games=items.filter(i=>i.kind==='game');
-    $('#game-count').textContent=String(games.length);
-    const previous=source.value;
-    source.innerHTML='<option value="">All launchers</option>'+[...new Set(games.flatMap(i=>i.source?[i.source]:[]))].sort().map(s=>'<option value="'+escapeHtml(s)+'">'+escapeHtml(s)+'</option>').join('');
-    source.value=previous;
-    if(settings.streamTarget.type==='game'&&!items.some(i=>i.id===(settings.streamTarget as {id:string}).id)&&!result.error) saveSettings({...loadSettings(),streamTarget:{type:'desktop'}});
-    updateSelection();render();
-    if(result.error){$('#library').innerHTML='<div class="library-empty">Your game library could not be loaded. You can still stream the desktop. <button class="link" id="retry-library">Try again</button></div>';$('#retry-library').addEventListener('click',()=>void loadLibrary());}
-    if(result.artPending&&tries<6) libraryPoll=window.setTimeout(()=>void loadLibrary(tries+1),3000);
+  $("#select-desktop").addEventListener("click", () =>
+    pick({ type: "desktop" }),
+  );
+  search.addEventListener("input", render);
+  source.addEventListener("change", render);
+  const loadLibrary = async (tries = 0) => {
+    const result = await fetchLibrary();
+    if (stopped || !root.contains(connect)) return;
+    items = result.items;
+    const games = items.filter((i) => i.kind === "game");
+    $("#game-count").textContent = String(games.length);
+    const previous = source.value;
+    source.innerHTML =
+      '<option value="">All launchers</option>' +
+      [...new Set(games.flatMap((i) => (i.source ? [i.source] : [])))]
+        .sort()
+        .map(
+          (s) =>
+            '<option value="' +
+            escapeHtml(s) +
+            '">' +
+            escapeHtml(s) +
+            "</option>",
+        )
+        .join("");
+    source.value = previous;
+    if (
+      settings.streamTarget.type === "game" &&
+      !items.some(
+        (i) => i.id === (settings.streamTarget as { id: string }).id,
+      ) &&
+      !result.error
+    )
+      saveSettings({ ...loadSettings(), streamTarget: { type: "desktop" } });
+    updateSelection();
+    render();
+    if (result.error) {
+      $("#library").innerHTML =
+        '<div class="library-empty">Your game library could not be loaded. You can still stream the desktop. <button class="link" id="retry-library">Try again</button></div>';
+      $("#retry-library").addEventListener("click", () => void loadLibrary());
+    }
+    if (result.artPending && tries < 6)
+      libraryPoll = window.setTimeout(() => void loadLibrary(tries + 1), 3000);
   };
   void loadLibrary();
-  $('#cfgbtn').addEventListener('click',()=>{
-    const panel=$('#panel'); if(!panel.dataset['built']){panel.dataset['built']='1';buildHomeSettings(panel,updateSelection);}
+  $("#cfgbtn").addEventListener("click", () => {
+    const panel = $("#panel");
+    if (!panel.dataset["built"]) {
+      panel.dataset["built"] = "1";
+      buildHomeSettings(panel, updateSelection);
+    }
     dialog.showModal();
   });
-  $('#settings-close').addEventListener('click',()=>dialog.close());
-  connect.addEventListener('click',async()=>{
-    if(connect.disabled) return;connect.disabled=true;
-    if((await checkBuildId())==='reloading') return;
-    stop();root.innerHTML='';new Session(root,loadSettings(),{immersive:!isTouch});
+  $("#settings-close").addEventListener("click", () => dialog.close());
+  connect.addEventListener("click", async () => {
+    if (connect.disabled) return;
+    connect.disabled = true;
+    if ((await checkBuildId()) === "reloading") return;
+    stop();
+    root.innerHTML = "";
+    new Session(root, loadSettings(), { immersive: !isTouch });
   });
-  $('#forget').addEventListener('click',async()=>{
-    if(!confirm('Unpair this browser? You will need the PIN on your gaming PC to connect again.')) return;
-    const button=$<HTMLButtonElement>('#forget');button.disabled=true;
-    try{
-      const ident=await getControllerIdentity();const q=ident?'?controller='+ident.publicKeyHex:'';
-      const result=await fetch('/api/v1/logout'+q,{method:'POST',signal:AbortSignal.timeout(7000)});
-      if(!result.ok) throw Error('Could not unpair. Check that your PC is online and try again.');
-      await forgetControllerIdentity();stop();showPair(root);
-    }catch(e){$('#home-help').textContent=e instanceof Error?e.message:'Could not unpair this device.';button.disabled=false;}
+  $("#forget").addEventListener("click", async () => {
+    if (
+      !confirm(
+        "Unpair this browser? You will need the PIN on your gaming PC to connect again.",
+      )
+    )
+      return;
+    const button = $<HTMLButtonElement>("#forget");
+    button.disabled = true;
+    try {
+      const ident = await getControllerIdentity();
+      const q = ident ? "?controller=" + ident.publicKeyHex : "";
+      const result = await fetch("/api/v1/logout" + q, {
+        method: "POST",
+        signal: AbortSignal.timeout(7000),
+      });
+      if (!result.ok)
+        throw Error(
+          "Could not unpair. Check that your PC is online and try again.",
+        );
+      await forgetControllerIdentity();
+      stop();
+      showPair(root);
+    } catch (e) {
+      $("#home-help").textContent =
+        e instanceof Error ? e.message : "Could not unpair this device.";
+      button.disabled = false;
+    }
   });
-  const refresh=async()=>{
-    if(stopped||!root.contains(connect)) return stop();
-    try{
-      const r=await fetch('/api/v1/status',{signal:AbortSignal.timeout(5000),cache:'no-store'});
-      if(!r.ok) throw Error('offline');
-      const st=await r.json() as {pc_name:string;busy:boolean;available?:boolean;active_stream?:StreamTarget|null};
-      if(stopped||!root.contains(connect)) return;
-      const next=st.busy?st.active_stream??null:null;
-      if(JSON.stringify(next)!==JSON.stringify(activeStream)){activeStream=next;render();}
-      $('#pc-name').textContent=st.pc_name;
-      available=!st.busy&&st.available!==false;connect.disabled=!available;
-      $('#host-status').className='connection-pill '+(available?'ok':'warn');
-      $('#host-status').innerHTML='<span class="dot"></span>'+escapeHtml(st.pc_name)+' · '+(available?'Online':st.busy?'In use':'Starting');
-      $('#home-help').textContent=st.busy?'Another device is using this PC. End that session before connecting here.':'Choose what to play. Your keyboard, mouse, and audio connect with the stream.';
-      if(!available) connect.textContent=st.busy?'PC in use':'PC starting…';
+  const refresh = async () => {
+    if (stopped || !root.contains(connect)) return stop();
+    try {
+      const r = await fetch("/api/v1/status", {
+        signal: AbortSignal.timeout(5000),
+        cache: "no-store",
+      });
+      if (!r.ok) throw Error("offline");
+      const st = (await r.json()) as {
+        pc_name: string;
+        busy: boolean;
+        available?: boolean;
+        active_stream?: StreamTarget | null;
+      };
+      if (stopped || !root.contains(connect)) return;
+      const next = st.busy ? (st.active_stream ?? null) : null;
+      if (JSON.stringify(next) !== JSON.stringify(activeStream)) {
+        activeStream = next;
+        render();
+      }
+      $("#pc-name").textContent = st.pc_name;
+      available = !st.busy && st.available !== false;
+      connect.disabled = !available;
+      $("#host-status").className =
+        "connection-pill " + (available ? "ok" : "warn");
+      $("#host-status").innerHTML =
+        '<span class="dot"></span>' +
+        escapeHtml(st.pc_name) +
+        " · " +
+        (available ? "Online" : st.busy ? "In use" : "Starting");
+      $("#home-help").textContent = st.busy
+        ? "Another device is using this PC. End that session before connecting here."
+        : "Choose what to play. Your keyboard, mouse, and audio connect with the stream.";
+      if (!available)
+        connect.textContent = st.busy ? "PC in use" : "PC starting…";
       updateSelection();
-    }catch{
-      if(stopped||!root.contains(connect)) return;
-      available=false;connect.disabled=true;connect.textContent='PC offline';
-      $('#host-status').className='connection-pill warn';$('#host-status').innerHTML='<span class="dot"></span>Connection lost';
-      $('#home-help').textContent='Cannot reach your PC. Check that it is awake and InPhase is running. Retrying automatically…';
-    }finally{if(!stopped) poll=window.setTimeout(()=>void refresh(),3000);}
+    } catch {
+      if (stopped || !root.contains(connect)) return;
+      available = false;
+      connect.disabled = true;
+      connect.textContent = "PC offline";
+      $("#host-status").className = "connection-pill warn";
+      $("#host-status").innerHTML = '<span class="dot"></span>Connection lost';
+      $("#home-help").textContent =
+        "Cannot reach your PC. Check that it is awake and InPhase is running. Retrying automatically…";
+    } finally {
+      if (!stopped) poll = window.setTimeout(() => void refresh(), 3000);
+    }
   };
-  window.addEventListener('pagehide',stop,{once:true});void refresh();
+  window.addEventListener("pagehide", stop, { once: true });
+  void refresh();
 }
 
 function settingsSummary(s: StreamSettings): string {
-  const mbps = (s.maxBitrateKbps / 1000).toFixed(s.maxBitrateKbps % 1000 ? 1 : 0);
+  const mbps = (s.maxBitrateKbps / 1000).toFixed(
+    s.maxBitrateKbps % 1000 ? 1 : 0,
+  );
   return `${s.height}p · ${s.fps} fps · ${mbps} Mbps`;
 }
 
@@ -207,25 +337,31 @@ function buildHomeSettings(panel: HTMLElement, onChange: () => void) {
     <p class="home-panel-head">Stream settings <span id="cfgsum">${settingsSummary(s)}</span></p>
     <label>Resolution
       <select data-s="res" aria-label="Resolution">${RESOLUTIONS.map(
-        (r) => `<option value="${r.height}"${r.height === s.height ? " selected" : ""}>${r.label}</option>`,
+        (r) =>
+          `<option value="${r.height}"${r.height === s.height ? " selected" : ""}>${r.label}</option>`,
       ).join("")}</select>
     </label>
     <label>Frame rate
       <select data-s="fps" aria-label="Frame rate">${FPS_CHOICES.map(
-        (f) => `<option value="${f}"${f === s.fps ? " selected" : ""}>${f} fps</option>`,
+        (f) =>
+          `<option value="${f}"${f === s.fps ? " selected" : ""}>${f} fps</option>`,
       ).join("")}</select>
     </label>
     <label>Max bitrate
       <select data-s="br" aria-label="Max bitrate">${BITRATE_CHOICES_KBPS.map(
-        (b) => `<option value="${b}"${b === s.maxBitrateKbps ? " selected" : ""}>${bitrateLabel(b)}</option>`,
+        (b) =>
+          `<option value="${b}"${b === s.maxBitrateKbps ? " selected" : ""}>${bitrateLabel(b)}</option>`,
       ).join("")}</select>
     </label>
     <p class="sub">Start with 1080p at 60 fps. Higher quality needs more bandwidth and a capable client.</p>
     <div class="home-audio" id="audiocfg"></div>`;
-  const pick = (k: string) => panel.querySelector<HTMLSelectElement>(`[data-s="${k}"]`)!;
+  const pick = (k: string) =>
+    panel.querySelector<HTMLSelectElement>(`[data-s="${k}"]`)!;
   const save = () => {
     const height = Number(pick("res").value);
-    const width = RESOLUTIONS.find((r) => r.height === height)?.width ?? Math.round((height * 16) / 9);
+    const width =
+      RESOLUTIONS.find((r) => r.height === height)?.width ??
+      Math.round((height * 16) / 9);
     saveSettings({
       ...loadSettings(),
       width,
@@ -237,7 +373,8 @@ function buildHomeSettings(panel: HTMLElement, onChange: () => void) {
     if (sum) sum.textContent = settingsSummary(loadSettings());
     onChange();
   };
-  for (const k of ["res", "fps", "br"]) pick(k).addEventListener("change", save);
+  for (const k of ["res", "fps", "br"])
+    pick(k).addEventListener("change", save);
   void buildAudioSettings(panel.querySelector<HTMLElement>("#audiocfg")!);
 }
 
@@ -280,8 +417,11 @@ async function buildAudioSettings(host: HTMLElement, reconnect?: () => void) {
 
   // Health / signal readout for the current source.
   const health = a.capture.health;
-  if (health === "failed") note.textContent = "Audio branch failed on the host — reconnect to recover.";
-  else if (health === "degraded") note.textContent = "Capture device error — audio may be silent.";
+  if (health === "failed")
+    note.textContent =
+      "Audio branch failed on the host — reconnect to recover.";
+  else if (health === "degraded")
+    note.textContent = "Capture device error — audio may be silent.";
   else if (a.capture.signal_detected === false)
     note.textContent = `No audio detected from “${a.capture.name}”. Try another source.`;
 
@@ -317,7 +457,9 @@ async function buildAudioSettings(host: HTMLElement, reconnect?: () => void) {
     selectAudioOutput?: () => Promise<MediaDeviceInfo>;
   };
   const fill = async () => {
-    const devs = (await md.enumerateDevices()).filter((d) => d.kind === "audiooutput");
+    const devs = (await md.enumerateDevices()).filter(
+      (d) => d.kind === "audiooutput",
+    );
     const s = loadSettings();
     out.disabled = false;
     out.innerHTML =
@@ -325,22 +467,32 @@ async function buildAudioSettings(host: HTMLElement, reconnect?: () => void) {
       devs
         .map(
           (d) =>
-            `<option value="${escapeHtml(d.deviceId)}"${d.deviceId === s.audioOutputId ? " selected" : ""}>${
-              escapeHtml(d.label || "Output device")
-            }</option>`,
+            `<option value="${escapeHtml(d.deviceId)}"${d.deviceId === s.audioOutputId ? " selected" : ""}>${escapeHtml(
+              d.label || "Output device",
+            )}</option>`,
         )
         .join("");
   };
   try {
     await fill();
-    const changed=()=>{if(!host.isConnected){md.removeEventListener('devicechange',changed);return;}void fill().catch(()=>{});};
-    md.addEventListener?.('devicechange',changed);
+    const changed = () => {
+      if (!host.isConnected) {
+        md.removeEventListener("devicechange", changed);
+        return;
+      }
+      void fill().catch(() => {});
+    };
+    md.addEventListener?.("devicechange", changed);
     out.addEventListener("change", () => {
       saveSettings({ ...loadSettings(), audioOutputId: out.value });
       note.textContent = "Output device saved — applies on connect.";
     });
     // Blank labels ⇒ no permission yet; add a picker button.
-    if (![...out.options].some((o) => o.value && o.textContent !== "Output device")) {
+    if (
+      ![...out.options].some(
+        (o) => o.value && o.textContent !== "Output device",
+      )
+    ) {
       const pick = document.createElement("button");
       pick.className = "secondary";
       pick.type = "button";
@@ -366,7 +518,7 @@ function showPair(root: HTMLElement) {
   root.innerHTML = `
     <div class="center">
       ${brandLogo()}
-      <div class="pair-icon">${icon('link')}</div><h1>Your PC, a screen away.</h1><p class="sub">Enter the six-digit PIN from InPhase on your gaming PC to pair this browser.</p>
+      <div class="pair-icon">${icon("link")}</div><h1>Your PC, a screen away.</h1><p class="sub">Enter the six-digit PIN from InPhase on your gaming PC to pair this browser.</p>
       <div class="card">
         <label for="pin">Pairing PIN</label>
         <input id="pin" type="tel" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="000000" />
@@ -379,15 +531,22 @@ function showPair(root: HTMLElement) {
   const go = root.querySelector<HTMLButtonElement>("#go")!;
   pin.focus();
   const submit = async () => {
-    if(go.disabled) return;
-    if(!/^\d{6}$/.test(pin.value.trim())) {err.textContent='Enter all six digits from your gaming PC.';pin.focus();return;}
+    if (go.disabled) return;
+    if (!/^\d{6}$/.test(pin.value.trim())) {
+      err.textContent = "Enter all six digits from your gaming PC.";
+      pin.focus();
+      return;
+    }
     go.disabled = true;
     err.textContent = "";
     try {
       // This browser's durable device identity — registered in the Host's ACL
       // on a successful pair.
       const ident = await getControllerIdentity();
-      if (!ident) throw new Error("This browser can't hold a device key — update it and retry.");
+      if (!ident)
+        throw new Error(
+          "This browser can't hold a device key — update it and retry.",
+        );
       const res = await fetch("/api/v1/pair", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -397,10 +556,18 @@ function showPair(root: HTMLElement) {
           controller_name: deviceLabel(),
         }),
       });
-      if (res.status === 429) throw new Error("Too many attempts — wait a minute.");
-      if (res.status===401) throw new Error('That PIN did not match. Check the current PIN on your PC.');
-      if (res.status===403) throw new Error('Pair on the same local network using the secure play address from your PC.');
-      if (!res.ok) throw new Error('The PC could not complete pairing. Please try again.');
+      if (res.status === 429)
+        throw new Error("Too many attempts — wait a minute.");
+      if (res.status === 401)
+        throw new Error(
+          "That PIN did not match. Check the current PIN on your PC.",
+        );
+      if (res.status === 403)
+        throw new Error(
+          "Pair on the same local network using the secure play address from your PC.",
+        );
+      if (!res.ok)
+        throw new Error("The PC could not complete pairing. Please try again.");
       showHome(root);
     } catch (e) {
       err.textContent = e instanceof Error ? e.message : String(e);
@@ -494,7 +661,9 @@ export class Session {
     document.addEventListener("fullscreenchange", () => this.layoutHud());
 
     if (!isTouch) {
-      const im = new InputManager(this.stage, { sendInput: (b) => this.routeInput(b) });
+      const im = new InputManager(this.stage, {
+        sendInput: (b) => this.routeInput(b),
+      });
       if (this.immersive) {
         im.onQuitHotkey = () => this.goHome(); // Ctrl+Shift+Q → back to home
         document.addEventListener("fullscreenchange", this.onImmersiveFs);
@@ -503,7 +672,10 @@ export class Session {
         // screen + pointer lock before the async negotiation burns it.
         void im.capture();
       } else {
-        im.onReleaseHotkey = () => this.toast("Capture released — click the video to go fullscreen again");
+        im.onReleaseHotkey = () =>
+          this.toast(
+            "Capture released — click the video to go fullscreen again",
+          );
       }
       this.input = im;
       this.input.attach();
@@ -517,7 +689,12 @@ export class Session {
   private onGamepad = (e: GamepadEvent) => {
     const g = e.gamepad;
     this.toast(`${g.id.split("(")[0]!.trim() || "Controller"} connected`);
-    console.info("[InPhase] gamepad", g.id, g.mapping || "(non-standard)", `${g.buttons.length}btn/${g.axes.length}ax`);
+    console.info(
+      "[InPhase] gamepad",
+      g.id,
+      g.mapping || "(non-standard)",
+      `${g.buttons.length}btn/${g.axes.length}ax`,
+    );
   };
 
   private toast(text: string) {
@@ -590,10 +767,22 @@ export class Session {
     const features = detectFeatures();
     // H.265 is the only codec (user directive): one probe, one advertisement.
     const hints = await decodeHints([
-      { codec: "h265", width: this.settings.width, height: this.settings.height, framerate: this.settings.fps },
+      {
+        codec: "h265",
+        width: this.settings.width,
+        height: this.settings.height,
+        framerate: this.settings.fps,
+      },
     ]);
     const videoCodecs = usableVideoCodecs(
-      [{ codec: "h265", width: this.settings.width, height: this.settings.height, framerate: this.settings.fps }],
+      [
+        {
+          codec: "h265",
+          width: this.settings.width,
+          height: this.settings.height,
+          framerate: this.settings.fps,
+        },
+      ],
       hints,
     );
     if (videoCodecs.length === 0) {
@@ -667,7 +856,9 @@ export class Session {
           stripAutoPlayParam();
           this.teardownInternals();
           this.status.remove();
-          document.querySelectorAll(".overlay, .status-line").forEach((el) => el.remove());
+          document
+            .querySelectorAll(".overlay, .status-line")
+            .forEach((el) => el.remove());
           void (async () => {
             await fetch("/api/v1/logout", { method: "POST" }).catch(() => {});
             showPair(this.root);
@@ -749,7 +940,8 @@ export class Session {
             description: cfg.description ?? undefined,
           })
             .then((probe) => {
-              if (!probe.supported) throw new Error("config unsupported by this browser");
+              if (!probe.supported)
+                throw new Error("config unsupported by this browser");
               // The WT path now races the WebRTC answer at session start, so
               // TWO video_config messages arrive (epochs 3 and 4 in the
               // 18:34 session). Reconfiguring on the identical second one
@@ -765,7 +957,12 @@ export class Session {
                 (last.description ?? null) === (cfg.description ?? null);
               decoder.configure(cfg);
               void client.send({ type: "config_ack", epoch: cfg.epoch });
-              if (same) console.info("wt: duplicate video_config (epoch", cfg.epoch, ") - kept the running decoder");
+              if (same)
+                console.info(
+                  "wt: duplicate video_config (epoch",
+                  cfg.epoch,
+                  ") - kept the running decoder",
+                );
             })
             .catch((e) => {
               // Unsupported codec/description combo: without this the client
@@ -865,7 +1062,12 @@ export class Session {
       this.lastInputRtt = performance.now() - m.at_us / 1000;
     } else if (m.type === "frame_stamps" && m.frames) {
       this.probe?.ingestHostStamps(
-        m.frames.map(([rtp, capture_us, encode_us, send_us]) => ({ rtp, capture_us, encode_us, send_us })),
+        m.frames.map(([rtp, capture_us, encode_us, send_us]) => ({
+          rtp,
+          capture_us,
+          encode_us,
+          send_us,
+        })),
         m.host_now_us ?? 0,
         this.lastInputRtt / 2, // control-channel one-way, from ping/pong
       );
@@ -885,7 +1087,9 @@ export class Session {
     // Belt-and-suspenders: autoplay can still stall after a long negotiate or
     // when fullscreen/pointer-lock churns during connect.
     if (isTouch) {
-      const tc = new TouchController(this.stage, { sendInput: (b) => this.routeInput(b) });
+      const tc = new TouchController(this.stage, {
+        sendInput: (b) => this.routeInput(b),
+      });
       tc.onDisconnect = () => this.teardown();
       tc.attach();
       this.input = tc;
@@ -897,7 +1101,9 @@ export class Session {
       if (hint) this.toast(hint);
       this.updateCaptureUi();
     } else {
-      this.toast("Click the video for fullscreen — input is captured while fullscreen · Esc to release");
+      this.toast(
+        "Click the video for fullscreen — input is captured while fullscreen · Esc to release",
+      );
     }
     this.probe = new FrameProbe();
     // Label the glass in the frame log: while WT is showing, its measured
@@ -1027,10 +1233,14 @@ export class Session {
     } else if (wtStats) {
       const action = this.wtRecovery.observe(wtStats.framesPresented);
       if (action === "reset") {
-        console.warn("wt watchdog: glass frozen — resetting decoder, requesting IDR");
+        console.warn(
+          "wt watchdog: glass frozen — resetting decoder, requesting IDR",
+        );
         this.wtDecoder?.reset();
       } else if (action === "redial") {
-        console.warn("wt watchdog: still frozen after reset — redialing WT path");
+        console.warn(
+          "wt watchdog: still frozen after reset — redialing WT path",
+        );
         this.wtClose?.();
       }
     } else if (this.wtDecoder && !this.wtActive) {
@@ -1042,10 +1252,14 @@ export class Session {
       // resets + demands an IDR at 3 s, redials at 10 s.
       const action = this.wtRecovery.observe(0);
       if (action === "reset") {
-        console.warn("wt watchdog: no decode — resetting decoder, requesting IDR");
+        console.warn(
+          "wt watchdog: no decode — resetting decoder, requesting IDR",
+        );
         this.wtDecoder.reset();
       } else if (action === "redial") {
-        console.warn("wt watchdog: still not decoding after reset — redialing WT path");
+        console.warn(
+          "wt watchdog: still not decoding after reset — redialing WT path",
+        );
         this.wtClose?.();
       }
     } else {
@@ -1085,7 +1299,7 @@ export class Session {
       path: "wt",
       pathDetail: this.routeWarning
         ? `⚠ ${this.routeWarning}` + (wtDetail ? ` · ${wtDetail}` : "")
-        : wtDetail ?? null,
+        : (wtDetail ?? null),
     });
   }
 
@@ -1097,7 +1311,10 @@ export class Session {
     this.status.textContent = "Reconnecting…";
     document.body.append(this.status);
     // fresh session object keeps this simple
-    new Session(this.root, s, { immersive: this.immersive, onExit: this.onExit });
+    new Session(this.root, s, {
+      immersive: this.immersive,
+      onExit: this.onExit,
+    });
   }
 
   /** Signalling socket closed on its own (host gone, network drop) — not our
@@ -1125,14 +1342,23 @@ export class Session {
       <button class="secondary" data-a="home" type="button">Home</button>
     </div>`;
     ov.querySelector(".sub")!.textContent = reason;
-    ov.querySelector<HTMLButtonElement>('[data-a="retry"]')!.addEventListener("click", () => {
-      ov.remove();
-      new Session(this.root, this.settings, { immersive: this.immersive, onExit: this.onExit });
-    });
-    ov.querySelector<HTMLButtonElement>('[data-a="home"]')!.addEventListener("click", () => {
-      ov.remove();
-      void renderPlay(this.root);
-    });
+    ov.querySelector<HTMLButtonElement>('[data-a="retry"]')!.addEventListener(
+      "click",
+      () => {
+        ov.remove();
+        new Session(this.root, this.settings, {
+          immersive: this.immersive,
+          onExit: this.onExit,
+        });
+      },
+    );
+    ov.querySelector<HTMLButtonElement>('[data-a="home"]')!.addEventListener(
+      "click",
+      () => {
+        ov.remove();
+        void renderPlay(this.root);
+      },
+    );
     document.body.append(ov);
   }
 
@@ -1154,7 +1380,9 @@ export class Session {
       if (!took && this.wtClient?.inputReady()) {
         // A write failed on an otherwise-live transport - count it (HUD).
         if (this.wtInputFailures === 0) {
-          console.warn("wt input write failed - input is dropped until the WT path recovers");
+          console.warn(
+            "wt input write failed - input is dropped until the WT path recovers",
+          );
         }
         this.wtInputFailures++;
       }
@@ -1165,7 +1393,9 @@ export class Session {
   private goHome() {
     this.teardownInternals();
     this.status.remove();
-    document.querySelectorAll(".overlay, .status-line").forEach((el) => el.remove());
+    document
+      .querySelectorAll(".overlay, .status-line")
+      .forEach((el) => el.remove());
     // Drop `?play` first: it means "auto-connect on load", so re-rendering with
     // it still set sends us straight back into a session. When the session is
     // failing (an unpaired device, say) that is an unbounded reconnect loop
@@ -1196,7 +1426,8 @@ export class Session {
     this.hud.root.remove();
     this.stage.remove();
     this.enterOverlay?.remove();
-    if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
+    if (document.fullscreenElement)
+      void document.exitFullscreen().catch(() => {});
   }
 }
 
@@ -1205,4 +1436,3 @@ function div(cls: string): HTMLElement {
   e.className = cls;
   return e;
 }
-

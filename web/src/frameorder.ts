@@ -29,7 +29,7 @@ export const MAX_REORDER = 8;
 
 /** Wrap-aware "is `a` behind `b`" over a u32 frame counter. */
 function isBefore(a: number, b: number): boolean {
-  return ((a - b) >>> 0) >= 0x80000000;
+  return (a - b) >>> 0 >= 0x80000000;
 }
 
 export class FrameOrderer {

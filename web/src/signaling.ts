@@ -14,9 +14,7 @@ export const SIGNALING_PROTOCOL_VERSION = 2;
 export type VideoCodec = "h264" | "h265";
 export type QualityPreset = "low_latency" | "balanced" | "quality" | "custom";
 
-export type StreamTarget =
-  | { type: "desktop" }
-  | { type: "game"; id: string };
+export type StreamTarget = { type: "desktop" } | { type: "game"; id: string };
 
 export interface RequestedMode {
   width: number;
@@ -65,7 +63,12 @@ export interface SessionConfig {
   max_bitrate_kbps: number;
   min_bitrate_kbps: number;
   jitter_buffer_target_ms: number;
-  input: { keyboard: boolean; mouse: boolean; gamepad: boolean; backend: string };
+  input: {
+    keyboard: boolean;
+    mouse: boolean;
+    gamepad: boolean;
+    backend: string;
+  };
   encoder_backend: string;
   /** ICE servers for candidate gathering. Empty on a strict-LAN host.
    *  Browser `stun:host:port` form; never TURN. */
@@ -79,8 +82,14 @@ export interface IceCandidateMsg {
 }
 
 export type SignalErrorCode =
-  | "protocol_version" | "busy" | "no_hardware_encoder" | "no_common_codec"
-  | "capture_unavailable" | "negotiation_failed" | "unauthorized" | "internal";
+  | "protocol_version"
+  | "busy"
+  | "no_hardware_encoder"
+  | "no_common_codec"
+  | "capture_unavailable"
+  | "negotiation_failed"
+  | "unauthorized"
+  | "internal";
 
 export interface ClientTelemetry {
   at_us: number;
@@ -119,7 +128,12 @@ export interface ClientTelemetry {
 }
 
 export type SignalMessage =
-  | { type: "client_hello"; protocol_version: number; browser: string; requested_mode: RequestedMode }
+  | {
+      type: "client_hello";
+      protocol_version: number;
+      browser: string;
+      requested_mode: RequestedMode;
+    }
   | {
       type: "client_capabilities";
       rtp_video_codecs: RtpCodecCapability[];
@@ -127,20 +141,36 @@ export type SignalMessage =
       decode_hints: DecodeHint[];
       features: ClientFeatures;
     }
-  | { type: "session_config"; codec: VideoCodec; width: number; height: number; fps: number;
-      preset: QualityPreset; start_bitrate_kbps: number; max_bitrate_kbps: number;
-      min_bitrate_kbps: number; jitter_buffer_target_ms: number;
-      input: SessionConfig["input"]; encoder_backend: string; ice_servers?: string[] }
+  | {
+      type: "session_config";
+      codec: VideoCodec;
+      width: number;
+      height: number;
+      fps: number;
+      preset: QualityPreset;
+      start_bitrate_kbps: number;
+      max_bitrate_kbps: number;
+      min_bitrate_kbps: number;
+      jitter_buffer_target_ms: number;
+      input: SessionConfig["input"];
+      encoder_backend: string;
+      ice_servers?: string[];
+    }
   | { type: "auth_challenge"; nonce: string }
   | { type: "auth_response"; controller_id: string; signature: string }
   | { type: "offer"; sdp: string }
   | { type: "answer"; sdp: string }
-  | { type: "ice"; candidate: string; sdp_mid?: string | null; sdp_mline_index?: number | null }
+  | {
+      type: "ice";
+      candidate: string;
+      sdp_mid?: string | null;
+      sdp_mline_index?: number | null;
+    }
   | { type: "session_ready" }
   | { type: "error"; code: SignalErrorCode; message: string }
   | { type: "ping"; at_us: number }
   | { type: "pong"; at_us: number }
-  | { type: "client_telemetry" } & Partial<ClientTelemetry>
+  | ({ type: "client_telemetry" } & Partial<ClientTelemetry>)
   | { type: "wt_video_info"; token: string; port: number; cert_sha256: string }
   | { type: "wt_video_info_request" }
   | { type: "bye" };
@@ -179,9 +209,13 @@ export class SignalSocket {
       this.onClose(e);
     });
     this.ready = new Promise<void>((resolve, reject) => {
-      this.ws.addEventListener("error", () => reject(new Error("signal socket error")), {
-        once: true,
-      });
+      this.ws.addEventListener(
+        "error",
+        () => reject(new Error("signal socket error")),
+        {
+          once: true,
+        },
+      );
       this.ws.addEventListener("message", (e) => {
         void this.onFrame(e.data as string, resolve, reject);
       });
@@ -203,7 +237,10 @@ export class SignalSocket {
     if (m.type === "auth_challenge") {
       try {
         const ctrl = await getControllerIdentity();
-        if (!ctrl) throw new Error("this browser can't hold a device key — update your browser");
+        if (!ctrl)
+          throw new Error(
+            "this browser can't hold a device key — update your browser",
+          );
         const sig = await ctrl.sign(bs(b64d(m.nonce)));
         this.rawSend({
           type: "auth_response",

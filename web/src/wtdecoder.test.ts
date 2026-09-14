@@ -2,8 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { PresentGate, glassAgeMs } from "./wtdecoder.js";
 
-
-
 test("present gate: newest frame wins, stale conversions discard", () => {
   const g = new PresentGate();
   const a = g.begin();

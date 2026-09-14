@@ -32,7 +32,9 @@ export const RESOLUTIONS: { label: string; width: number; height: number }[] = [
   { label: "2160p", width: 3840, height: 2160 },
 ];
 export const FPS_CHOICES = [30, 60, 120];
-export const BITRATE_CHOICES_KBPS = [4000, 8000, 12000, 20000, 30000, 50000, 80000];
+export const BITRATE_CHOICES_KBPS = [
+  4000, 8000, 12000, 20000, 30000, 50000, 80000,
+];
 
 const KEY = "inphase.settings";
 
@@ -72,15 +74,25 @@ export function loadSettings(): StreamSettings {
         width: clampDimension(Number(s.width) || DEFAULTS.width, 640, 3840),
         height: clampDimension(Number(s.height) || DEFAULTS.height, 360, 2160),
         fps: clampFps(Number(s.fps) || DEFAULTS.fps),
-        maxBitrateKbps: clampBitrate(Number(s.maxBitrateKbps) || DEFAULTS.maxBitrateKbps),
-        preset: ['low_latency','balanced','quality','custom'].includes(String(s.preset)) ? s.preset as Preset : DEFAULTS.preset,
+        maxBitrateKbps: clampBitrate(
+          Number(s.maxBitrateKbps) || DEFAULTS.maxBitrateKbps,
+        ),
+        preset: ["low_latency", "balanced", "quality", "custom"].includes(
+          String(s.preset),
+        )
+          ? (s.preset as Preset)
+          : DEFAULTS.preset,
         // A stored `bufferMs` (pre-v3) is deliberately not read: there is no
         // jitter-buffer setting any more — see the SCHEMA notes.
         streamTarget: parseStreamTarget(s.streamTarget),
         volume: Math.max(0, Math.min(1, numOr(s.volume, DEFAULTS.volume))),
-        muted: typeof s.muted === 'boolean' ? s.muted : DEFAULTS.muted,
-        audioOutputId: typeof s.audioOutputId === "string" ? s.audioOutputId : "",
-        showMetrics: typeof s.showMetrics === 'boolean' ? s.showMetrics : DEFAULTS.showMetrics,
+        muted: typeof s.muted === "boolean" ? s.muted : DEFAULTS.muted,
+        audioOutputId:
+          typeof s.audioOutputId === "string" ? s.audioOutputId : "",
+        showMetrics:
+          typeof s.showMetrics === "boolean"
+            ? s.showMetrics
+            : DEFAULTS.showMetrics,
       };
     }
   } catch {
@@ -118,13 +130,16 @@ export function clampDimension(px: number, min: number, max: number): number {
 }
 
 export function bitrateLabel(kbps: number): string {
-  return kbps >= 1000 ? `${(kbps / 1000).toFixed(kbps % 1000 ? 1 : 0)} Mbps` : `${kbps} kbps`;
+  return kbps >= 1000
+    ? `${(kbps / 1000).toFixed(kbps % 1000 ? 1 : 0)} Mbps`
+    : `${kbps} kbps`;
 }
 
 function parseStreamTarget(v: unknown): StreamTarget {
   if (v && typeof v === "object" && (v as StreamTarget).type === "game") {
     const g = v as { type: "game"; id?: string; name?: string };
-    if (typeof g.id === "string" && g.id) return { type: "game", id: g.id, name: g.name };
+    if (typeof g.id === "string" && g.id)
+      return { type: "game", id: g.id, name: g.name };
   }
   return { type: "desktop" };
 }

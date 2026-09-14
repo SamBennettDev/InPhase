@@ -12,9 +12,10 @@
 // timestamp) is delivered separately on the control channel; when present it's
 // merged in for a full capture->glass breakdown.
 
-
 interface Vfc {
-  requestVideoFrameCallback?: (cb: (now: number, meta: VfcMeta) => void) => number;
+  requestVideoFrameCallback?: (
+    cb: (now: number, meta: VfcMeta) => void,
+  ) => number;
   cancelVideoFrameCallback?: (h: number) => void;
 }
 interface VfcMeta {
@@ -79,7 +80,11 @@ function pct(sorted: number[], p: number): number {
 const r1 = (n: number) => Math.round(n * 10) / 10;
 const band = (xs: number[]): Band => {
   const s = xs.slice().sort((a, b) => a - b);
-  return { p50: r1(pct(s, 0.5)), p95: r1(pct(s, 0.95)), max: r1(s.at(-1) ?? 0) };
+  return {
+    p50: r1(pct(s, 0.5)),
+    p95: r1(pct(s, 0.95)),
+    max: r1(s.at(-1) ?? 0),
+  };
 };
 function stddev(xs: number[]): number {
   if (xs.length < 2) return 0;
@@ -105,20 +110,24 @@ export class FrameProbe {
   private lastStats: FrameStats | null = null;
 
   /** Optional: the old WebRTC <video>; WT-only sessions probe via rAF + wtGlass. */
-  constructor(private readonly session?: { readonly video: HTMLVideoElement }) {}
+  constructor(
+    private readonly session?: { readonly video: HTMLVideoElement },
+  ) {}
 
   /** Supplies the WT glass's live stats while it owns the video; null while
    *  the WebRTC path is showing. When present, the frame log labels the glass
    *  `wt` and carries its measured latency — otherwise the numbers below are
    *  the hidden fallback stream's and say nothing about what's on screen. */
-  wtGlass: (() => {
-    e2eMs: number;
-    presentedFps: number;
-    syncErrMs: number | null;
-    framesDecoded: number;
-    framesDropped: number;
-    rendering: boolean;
-  } | null) | null = null;
+  wtGlass:
+    | (() => {
+        e2eMs: number;
+        presentedFps: number;
+        syncErrMs: number | null;
+        framesDecoded: number;
+        framesDropped: number;
+        rendering: boolean;
+      } | null)
+    | null = null;
 
   /** Feed a batch of host frame stamps (from a `frame_stamps` control message).
    *  `hostNowUs` is the host wall clock when it sent the batch; `oneWayMs` is
@@ -159,7 +168,13 @@ export class FrameProbe {
       };
       this.handle = v.requestVideoFrameCallback(cb);
     }
-    this.timer = window.setInterval(() => { try { this.report(); } catch (e) { console.warn('probe tick failed:', String(e)); } }, 3000);
+    this.timer = window.setInterval(() => {
+      try {
+        this.report();
+      } catch (e) {
+        console.warn("probe tick failed:", String(e));
+      }
+    }, 3000);
     (globalThis as Record<string, unknown>)["__inphaseProbe"] = this;
   }
 
@@ -224,7 +239,10 @@ export class FrameProbe {
     this.traces = [];
     if (tr.length < 5) return;
 
-    const intervals = tr.map((t) => t.interval).filter((x) => x > 0).sort((a, b) => a - b);
+    const intervals = tr
+      .map((t) => t.interval)
+      .filter((x) => x > 0)
+      .sort((a, b) => a - b);
     const jbuf = tr.map((t) => t.jbufWait).sort((a, b) => a - b);
     const decode = tr.map((t) => t.decode).sort((a, b) => a - b);
     const present = tr.map((t) => t.present).sort((a, b) => a - b);

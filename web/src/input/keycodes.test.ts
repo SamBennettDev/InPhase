@@ -67,14 +67,21 @@ test("reserved / browser-handled keys are deliberately unmapped", () => {
     "Fn",
     "Lang1",
   ]) {
-    assert.equal(scanCodeFor(code), undefined, `${code} should not be forwarded`);
+    assert.equal(
+      scanCodeFor(code),
+      undefined,
+      `${code} should not be forwarded`,
+    );
   }
 });
 
 test("no mapped code collides and every scan code is a u16", () => {
   const seen = new Map<number, string>();
   for (const [code, sc] of Object.entries(SCANCODE)) {
-    assert.ok(Number.isInteger(sc) && sc > 0 && sc <= 0xffff, `${code} out of range`);
+    assert.ok(
+      Number.isInteger(sc) && sc > 0 && sc <= 0xffff,
+      `${code} out of range`,
+    );
     const prev = seen.get(sc);
     // ShiftLeft/ShiftRight etc. are distinct codes with distinct scan codes;
     // a genuine duplicate would be a bug.

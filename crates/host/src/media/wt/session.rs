@@ -303,12 +303,18 @@ pub(super) async fn handle_incoming(
                         let _ = co_tx.send(WtHostMessage::Pong { at_us, host_us });
                     }
                     Ok(WtClientMessage::EnableDatagramVideo) => {
-                        if !shared.datagram_video.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                        if !shared
+                            .datagram_video
+                            .swap(true, std::sync::atomic::Ordering::Relaxed)
+                        {
                             info!("wt: video carrier switched to v4 datagram fragments");
                         }
                     }
                     Ok(WtClientMessage::DisableDatagramVideo) => {
-                        if shared.datagram_video.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                        if shared
+                            .datagram_video
+                            .swap(false, std::sync::atomic::Ordering::Relaxed)
+                        {
                             info!("wt: video carrier switched back to the reliable stream");
                         }
                     }
@@ -335,9 +341,7 @@ pub(super) async fn handle_incoming(
                             const BURST: u32 = 60;
                             let (refill_at, tokens) = &mut *budget;
                             let refill_ms = refill_at.elapsed().as_millis() as u32;
-                            *tokens = RATE_PER_SEC.min(
-                                *tokens + refill_ms * RATE_PER_SEC / 1000,
-                            );
+                            *tokens = RATE_PER_SEC.min(*tokens + refill_ms * RATE_PER_SEC / 1000);
                             *refill_at = std::time::Instant::now();
                             if *tokens == 0 {
                                 continue;
@@ -351,9 +355,7 @@ pub(super) async fn handle_incoming(
                                 .find(|(no, idx0, _)| *no == frame && *idx0 == idx)
                                 .map(|(_, _, enc)| enc.clone());
                             if let Some(enc) = hit {
-                                let _ = crate::media::wt::transport::try_send_datagram(
-                                    &conn, &enc,
-                                );
+                                let _ = crate::media::wt::transport::try_send_datagram(&conn, &enc);
                             }
                         }
                     }

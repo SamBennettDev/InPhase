@@ -49,8 +49,8 @@ export function certInstructionsHtml(
   httpsUrl: string,
   caHref = "/ca.crt",
 ): string {
-  httpsUrl=escapeHtml(safeHttpUrl(httpsUrl));
-  caHref=escapeHtml(safeHttpUrl(new URL(caHref,location.origin).href));
+  httpsUrl = escapeHtml(safeHttpUrl(httpsUrl));
+  caHref = escapeHtml(safeHttpUrl(new URL(caHref, location.origin).href));
   const items = [
     ...STEPS[platform].map((s) =>
       s.includes("Download the certificate")

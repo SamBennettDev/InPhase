@@ -12,7 +12,10 @@ function trigger(v: number): number {
   return Math.max(0, Math.min(65535, Math.round(v * 65535)));
 }
 
-const DP_UP = 1 << 12, DP_DOWN = 1 << 13, DP_LEFT = 1 << 14, DP_RIGHT = 1 << 15;
+const DP_UP = 1 << 12,
+  DP_DOWN = 1 << 13,
+  DP_LEFT = 1 << 14,
+  DP_RIGHT = 1 << 15;
 
 /** Decode a POV-hat axis to D-pad bits (HTML5 8-way hat: -1 = up, then
  *  clockwise; a resting hat reads out of [-1,1] and counts as centred). */
@@ -20,10 +23,18 @@ function hatToDpad(v: number): number {
   if (v == null || v > 1.01 || v < -1.01) return 0; // centred
   const dir = Math.round((v + 1) * 3.5) % 8;
   // 0 up · 1 up-right · 2 right · 3 down-right · 4 down · 5 down-left · 6 left · 7 up-left
-  return [
-    DP_UP, DP_UP | DP_RIGHT, DP_RIGHT, DP_DOWN | DP_RIGHT,
-    DP_DOWN, DP_DOWN | DP_LEFT, DP_LEFT, DP_UP | DP_LEFT,
-  ][dir] ?? 0;
+  return (
+    [
+      DP_UP,
+      DP_UP | DP_RIGHT,
+      DP_RIGHT,
+      DP_DOWN | DP_RIGHT,
+      DP_DOWN,
+      DP_DOWN | DP_LEFT,
+      DP_LEFT,
+      DP_UP | DP_LEFT,
+    ][dir] ?? 0
+  );
 }
 
 /** Index of the D-pad hat axis, if this pad reports one. Standard-mapped pads
