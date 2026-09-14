@@ -5,7 +5,7 @@
 //! over HTTPS with a certificate it trusts.
 //!
 //! [`local_ca`] is how: the host generates its own CA once and a leaf cert for
-//! `<machine>.local` + the LAN IPs. The installer adds the CA to the machine
+//! `<machine>.local` + the LAN IPs. The installer adds the CA to the
 //! current-user trust store (with consent); other devices install it once from
 //! `GET /ca.crt`.
 
@@ -83,6 +83,7 @@ pub mod local_ca {
         let crt = dir.join("ca.crt");
         let key = dir.join("ca.key");
 
+        anyhow::ensure!(crt.is_file() == key.is_file(), "local CA is incomplete; restore its matching certificate and key");
         if crt.is_file() && key.is_file() {
             if let (Ok(blob), Ok(pem)) = (std::fs::read(&key), std::fs::read_to_string(&crt)) {
                 let unwrapped =
@@ -187,16 +188,13 @@ pub mod local_ca {
                 tracing::info!(cn = primary, sans = sans.len(), "issued local TLS leaf");
                 Ok(CertPaths { cert: crt, key })
             }
-            // A stale-but-usable cert on disk beats no HTTPS at all — this
-            // happens when the LAN IP set changed (so the SANs differ) but the
-            // cert dir was created by the elevated installer and the running
-            // user cannot overwrite it. `inphase-host --trust-ca` (elevated)
-            // refreshes it; the installer also grants the dir write access.
+            // Keep the existing certificate if renewal temporarily fails.
+            // It may need a retry when the network or disk becomes available.
             Err(e) if crt.is_file() && key.is_file() => {
                 tracing::warn!(
                     "could not reissue the local TLS leaf ({e:#}); serving the existing \
                      cert — its SAN list may be stale. Run `inphase-host --trust-ca` \
-                     elevated to refresh it."
+                     as the Windows user running InPhase to refresh it."
                 );
                 Ok(CertPaths { cert: crt, key })
             }
@@ -225,8 +223,7 @@ pub mod local_ca {
                 matches!(timeout(Duration::from_secs(3), fut).await, Ok(Ok(o)) if o.status.success())
             }
 
-            // Per-user boot: if a Root store already carries our CA, leave it —
-            // adding to Root needs elevation and would just log noise.
+            // Normal startup checks trust without changing the certificate store.
             if !force {
                 return certutil(&["-user", "-store", "Root", "InPhase Local CA"]).await;
             }
@@ -238,7 +235,7 @@ pub mod local_ca {
             }
             tracing::info!(
                 "the local CA is not in a trusted Root store — browsers on this PC \
-                 will warn until the installer runs, or: certutil -addstore -f Root \"{}\" (elevated)",
+                 will warn until setup completes: certutil -user -addstore -f Root \"{}\"",
                 crt.display()
             );
             false

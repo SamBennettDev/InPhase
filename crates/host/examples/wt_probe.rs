@@ -37,7 +37,7 @@ use anyhow::{bail, Context, Result};
 use ed25519_dalek::{Signer, SigningKey};
 use futures_util::{SinkExt, StreamExt};
 use inphase_protocol::{
-    SignalMessage, WtClientMessage, WtFragment, WtFrame, WT_AUDIO_DATAGRAM_TAG,
+    SignalMessage, WtClientMessage, WtFragment, WT_AUDIO_DATAGRAM_TAG,
 };
 
 struct Args {
@@ -281,7 +281,6 @@ async fn run() -> Result<()> {
     // stream path.
     let (mut vch_tx, mut vch_rx) = conn.open_bi().await?.await?;
     let marker = b"{\"type\":\"video_channel\"}";
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     vch_tx
         .write_all(&((marker.len() as u16).to_be_bytes()))
         .await?;

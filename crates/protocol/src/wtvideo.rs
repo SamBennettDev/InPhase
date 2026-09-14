@@ -533,7 +533,6 @@ mod hvcc_tests {
 }
 
 /// ---- v4: deadline-aware datagram fragments (docs/research/performance-latency-2026-09-09.md P0) ----
-
 pub const WT_VIDEO_PROTOCOL_V4: u8 = 4;
 
 /// One fragment of one frame, carried in a single QUIC datagram: header +

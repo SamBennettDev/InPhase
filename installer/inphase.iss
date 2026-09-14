@@ -73,8 +73,8 @@ Name: "{group}\Open InPhase (this PC)"; Filename: "http://127.0.0.1:47800/?dashb
 Name: "{group}\Uninstall InPhase Host"; Filename: "{uninstallexe}"
 
 [InstallDelete]
-; Retire the old shared certificate directory, which allowed writes from other
-; local users. Each user now gets a DPAPI-protected CA under their own profile.
+; Retire the old shared certificate directory. Each user now gets a
+; DPAPI-protected CA under their own profile. Other devices must trust it again.
 Type: filesandordirs; Name: "{commonappdata}\InPhase\tls"
 
 [Run]
@@ -88,7 +88,7 @@ Filename: "{app}\{#AppExe}"; Parameters: "--open-dashboard"; Description: "Open 
 Filename: "{sys}\taskkill.exe"; Parameters: "/im {#AppExe} /f"; Flags: runhidden; RunOnceId: "killhost"
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""InPhase App"""; Flags: runhidden; RunOnceId: "fwapp"
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""InPhase LAN"""; Flags: runhidden; RunOnceId: "fwlan"
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -NonInteractive -Command ""Get-NetFirewallRule -ErrorAction SilentlyContinue | Where-Object {{ $_.DisplayName -match '^InPhase [0-9]+ (tcp|udp)
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -NonInteractive -Command ""Get-NetFirewallRule -ErrorAction SilentlyContinue | Where-Object {{ $_.DisplayName -match '^InPhase [0-9]+ (tcp|udp)$' } | Remove-NetFirewallRule"""; Flags: runhidden; RunOnceId: "fwports"
 
 Filename: "{sys}\certutil.exe"; Parameters: "-delstore -f Root ""InPhase Local CA"""; Flags: runhidden; RunOnceId: "delca"
 
@@ -107,31 +107,6 @@ begin
   if CurUninstallStep = usPostUninstall then
   begin
     RegDeleteValue(HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\Run', 'InPhaseHost');
-    dir := ExpandConstant('{userappdata}\InPhase');
-    if DirExists(dir) then
-      if MsgBox('Also remove InPhase settings and logs (' + dir + ')?',
-                mbConfirmation, MB_YESNO) = IDYES then
-        DelTree(dir, True, True, True);
-  end;
-end;
- } | Remove-NetFirewallRule"""; Flags: runhidden; RunOnceId: "fwports"
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""InPhase 443"""; Flags: runhidden; RunOnceId: "fw443"
-Filename: "{sys}\certutil.exe"; Parameters: "-delstore -f Root ""InPhase Local CA"""; Flags: runhidden; RunOnceId: "delca"
-
-[UninstallDelete]
-Type: filesandordirs; Name: "{localappdata}\InPhase\gst-registry.bin"
-; The local CA + leaf: removed here so a reinstall regenerates one that matches
-; the fresh Root-store entry `--trust-ca` adds.
-Type: filesandordirs; Name: "{commonappdata}\InPhase\tls"
-
-[Code]
-// Offer to remove user data (config + host log) on uninstall.
-procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
-var
-  dir: String;
-begin
-  if CurUninstallStep = usPostUninstall then
-  begin
     dir := ExpandConstant('{userappdata}\InPhase');
     if DirExists(dir) then
       if MsgBox('Also remove InPhase settings and logs (' + dir + ')?',

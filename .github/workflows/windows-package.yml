@@ -17,6 +17,15 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: web/package-lock.json
+      - name: Validate PowerShell syntax
+        shell: pwsh
+        run: |
+          foreach ($file in Get-ChildItem scripts/*.ps1) {
+            $tokens = $null
+            $parseErrors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$parseErrors) | Out-Null
+            if ($parseErrors.Count) { throw ($parseErrors | Out-String) }
+          }
       - name: Rust toolchain
         run: rustup show
       - uses: actions/cache@v4

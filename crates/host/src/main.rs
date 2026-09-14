@@ -82,9 +82,8 @@ fn main() -> anyhow::Result<()> {
         let json = args.iter().any(|a| a == "--json");
         std::process::exit(inphase_host::doctor::run(&cfg, json));
     }
-    // Installer step (run elevated): create the local CA + leaf cert and add the
-    // CA to the machine trust store, so browsers on this PC trust the host's
-    // HTTPS with no warning. Idempotent.
+    // Setup runs as the original Windows user. Keep keys and trust together
+    // in that user profile, even when installation used different admin credentials.
     if args.iter().any(|a| a == "--trust-ca") {
         let cfg = Config::load().unwrap_or_default();
         let dir = cfg.tls.cert_dir_path();
@@ -264,8 +263,8 @@ fn point_at_bundled_runtime() {
             local.join("InPhase").join("gst-registry.bin"),
         );
     }
-    // Prepend the bundled bin dir so the loader finds the private DLLs first.
-    let bin = root.join("bin");
+    // Dynamically loaded dependencies live beside the host, like its PE imports.
+    let bin = exe.parent().expect("executable parent").to_path_buf();
     let path = std::env::var_os("PATH").unwrap_or_default();
     let mut parts = vec![bin];
     parts.extend(std::env::split_paths(&path));

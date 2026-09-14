@@ -338,7 +338,6 @@ pub(super) async fn handle_incoming(
                         if let Some(conn) = shared.live_connection.borrow().clone() {
                             let mut budget = shared.wt_resend_tokens.lock();
                             const RATE_PER_SEC: u32 = 60;
-                            const BURST: u32 = 60;
                             let (refill_at, tokens) = &mut *budget;
                             let refill_ms = refill_at.elapsed().as_millis() as u32;
                             *tokens = RATE_PER_SEC.min(*tokens + refill_ms * RATE_PER_SEC / 1000);
@@ -381,17 +380,10 @@ pub(super) async fn handle_incoming(
         let drain_shared = shared.clone();
         tokio::spawn(async move {
             let shared = drain_shared;
-            loop {
-                match conn.receive_datagram().await {
-                    Ok(bytes) => {
-                        // Input rides WT datagrams (§13). A displaced
-                        // session's datagrams must not touch its successor's
-                        // input (§11) - guard on slot ownership.
-                        if *shared.active.lock() == Some(session_id) {
-                            let _ = shared.events.send(WtClientEvent::Input(bytes.to_vec()));
-                        }
-                    }
-                    Err(_) => break,
+            while let Ok(bytes) = conn.receive_datagram().await {
+                // A displaced session must not touch its successor's input.
+                if *shared.active.lock() == Some(session_id) {
+                    let _ = shared.events.send(WtClientEvent::Input(bytes.to_vec()));
                 }
             }
         });

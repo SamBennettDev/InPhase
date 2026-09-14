@@ -249,9 +249,6 @@ fn order_gateways(gateways: Vec<Gateway>, preferred: Option<IpAddr>) -> Vec<Gate
 }
 
 /// Try every gateway with PCP, then every IPv4 gateway with NAT-PMP.
-/// The WT video endpoint's UDP port (ADR-0011). Mapped alongside the UI port
-/// so Remote Access opens both the page and the video transport.
-const WT_VIDEO_PORT: u16 = 4433;
 const PROTO_UDP: u8 = 17;
 
 async fn try_map_udp(port: u16, gateways: &[Gateway], retained: Option<[u8; 12]>) -> Option<Lease> {

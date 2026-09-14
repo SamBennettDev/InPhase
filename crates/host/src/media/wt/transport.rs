@@ -131,10 +131,6 @@ impl FrameQueue {
         }
     }
 
-    fn len(&self) -> usize {
-        self.q.lock().len()
-    }
-
     /// Cumulative frames discarded to admit newer ones (never sent).
     fn evicted_total(&self) -> u64 {
         self.evicted.load(std::sync::atomic::Ordering::Relaxed)
@@ -253,6 +249,7 @@ impl WtVideoTransport {
             ),
             tokens: tokens.clone(),
             events: events_tx,
+            #[cfg(windows)]
             audio: audio_tx.clone(),
             active: Mutex::new(None),
             next_session_id: std::sync::atomic::AtomicU64::new(1),
@@ -324,7 +321,6 @@ impl WtVideoTransport {
                 let (mut sent, mut stalled, mut expired) = (0u32, 0u32, 0u32);
                 // Queue evictions are cumulative; diff them per window.
                 let mut evicted_last = frame_queue_sender.evicted_total();
-                let mut evicted = 0u32;
                 // Paced-injection bucket (05:08 Chrome session): datagram
                 // fragments go out at no more than ~0.8× the client's measured
                 // drain rate. The browser's incoming-datagram queue has NO flow
@@ -342,7 +338,7 @@ impl WtVideoTransport {
                     if last_report.elapsed() >= std::time::Duration::from_secs(1) {
                         // Queue evictions are cumulative; diff them per window.
                         let evicted_total = frame_queue_sender.evicted_total();
-                        evicted = evicted_total.saturating_sub(evicted_last) as u32;
+                        let evicted = evicted_total.saturating_sub(evicted_last) as u32;
                         evicted_last = evicted_total;
                         if stalled > 0 || expired > 0 || evicted > 0 {
                             warn!(
@@ -363,7 +359,6 @@ impl WtVideoTransport {
                         sent = 0;
                         stalled = 0;
                         expired = 0;
-                        evicted = 0;
                         shared_for_sender.write_stall_ms.store(
                             std::mem::take(&mut stall_window_ms),
                             std::sync::atomic::Ordering::Relaxed,
@@ -1050,7 +1045,6 @@ mod tests {
         // this stream's receive half - the path iOS WebKit can actually
         // deliver (server-initiated streams are not). Opened BEFORE frames
         // are queued: a frame with no sink is dropped.
-        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
         let vch = conn
             .open_bi()
             .await
@@ -1283,7 +1277,6 @@ mod tests {
         // audio-datagram probe has proven the path.
         let mut line = serde_json::to_string(&WtClientMessage::EnableDatagramVideo).unwrap();
         line.push('\n');
-        use tokio::io::AsyncWriteExt as _;
         ctl.write_all(line.as_bytes()).await.unwrap();
 
         // Wait for the control reader to apply the switch: the flag travels
@@ -1299,7 +1292,6 @@ mod tests {
         // the anchor; a 700 KB burst would blow the delta freshness budget
         // for every frame queued behind it) - so the client opens its video
         // channel first, exactly as the web client does.
-        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
         let vch = conn
             .open_bi()
             .await

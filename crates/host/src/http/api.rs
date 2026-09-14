@@ -7,7 +7,7 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 
-use inphase_protocol::{QualityPreset, VideoCodec, SIGNALING_PROTOCOL_VERSION};
+use inphase_protocol::{VideoCodec, SIGNALING_PROTOCOL_VERSION};
 
 use super::{require_session, HttpState, SESSION_COOKIE};
 use crate::input::backends::new_default_backend;

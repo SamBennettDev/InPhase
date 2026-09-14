@@ -148,6 +148,7 @@ struct Shared {
     events: mpsc::UnboundedSender<WtClientEvent>,
     /// Audio datagram funnel (opus packets, §11-on-WT). Drained by the
     /// single-owner sender task.
+    #[cfg(windows)]
     audio: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
     /// Id of the session currently holding the single video slot (ADR-0007).
     ///

@@ -5,7 +5,6 @@
 //! until one is presented (ADR-0011 step 2).
 
 use parking_lot::Mutex;
-use rand::Rng;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -36,9 +35,6 @@ impl TokenStore {
     /// Consume a token: valid only if present, unexpired, and unused.
     pub fn consume(&self, token: &str) -> bool {
         let mut guard = self.tokens.lock();
-        match guard.remove(token) {
-            Some(expires) if Instant::now() < expires => true,
-            _ => false,
-        }
+        matches!(guard.remove(token), Some(expires) if Instant::now() < expires)
     }
 }

@@ -278,7 +278,7 @@ impl SessionManager {
     /// still the one that created it — a displaced link's late close (TCP FIN
     /// after its successor claimed) must leave the replacement untouched.
     pub fn end_link(&self, ticket: SessionTicket) {
-        let mut g = self.inner.lock();
+        let g = self.inner.lock();
         if g.ticket != ticket.0 {
             debug!(
                 link = ticket.0,

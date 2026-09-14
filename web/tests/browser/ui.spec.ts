@@ -25,7 +25,7 @@ test("failed dashboard actions are visible and can be retried", async ({ page })
   await expect(page.locator("#pin")).toHaveText("482916");
   await page.locator("#rotate").click();
   await expect(page.locator("#message")).toBeVisible();
-  await expect(page.locator("#message")).toContainText("unavailable");
+  await expect(page.locator("#message")).toContainText("could not complete this action");
   await expect(page.locator("#rotate")).toBeEnabled();
   await expect(page.locator("#pin")).toHaveText("482916");
 });
