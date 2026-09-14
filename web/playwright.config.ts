@@ -11,7 +11,8 @@ export default defineConfig({
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
     launchOptions: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH
-      ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {},
+      ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH }
+      : {},
   },
   webServer: {
     command: "npm run dev -- --host 127.0.0.1",

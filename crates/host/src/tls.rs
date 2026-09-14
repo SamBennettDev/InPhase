@@ -83,7 +83,10 @@ pub mod local_ca {
         let crt = dir.join("ca.crt");
         let key = dir.join("ca.key");
 
-        anyhow::ensure!(crt.is_file() == key.is_file(), "local CA is incomplete; restore its matching certificate and key");
+        anyhow::ensure!(
+            crt.is_file() == key.is_file(),
+            "local CA is incomplete; restore its matching certificate and key"
+        );
         if crt.is_file() && key.is_file() {
             if let (Ok(blob), Ok(pem)) = (std::fs::read(&key), std::fs::read_to_string(&crt)) {
                 let unwrapped =

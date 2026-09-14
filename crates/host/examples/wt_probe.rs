@@ -36,9 +36,7 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use ed25519_dalek::{Signer, SigningKey};
 use futures_util::{SinkExt, StreamExt};
-use inphase_protocol::{
-    SignalMessage, WtClientMessage, WtFragment, WT_AUDIO_DATAGRAM_TAG,
-};
+use inphase_protocol::{SignalMessage, WtClientMessage, WtFragment, WT_AUDIO_DATAGRAM_TAG};
 
 struct Args {
     host: String,
