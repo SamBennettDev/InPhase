@@ -64,9 +64,6 @@ test("an empty-chunk storm is fatal to the stream, not a silent spin", async () 
     ...Array.from({ length: 100 }, () => new Uint8Array(0)),
   ]);
   assert.deepEqual(frames, [1]);
-  assert.equal(
-    (c as unknown as { framesAbandoned: number }).framesAbandoned,
-    1,
-  );
+  assert.equal((c as unknown as { framesAbandoned: number }).framesAbandoned, 1);
   assert.equal((c as unknown as { streamsWedged: number }).streamsWedged, 1);
 });

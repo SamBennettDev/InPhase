@@ -9,7 +9,7 @@ $ErrorActionPreference = "Continue"
 $root = "C:\Program Files (x86)\Unigine\Heaven Benchmark 4.0"
 $bin  = Join-Path $root "bin"
 $exe  = Join-Path $bin "Heaven.exe"
-$log  = "C:\Users\sambe\stress\heaven.out.log"
+$log  = "$env:USERPROFILE\stress\heaven.out.log"
 Remove-Item $log -EA SilentlyContinue
 
 Get-Process Heaven, browser_x86 -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue

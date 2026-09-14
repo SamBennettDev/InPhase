@@ -29,12 +29,8 @@ export const enum InputKind {
 
 export interface GamepadStateWire {
   buttons: number; // u32
-  lx: number;
-  ly: number;
-  rx: number;
-  ry: number; // i16
-  lt: number;
-  rt: number; // u16
+  lx: number; ly: number; rx: number; ry: number; // i16
+  lt: number; rt: number; // u16
 }
 
 export interface SnapshotStateWire {
@@ -45,29 +41,12 @@ export interface SnapshotStateWire {
 }
 
 export type InputEvent =
-  | {
-      kind: InputKind.MouseMove;
-      dx: number;
-      dy: number;
-      wheelX: number;
-      wheelY: number;
-    }
+  | { kind: InputKind.MouseMove; dx: number; dy: number; wheelX: number; wheelY: number }
   | { kind: InputKind.MouseButtons; buttons: number }
-  | {
-      kind: InputKind.Key;
-      physicalCode: number;
-      down: boolean;
-      modifiers: number;
-    }
+  | { kind: InputKind.Key; physicalCode: number; down: boolean; modifiers: number }
   | { kind: InputKind.Gamepad; state: GamepadStateWire }
   | { kind: InputKind.Snapshot; state: SnapshotStateWire }
-  | {
-      kind: InputKind.Touch;
-      pointerId: number;
-      phase: number;
-      x: number;
-      y: number;
-    };
+  | { kind: InputKind.Touch; pointerId: number; phase: number; x: number; y: number };
 
 /** Monotonic per-connection sequence + client clock, injected by the encoder. */
 export class InputEncoder {
@@ -107,18 +86,13 @@ function payloadBytes(ev: InputEvent): Uint8Array {
   const w = new Writer();
   switch (ev.kind) {
     case InputKind.MouseMove:
-      w.i16(ev.dx);
-      w.i16(ev.dy);
-      w.i16(ev.wheelX);
-      w.i16(ev.wheelY);
+      w.i16(ev.dx); w.i16(ev.dy); w.i16(ev.wheelX); w.i16(ev.wheelY);
       break;
     case InputKind.MouseButtons:
       w.u16(ev.buttons);
       break;
     case InputKind.Key:
-      w.u16(ev.physicalCode);
-      w.u8(ev.down ? 1 : 0);
-      w.u8(ev.modifiers);
+      w.u16(ev.physicalCode); w.u8(ev.down ? 1 : 0); w.u8(ev.modifiers);
       break;
     case InputKind.Gamepad:
       writeGamepad(w, ev.state);
@@ -134,11 +108,7 @@ function payloadBytes(ev: InputEvent): Uint8Array {
       break;
     }
     case InputKind.Touch:
-      w.u32(ev.pointerId);
-      w.u8(ev.phase);
-      w.u8(0);
-      w.u16(ev.x);
-      w.u16(ev.y);
+      w.u32(ev.pointerId); w.u8(ev.phase); w.u8(0); w.u16(ev.x); w.u16(ev.y);
       break;
   }
   return w.bytes();
@@ -146,38 +116,20 @@ function payloadBytes(ev: InputEvent): Uint8Array {
 
 function writeGamepad(w: Writer, g: GamepadStateWire) {
   w.u32(g.buttons);
-  w.i16(g.lx);
-  w.i16(g.ly);
-  w.i16(g.rx);
-  w.i16(g.ry);
-  w.u16(g.lt);
-  w.u16(g.rt);
+  w.i16(g.lx); w.i16(g.ly); w.i16(g.rx); w.i16(g.ry);
+  w.u16(g.lt); w.u16(g.rt);
 }
 
 class Writer {
   private parts: number[] = [];
-  u8(v: number) {
-    this.parts.push(v & 0xff);
-  }
-  u16(v: number) {
-    v &= 0xffff;
-    this.parts.push(v & 0xff, (v >>> 8) & 0xff);
-  }
-  i16(v: number) {
-    this.u16(v < 0 ? v + 0x10000 : v);
-  }
+  u8(v: number) { this.parts.push(v & 0xff); }
+  u16(v: number) { v &= 0xffff; this.parts.push(v & 0xff, (v >>> 8) & 0xff); }
+  i16(v: number) { this.u16(v < 0 ? v + 0x10000 : v); }
   u32(v: number) {
     v >>>= 0;
-    this.parts.push(
-      v & 0xff,
-      (v >>> 8) & 0xff,
-      (v >>> 16) & 0xff,
-      (v >>> 24) & 0xff,
-    );
+    this.parts.push(v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, (v >>> 24) & 0xff);
   }
-  bytes(): Uint8Array {
-    return Uint8Array.from(this.parts);
-  }
+  bytes(): Uint8Array { return Uint8Array.from(this.parts); }
 }
 
 export function toHex(b: Uint8Array): string {

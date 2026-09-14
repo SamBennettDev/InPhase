@@ -437,7 +437,7 @@ async fn send(
     m: &SignalMessage,
 ) -> Result<()> {
     ws.send(tokio_tungstenite::tungstenite::Message::Text(
-        serde_json::to_string(m)?.into(),
+        serde_json::to_string(m)?,
     ))
     .await?;
     Ok(())

@@ -32,10 +32,7 @@ export class TouchController {
   private lastGamepadKey = "";
   private active = false;
 
-  private touches = new Map<
-    number,
-    { x: number; y: number; sx: number; sy: number; t: number; moved: boolean }
-  >();
+  private touches = new Map<number, { x: number; y: number; sx: number; sy: number; t: number; moved: boolean }>();
   private longPressTimer = 0;
   private twoFingerScroll = false;
   private lastScrollY = 0;
@@ -61,10 +58,7 @@ export class TouchController {
     pad.addEventListener("touchcancel", this.onPadEnd, { passive: false });
     document.addEventListener("visibilitychange", this.onHide);
     window.addEventListener("blur", this.releaseAll);
-    this.snapshotTimer = window.setInterval(
-      this.sendSnapshot,
-      1000 / SNAPSHOT_HZ,
-    );
+    this.snapshotTimer = window.setInterval(this.sendSnapshot, 1000 / SNAPSHOT_HZ);
     this.gamepadRaf = requestAnimationFrame(this.pollGamepad);
     this.active = true;
   }
@@ -97,71 +91,35 @@ export class TouchController {
         <button class="tbtn" data-mouse="1">R</button>
       </div>`;
 
-    for (const el of this.root.querySelectorAll<HTMLElement>(
-      "button[data-mouse]",
-    )) {
+    for (const el of this.root.querySelectorAll<HTMLElement>("button[data-mouse]")) {
       const bit = Number(el.dataset["mouse"]);
-      el.addEventListener(
-        "touchstart",
-        (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          el.classList.add("on");
-          this.mouseButton(bit, true);
-        },
-        { passive: false },
-      );
-      const up = (e: Event) => {
-        e.preventDefault();
-        el.classList.remove("on");
-        this.mouseButton(bit, false);
-      };
+      el.addEventListener("touchstart", (e) => { e.preventDefault(); e.stopPropagation(); el.classList.add("on"); this.mouseButton(bit, true); }, { passive: false });
+      const up = (e: Event) => { e.preventDefault(); el.classList.remove("on"); this.mouseButton(bit, false); };
       el.addEventListener("touchend", up, { passive: false });
       el.addEventListener("touchcancel", up, { passive: false });
     }
 
     const sheet = this.root.querySelector<HTMLElement>(".sheet")!;
-    for (const el of this.root.querySelectorAll<HTMLElement>(
-      "button[data-act]",
-    )) {
-      el.addEventListener(
-        "touchend",
-        (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          switch (el.dataset["act"]) {
-            case "menu":
-              sheet.hidden = !sheet.hidden;
-              break;
-            case "kb":
-              sheet.hidden = true;
-              this.kb.toggle();
-              break;
-            case "fs":
-              sheet.hidden = true;
-              this.requestFullscreen();
-              break;
-            case "quit":
-              sheet.hidden = true;
-              this.onDisconnect?.();
-              break;
-          }
-        },
-        { passive: false },
-      );
+    for (const el of this.root.querySelectorAll<HTMLElement>("button[data-act]")) {
+      el.addEventListener("touchend", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        switch (el.dataset["act"]) {
+          case "menu": sheet.hidden = !sheet.hidden; break;
+          case "kb": sheet.hidden = true; this.kb.toggle(); break;
+          case "fs": sheet.hidden = true; this.requestFullscreen(); break;
+          case "quit": sheet.hidden = true; this.onDisconnect?.(); break;
+        }
+      }, { passive: false });
     }
   }
 
   private requestFullscreen() {
-    const s = this.surface as HTMLElement & {
-      webkitRequestFullscreen?: () => void;
-    };
+    const s = this.surface as HTMLElement & { webkitRequestFullscreen?: () => void };
     if (s.requestFullscreen) void s.requestFullscreen().catch(() => {});
     else if (s.webkitRequestFullscreen) s.webkitRequestFullscreen();
     else {
-      const v = this.surface.querySelector<
-        HTMLVideoElement & { webkitEnterFullscreen?: () => void }
-      >("video");
+      const v = this.surface.querySelector<HTMLVideoElement & { webkitEnterFullscreen?: () => void }>("video");
       v?.webkitEnterFullscreen?.();
     }
   }
@@ -172,20 +130,10 @@ export class TouchController {
     e.preventDefault();
     if (this.kb.isOpen) this.kb.hide();
     for (const t of Array.from(e.changedTouches)) {
-      this.touches.set(t.identifier, {
-        x: t.clientX,
-        y: t.clientY,
-        sx: t.clientX,
-        sy: t.clientY,
-        t: performance.now(),
-        moved: false,
-      });
+      this.touches.set(t.identifier, { x: t.clientX, y: t.clientY, sx: t.clientX, sy: t.clientY, t: performance.now(), moved: false });
     }
     if (this.touches.size === 1) {
-      this.longPressTimer = window.setTimeout(
-        () => this.mouseButton(0, true),
-        LONGPRESS_MS,
-      );
+      this.longPressTimer = window.setTimeout(() => this.mouseButton(0, true), LONGPRESS_MS);
     }
     if (this.touches.size === 2) {
       clearTimeout(this.longPressTimer);
@@ -201,10 +149,8 @@ export class TouchController {
       if (!p) continue;
       const dx = t.clientX - p.x;
       const dy = t.clientY - p.y;
-      p.x = t.clientX;
-      p.y = t.clientY;
-      if (Math.hypot(t.clientX - p.sx, t.clientY - p.sy) > TAP_SLOP)
-        p.moved = true;
+      p.x = t.clientX; p.y = t.clientY;
+      if (Math.hypot(t.clientX - p.sx, t.clientY - p.sy) > TAP_SLOP) p.moved = true;
       if (this.touches.size === 1 && !this.twoFingerScroll) {
         clearTimeout(this.longPressTimer);
         this.move(dx, dy);
@@ -224,21 +170,13 @@ export class TouchController {
     const ending = Array.from(e.changedTouches);
     const twoFingerTap =
       this.touches.size === 2 &&
-      [...this.touches.values()].every(
-        (p) => !p.moved && performance.now() - p.t < TAP_MS,
-      );
+      [...this.touches.values()].every((p) => !p.moved && performance.now() - p.t < TAP_MS);
     for (const t of ending) {
       const p = this.touches.get(t.identifier);
       this.touches.delete(t.identifier);
       if (!p) continue;
       const quick = performance.now() - p.t < TAP_MS && !p.moved;
-      if (
-        !twoFingerTap &&
-        quick &&
-        !this.twoFingerScroll &&
-        this.touches.size === 0
-      )
-        this.click(0);
+      if (!twoFingerTap && quick && !this.twoFingerScroll && this.touches.size === 0) this.click(0);
     }
     if (twoFingerTap) this.click(1);
     if (this.touches.size === 0) {
@@ -250,36 +188,15 @@ export class TouchController {
   // ---- emit -----------------------------------------------------------
 
   private move(dx: number, dy: number) {
-    this.sink.sendInput(
-      this.enc.encode({
-        kind: InputKind.MouseMove,
-        dx: cI16(dx * MOVE_SCALE),
-        dy: cI16(dy * MOVE_SCALE),
-        wheelX: 0,
-        wheelY: 0,
-      }),
-    );
+    this.sink.sendInput(this.enc.encode({ kind: InputKind.MouseMove, dx: cI16(dx * MOVE_SCALE), dy: cI16(dy * MOVE_SCALE), wheelX: 0, wheelY: 0 }));
   }
   private wheel(x: number, y: number) {
-    this.sink.sendInput(
-      this.enc.encode({
-        kind: InputKind.MouseMove,
-        dx: 0,
-        dy: 0,
-        wheelX: x,
-        wheelY: y,
-      }),
-    );
+    this.sink.sendInput(this.enc.encode({ kind: InputKind.MouseMove, dx: 0, dy: 0, wheelX: x, wheelY: y }));
   }
   private mouseButton(bit: number, down: boolean) {
     if (down) this.mouseButtons |= 1 << bit;
     else this.mouseButtons &= ~(1 << bit);
-    this.sink.sendInput(
-      this.enc.encode({
-        kind: InputKind.MouseButtons,
-        buttons: this.mouseButtons,
-      }),
-    );
+    this.sink.sendInput(this.enc.encode({ kind: InputKind.MouseButtons, buttons: this.mouseButtons }));
   }
   private click(bit: number) {
     this.mouseButton(bit, true);
@@ -288,14 +205,7 @@ export class TouchController {
   private key(scan: number, down: boolean) {
     if (down) this.held.add(scan);
     else this.held.delete(scan);
-    this.sink.sendInput(
-      this.enc.encode({
-        kind: InputKind.Key,
-        physicalCode: scan,
-        down,
-        modifiers: 0,
-      }),
-    );
+    this.sink.sendInput(this.enc.encode({ kind: InputKind.Key, physicalCode: scan, down, modifiers: 0 }));
   }
 
   /** Inject a single key press (on-screen buttons). */
@@ -311,9 +221,7 @@ export class TouchController {
       const key = JSON.stringify(gp);
       if (key !== this.lastGamepadKey) {
         this.lastGamepadKey = key;
-        this.sink.sendInput(
-          this.enc.encode({ kind: InputKind.Gamepad, state: gp }),
-        );
+        this.sink.sendInput(this.enc.encode({ kind: InputKind.Gamepad, state: gp }));
       }
     }
     this.gamepadRaf = requestAnimationFrame(this.pollGamepad);
@@ -321,17 +229,15 @@ export class TouchController {
 
   private sendSnapshot = () => {
     if (!this.active) return;
-    this.sink.sendInput(
-      this.enc.encode({
-        kind: InputKind.Snapshot,
-        state: {
-          mouseButtons: this.mouseButtons,
-          modifiers: 0,
-          heldKeys: [...this.held],
-          gamepad: this.gamepad ?? undefined,
-        },
-      }),
-    );
+    this.sink.sendInput(this.enc.encode({
+      kind: InputKind.Snapshot,
+      state: {
+        mouseButtons: this.mouseButtons,
+        modifiers: 0,
+        heldKeys: [...this.held],
+        gamepad: this.gamepad ?? undefined,
+      },
+    }));
   };
 
   private onHide = () => {
@@ -346,14 +252,8 @@ export class TouchController {
     this.touches.clear();
     this.twoFingerScroll = false;
     clearTimeout(this.longPressTimer);
-    this.sink.sendInput(
-      this.enc.encode({
-        kind: InputKind.Snapshot,
-        state: { mouseButtons: 0, modifiers: 0, heldKeys: [] },
-      }),
-    );
-    for (const el of this.root.querySelectorAll(".on"))
-      el.classList.remove("on");
+    this.sink.sendInput(this.enc.encode({ kind: InputKind.Snapshot, state: { mouseButtons: 0, modifiers: 0, heldKeys: [] } }));
+    for (const el of this.root.querySelectorAll(".on")) el.classList.remove("on");
   };
 }
 

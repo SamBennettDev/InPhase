@@ -1,119 +1,140 @@
 # InPhase
 
-LAN-first, browser-native gaming-PC remote play. Capture a Windows monitor,
-hardware-encode it, send it over WebRTC to a browser, and send input back — with
-low latency, high visual quality and near-zero idle cost.
+**Your gaming PC, on your other screen.**
 
-**One open-source binary on the gaming PC.** No cloud service, no accounts. The
-browser reaches the host directly over your LAN (or, opt-in, over direct global
-IPv6); the host serves its own HTTPS — needed for the browser's secure-context
-APIs — with a **bundled local CA**. The installer trusts it on the host PC;
-other devices install it once from `GET /ca.crt`. See
-[`docs/lan-security-model.md`](docs/lan-security-model.md).
+InPhase streams a Windows desktop or game to a browser, with hardware video
+encoding, game audio, keyboard and mouse input. The host runs in your system tray;
+the player runs in your browser. No InPhase account, subscription, or hosted relay.
 
-## Architecture in one sentence
+[Download releases](https://github.com/SamBennettDev/InPhase/releases) ·
+[Get help](docs/TROUBLESHOOTING.md) · [Contribute](CONTRIBUTING.md)
 
-> A per-user Rust Windows application hosts a tiny same-origin web client and an
-> authenticated WebRTC signaller; it lazily creates a GStreamer pipeline that
-> captures a monitor as D3D11 textures, hardware-encodes into HEVC (or H.264
-> when the browser can't receive HEVC), sends video + Opus audio over
-> `webrtcbin` with an application-level AIMD bitrate controller driven by client
-> telemetry, receives low-latency binary input over a data channel, translates
-> it to Windows input, and tears the media/input pipeline back down when the
-> player disconnects.
+> **Early access.** Automated checks do not certify real GPU or network playback.
+> Check each release's tested hardware and known issues before installing.
 
-```
-crates/
-  protocol/   platform-neutral wire protocol (binary input packet v1 + JSON
-              signaling). Golden Rust<->TS test vectors. Builds/tests anywhere.
-  host/       the Windows host. GStreamer 1.28 + Win32.
-              app · config · http · pairing · session · media · input · stats ·
-              portmap · platform
-web/          vanilla-TS player page + host dashboard (Vite). Embedded in the exe.
-scripts/      provision-windows · build · package · build-installer · smoke-gstreamer
-docs/         architecture overview, ADRs, the LAN security model, IPv6 remote access
-```
+## Get started
 
-The design report in `docs/research/` is the source of truth;
-`docs/architecture/overview.md` is a map into the code. Section references in the
-code (`§5.1`, `§12.2`, …) point back to the report.
+1. On your gaming PC, download **InPhaseSetup.exe** from a GitHub release's
+   **Assets** section. The source-code ZIP is for developers.
+2. Run the installer. It includes the host, browser interface, and private
+   GStreamer runtime. Windows asks for permission to install and configure the
+   firewall. The release notes identify whether the installer is signed.
+3. Open **InPhase** from the system tray. The dashboard shows your play address
+   and six-digit pairing PIN. Keep the PC awake and signed in.
+4. On another device on your home network, follow **Certificate setup** on the
+   dashboard, open the play address, and enter the PIN. QR invitations are also
+   available; approve the first invited device on the PC when asked.
+5. Choose a game or **Whole desktop**, then start the stream. Start with
+   **1080p / 60 fps** and adjust Stream settings for your connection.
 
-## Remote access (opt-in)
+Use **Ctrl+Shift+Q** to leave a stream. The host emergency stop is
+**Ctrl+Alt+Shift+F12**. End streams or revoke devices from the dashboard.
 
-`[remote_access]` in `config.toml` is **off by default**. When enabled, the host
-also answers on its stable global IPv6 address, and the port-mapping task asks
-the router (PCP / NAT-PMP) to open an inbound pinhole for TCP 443. Pairing stays
-LAN-only unless `allow_remote_pairing` is also set — a device is enrolled once on
-the LAN and afterwards authenticates remotely with a non-extractable per-browser
-key. See [`docs/ipv6-remote-access.md`](docs/ipv6-remote-access.md).
+## What you need
 
-## Build (on the Windows host)
+| Component | Requirement |
+| --- | --- |
+| Host | Windows 10 build 19041 or newer, or Windows 11; x64; an active desktop session and display |
+| Graphics | A supported hardware encoder and current GPU driver. NVIDIA, AMD, Intel and Media Foundation plugins are bundled; availability depends on hardware and drivers. |
+| Player | A current browser with secure-context cryptography and compatible video decoding. Chrome/Edge are the primary development targets; other browsers may use the WebRTC path. |
+| Network | A reachable PC on the same trusted LAN. Ethernet on the host is a useful starting point. |
+| Controller | Optional. Virtual gamepad input requires a separately installed compatible ViGEmBus driver and the documented input opt-in. This installer does not supply the driver. |
+
+InPhase does not wake a sleeping PC, stream the Windows sign-in/secure desktop,
+or guarantee input compatibility with every game or anti-cheat system.
+See the [hardware test matrix](tests/compatibility/host-gpu.md).
+
+## Interface
+
+The dashboard brings the play address, PIN, device access, and stream health
+together. The player has a searchable game library, launcher filters, saved
+quality settings, and layouts for desktop and mobile.
+
+![Host dashboard with demonstration data](docs/images/dashboard.png)
+![Player library with demonstration data and generated title cards](docs/images/library.png)
+
+Game discovery reads installed launchers. Cover art comes from local caches first;
+optional Steam lookups fill gaps. Set `[library] online_art = false` to disable
+those network requests. Unavailable covers use generated title cards.
+Screenshots above use test fixtures, not a live streaming session.
+
+## Privacy and access
+
+The host serves its own HTTPS site. Default setup creates a certificate authority
+for **your Windows user**; other devices explicitly trust that certificate once.
+Only trust certificates from a PC you own. The host identity and CA private key
+are protected with Windows DPAPI.
+
+Pairing is local-network-only by default. Administration requires a loopback
+connection and loopback Host header; browser origins are checked. Remote access
+is **off by default** and needs a suitable network. There is no cloud relay.
+
+- [Security model](docs/lan-security-model.md)
+- [Opt-in remote access](docs/ipv6-remote-access.md)
+- [Report a vulnerability](SECURITY.md)
+
+**Upgrading from shared-certificate builds:** setup retires the old
+`%ProgramData%\InPhase\tls` CA and creates one in your profile. Remove the old
+InPhase CA from player devices and follow Certificate setup again.
+See [migration notes](docs/TROUBLESHOOTING.md#certificate-migration).
+
+## Build from source
+
+You need Git, the Rust toolchain in `rust-toolchain.toml`, and Node.js **22.12+**
+(CI uses Node 24). Windows builds also need Visual Studio C++ Build Tools, the
+Windows SDK, **GStreamer 1.28.6 MSVC x64 complete**, and Inno Setup 6.
+Review `scripts/provision-windows.ps1` before running it: it installs system tools.
 
 ```powershell
-# one-time: Rust MSVC, VS BuildTools, Node LTS, GStreamer 1.28.x (complete)
-pwsh scripts\provision-windows.ps1
-
-# build web client + host
-pwsh scripts\build.ps1 -Release
-
-# self-contained folder with a license-clean bundled GStreamer runtime
-pwsh scripts\package.ps1            # -> dist\InPhase\
-
-# Inno Setup installer
-pwsh scripts\build-installer.ps1    # -> dist\InPhaseSetup.exe
+git clone https://github.com/SamBennettDev/InPhase.git
+cd InPhase
+pwsh scripts/build-installer.ps1
+# Output: dist/InPhaseSetup.exe
+pwsh scripts/verify-package.ps1
 ```
 
-`protocol` and the host library build and test on any platform (the Windows
-media stack compiles to inert stubs):
+`scripts/build.ps1 -Release` builds the embedded web client and host together.
+`scripts/package.ps1` creates the runtime. Missing DLLs/plugins, failed native
+commands, unknown binary licenses, and missing production web assets fail the build.
 
+Linux/macOS can test the protocol, host policy, and web client. Windows capture
+and input use stubs there:
+
+```sh
+npm --prefix web ci
+npm --prefix web test
+npm --prefix web run build
+cargo fmt --all --check
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo test --locked --workspace
+cd web
+npx playwright install chromium
+npm run test:browser
 ```
-cargo test --workspace
-cd web && npm ci && npm test && npm run build
-```
 
-## Run
+Browser tests simulate host responses. The Windows package check verifies startup
+and plugin loading with the developer's runtime removed from PATH. Neither
+replaces an installed build on a real gaming PC.
 
-```powershell
-target\release\inphase-host.exe
-# open the printed play URL in Chrome/Edge on another LAN machine and
-# enter the PIN shown in the log / on the localhost dashboard.
+## Project map
 
-inphase-host --doctor       # environment preflight
-inphase-host --print-config # write a config template
-inphase-host --net-probe    # gateway + PCP/NAT-PMP diagnostic
-```
+| Location | Purpose |
+| --- | --- |
+| `crates/host` | Windows application, authentication, capture, encoding, audio and input |
+| `crates/protocol` | Shared protocol and Rust/TypeScript test vectors |
+| `web` | TypeScript dashboard and browser player, built with Vite |
+| `scripts`, `installer` | Windows build, runtime packaging and installer |
+| `docs/architecture`, `docs/adr` | Architecture and design decisions |
+| `tests` | Hardware, latency and integration procedures |
 
-The host runs as a **windowless system-tray application**. Right-click the tray
-icon for status, to toggle remote access or start-at-sign-in, to open the
-dashboard, or to quit — no scripts, no config edits. The icon is electric blue
-while a session is streaming and dim otherwise.
+Video uses WebTransport/WebCodecs where negotiated, with a WebRTC path for
+compatible clients. Read the [architecture overview](docs/architecture/overview.md)
+and [release checklist](docs/RELEASING.md) before changing transport or shipping.
 
-The play page shows a poster grid of your installed games (Steam, Epic, GOG,
-Xbox, Battle.net, EA, Ubisoft, …). Covers come from each launcher's own cache
-first; anything missing is filled in from Steam's public store API + CDN (no API
-key) and cached under `%APPDATA%\InPhase\artcache\`. Set `[library] online_art =
-false` for a fully offline host.
+## License
 
-Config lives at `%APPDATA%\InPhase\config.toml`. Nothing secret is stored — the
-PIN and the session cookie are memory-only; the per-browser controller key is
-non-extractable and lives in the browser.
-
-## Licensing
-
-InPhase is **GPL-3.0-or-later** — see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
-Same license as Sunshine and Moonlight. As sole copyright holder, Sam Bennett
-retains the right to offer the code under other terms. Early versions were
-briefly published under MPL-2.0; those grants stand for the versions released
-under them.
-
-Packaged builds dynamically link **GStreamer 1.28.x (LGPL-2.1-or-later)** and
-link OpenSSL, libsrtp, libnice, libopus and other BSD-family media libraries,
-plus ~390 Rust crates (mostly MIT / Apache-2.0). No GPL-incompatible component
-is used or shipped; a per-file SPDX manifest ships with each packaged build.
-
-**Codecs:** the host prefers **HEVC (H.265)** when the browser advertises an
-HEVC receive codec and falls back to **H.264** automatically;
-`media.allow_hevc = false` forces H.264 only. Both are covered by patent pools
-(HEVC's more onerously). *Distributing* binaries that encode or decode them may
-carry licensing obligations this software license cannot grant — get your own
-advice before publishing release binaries. None of this is legal advice.
+InPhase-owned code is **GPL-3.0-or-later**: [LICENSE](LICENSE), [NOTICE](NOTICE).
+Bundled dependencies retain their own licenses. Candidates contain a binary
+manifest and notices. Public binary distribution also requires matching source
+and the review in [RELEASING.md](docs/RELEASING.md). Codec rights are separate
+from the source-code license; see NOTICE.

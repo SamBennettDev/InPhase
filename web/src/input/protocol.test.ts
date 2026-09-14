@@ -18,19 +18,11 @@ import {
   type InputEvent,
 } from "./protocol.js";
 
-const vectorsPath = fileURLToPath(
-  new URL("./protocol.vectors.json", import.meta.url),
-);
-const vectors = JSON.parse(readFileSync(vectorsPath, "utf8")) as {
-  name: string;
-  hex: string;
-}[];
+const vectorsPath = fileURLToPath(new URL("./protocol.vectors.json", import.meta.url));
+const vectors = JSON.parse(readFileSync(vectorsPath, "utf8")) as { name: string; hex: string }[];
 
 // Rebuild each named vector with the exact same inputs as `vectors.rs`.
-const builders: Record<
-  string,
-  { seq: number; us: bigint; flags: number; ev: InputEvent }
-> = {
+const builders: Record<string, { seq: number; us: bigint; flags: number; ev: InputEvent }> = {
   mouse_move_unadjusted: {
     seq: 42,
     us: 1_234_567n,
@@ -47,12 +39,7 @@ const builders: Record<
     seq: 1,
     us: 1n,
     flags: 0,
-    ev: {
-      kind: InputKind.Key,
-      physicalCode: 0x1e,
-      down: true,
-      modifiers: MOD_CTRL | MOD_SHIFT,
-    },
+    ev: { kind: InputKind.Key, physicalCode: 0x1e, down: true, modifiers: MOD_CTRL | MOD_SHIFT },
   },
   gamepad_extremes: {
     seq: 100,
@@ -60,25 +47,14 @@ const builders: Record<
     flags: 0,
     ev: {
       kind: InputKind.Gamepad,
-      state: {
-        buttons: 0xdeadbeef,
-        lx: -32768,
-        ly: 32767,
-        rx: 256,
-        ry: -256,
-        lt: 65535,
-        rt: 0,
-      },
+      state: { buttons: 0xdeadbeef, lx: -32768, ly: 32767, rx: 256, ry: -256, lt: 65535, rt: 0 },
     },
   },
   snapshot_empty: {
     seq: 0,
     us: 0n,
     flags: 0,
-    ev: {
-      kind: InputKind.Snapshot,
-      state: { mouseButtons: 0, modifiers: 0, heldKeys: [] },
-    },
+    ev: { kind: InputKind.Snapshot, state: { mouseButtons: 0, modifiers: 0, heldKeys: [] } },
   },
   snapshot_two_keys_with_gamepad: {
     seq: 55,

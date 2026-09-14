@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { WtVideoClient } from "./wtcore.js";
 
+
 // FEC parity repair for the v4 datagram carrier, pinned against the 23:21
 // session: at ~9% fragment loss a NACK-only repair amplified into a
 // re-send storm (nacks 65 -> 10789 in 8 s). Row 1 parity must rebuild a
@@ -35,18 +36,13 @@ interface FrameLike {
   payload: Uint8Array;
 }
 
-function feed(dgrams: Uint8Array[]): {
-  frames: { no: number; payload: Uint8Array }[];
-  c: WtVideoClient;
-} {
+function feed(dgrams: Uint8Array[]): { frames: { no: number; payload: Uint8Array }[]; c: WtVideoClient } {
   const c = new WtVideoClient();
   const frames: { no: number; payload: Uint8Array }[] = [];
   for (const d of dgrams) {
-    (
-      c as unknown as {
-        onVideoFragment(d: Uint8Array, h: unknown): void;
-      }
-    ).onVideoFragment(d, {
+    (c as unknown as {
+      onVideoFragment(d: Uint8Array, h: unknown): void;
+    }).onVideoFragment(d, {
       onFrame: (f: FrameLike) =>
         frames.push({ no: f.frame_no, payload: f.payload }),
     });
@@ -68,8 +64,7 @@ test("row-1 parity rebuilds one lost fragment with no round-trip", () => {
   // Row 1: XOR of all group members (zero-padded to budget; all are budget
   // sized here except never the last of the FRAME, and cnt === GROUP).
   const row1 = new Uint8Array(budget);
-  for (const f of frags)
-    for (let j = 0; j < budget; j++) row1[j] = (row1[j] ?? 0) ^ (f[j] ?? 0);
+  for (const f of frags) for (let j = 0; j < budget; j++) row1[j] = (row1[j] ?? 0) ^ (f[j] ?? 0);
 
   const dgrams = frags.map((f, i) => frag(1, i, cnt, f, 0, true));
   dgrams.push(frag(1, 0, cnt, row1, 1, true));
@@ -122,8 +117,7 @@ test("a hole the parity cannot cover still NACKs - bounded", async () => {
     frags.push(payload.subarray(i * budget, (i + 1) * budget));
   }
   const row1 = new Uint8Array(budget);
-  for (const f of frags)
-    for (let j = 0; j < budget; j++) row1[j] = (row1[j] ?? 0) ^ (f[j] ?? 0);
+  for (const f of frags) for (let j = 0; j < budget; j++) row1[j] = (row1[j] ?? 0) ^ (f[j] ?? 0);
   const dgrams = frags.map((f, i) => frag(3, i, cnt, f, 0, true));
   dgrams.push(frag(3, 0, cnt, row1, 1, true));
   dgrams.splice(1, 1); // idx 1
@@ -136,29 +130,23 @@ test("a hole the parity cannot cover still NACKs - bounded", async () => {
   // re-feed a duplicate fragment to trigger the expiry scan. NACKs are spied on `send` (no control writer
   // in the test, so the real send would no-op silently).
   const sent: { type: string; idx?: number }[] = [];
-  (
-    c as unknown as { send: (m: Record<string, unknown>) => Promise<void> }
-  ).send = (m: Record<string, unknown>) => {
-    sent.push(m as { type: string });
-    return Promise.resolve();
-  };
+  (c as unknown as { send: (m: Record<string, unknown>) => Promise<void> }).send =
+    (m: Record<string, unknown>) => {
+      sent.push(m as { type: string });
+      return Promise.resolve();
+    };
   const orig = performance.now;
-  (performance as { now: () => number }).now = () =>
-    orig.call(performance) + 200;
+  (performance as { now: () => number }).now = () => orig.call(performance) + 200;
   try {
-    (
-      c as unknown as { onVideoFragment(d: Uint8Array, h: unknown): void }
-    ).onVideoFragment(frag(3, 0, cnt, frags[0]!, 0, true), {
-      onFrame: () => {},
-    });
+    (c as unknown as { onVideoFragment(d: Uint8Array, h: unknown): void }).onVideoFragment(
+      frag(3, 0, cnt, frags[0]!, 0, true),
+      { onFrame: () => {} },
+    );
   } finally {
     (performance as { now: () => number }).now = () => orig.call(performance);
   }
   const nacks = sent.filter((s) => s.type === "nack");
-  assert.ok(
-    nacks.length > 0 && nacks.length <= 8,
-    "NACK round fires, bounded to 8",
-  );
+  assert.ok(nacks.length > 0 && nacks.length <= 8, "NACK round fires, bounded to 8");
 });
 
 test("an expired frame is tombstoned - late re-sends do not resurrect it", () => {
@@ -174,12 +162,9 @@ test("an expired frame is tombstoned - late re-sends do not resurrect it", () =>
   const { c } = feed(dgrams);
   const orig = performance.now;
   const fire = (buf: Uint8Array, atMs: number) => {
-    (performance as { now: () => number }).now = () =>
-      orig.call(performance) + 10_000 + 200;
+    (performance as { now: () => number }).now = () => orig.call(performance) + 10_000 + 200;
     try {
-      (
-        c as unknown as { onVideoFragment(d: Uint8Array, h: unknown): void }
-      ).onVideoFragment(buf, {
+      (c as unknown as { onVideoFragment(d: Uint8Array, h: unknown): void }).onVideoFragment(buf, {
         onFrame: () => {},
       });
     } finally {
@@ -187,11 +172,7 @@ test("an expired frame is tombstoned - late re-sends do not resurrect it", () =>
     }
   };
   fire(dgrams[0]!, 0);
-  const priv = c as unknown as {
-    framesAbandoned: number;
-    v4Done: Set<number>;
-    v4: Map<number, unknown>;
-  };
+  const priv = c as unknown as { framesAbandoned: number; v4Done: Set<number>; v4: Map<number, unknown> };
   assert.ok(priv.framesAbandoned === 1, "frame expired");
   // A late re-send of fragment 0 must be ignored, not resurrect the frame.
   fire(dgrams[0]!, 1);

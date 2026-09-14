@@ -29,14 +29,14 @@ On the gaming PC (once): create an interactive scheduled task that runs
 session:
 
 ```
-schtasks /create /tn InPhaseStress /tr "powershell -File C:\Users\sambe\stress\_action.ps1" /sc once /st 00:00 /it /ru sambe /f
+schtasks /create /tn InPhaseStress /tr "powershell -File C:\Users\YOUR_USER\stress\_action.ps1" /sc once /st 00:00 /it /ru YOUR_USER /f
 # write the command into action.txt, then:  schtasks /run /tn InPhaseStress
 ```
 
 From the dev box:
 
 ```
-ssh -N -L 19222:127.0.0.1:9222 sambe@<pc>          # tunnel to the PC's Chrome CDP
+ssh -N -L 19222:127.0.0.1:9222 YOUR_USER@<pc>          # tunnel to the PC's Chrome CDP
 echo <PIN> > .pin
 bash runcdp.sh pcloop-idle-buf120 19222 http://127.0.0.1:47800 120 \
   '{"width":2560,"height":1440,"fps":60,"maxBitrateKbps":40000,"bufferMs":120,"preset":"low_latency"}'

@@ -12,11 +12,7 @@
 // * there is no WebRTC video underneath (ADR-0011 final); this canvas is
 //   the only glass, and the watchdog in play.ts resets/redials on stalls.
 
-import {
-  DecoderRestartPolicy,
-  decoderIsBehind,
-  KeyframeThrottle,
-} from "./decoderpolicy.js";
+import { DecoderRestartPolicy, decoderIsBehind, KeyframeThrottle } from "./decoderpolicy.js";
 import { FrameOrderer } from "./frameorder.js";
 import type { WtFrame } from "./wtvideo.js";
 
@@ -27,11 +23,7 @@ import type { WtFrame } from "./wtvideo.js";
  *  the decoder: the 0..5 s plausibility gate discarded a −3.5e9 ms age, so
  *  glassEmaMs/presentEmaMs stayed 0 and the HUD showed "-- ms e2e" for
  *  every WT session (02:36 Chrome). */
-export function glassAgeMs(
-  nowUs: number,
-  captureUs: number,
-  offsetUs: number,
-): number {
+export function glassAgeMs(nowUs: number, captureUs: number, offsetUs: number): number {
   return (nowUs - (captureUs + offsetUs)) / 1000;
 }
 
@@ -162,10 +154,7 @@ export class WtDecoder {
   ) {
     this.canvas = document.createElement("canvas");
     this.canvas.className = "wt-video";
-    const ctx = this.canvas.getContext("2d", {
-      alpha: false,
-      desynchronized: true,
-    });
+    const ctx = this.canvas.getContext("2d", { alpha: false, desynchronized: true });
     if (ctx === null) throw new Error("2d canvas unavailable");
     this.ctx = ctx;
   }
@@ -228,9 +217,7 @@ export class WtDecoder {
           if (this.dead) return;
           if (this.restarts.onError(performance.now()) === "give-up") {
             this.dead = true;
-            console.error(
-              `wt decoder gave up after repeated errors: ${e.message}`,
-            );
+            console.error(`wt decoder gave up after repeated errors: ${e.message}`);
             this.onFatal?.(
               "The video decoder failed repeatedly on this stream — " +
                 `this browser reports H.265 support but cannot decode it (${e.message}).`,
@@ -268,8 +255,7 @@ export class WtDecoder {
   /** Unrecoverable reference-chain break: drop queued frames, reset the
    *  sequence gate, and wait for a complete fresh keyframe (ADR-0011 P2). */
   private referenceGap(): void {
-    if (this.awaitingResyncFrom === null)
-      this.awaitingResyncFrom = this.lastGapSeq;
+    if (this.awaitingResyncFrom === null) this.awaitingResyncFrom = this.lastGapSeq;
     this.order.reset();
     // The log rides the same throttle as the request: an error burst used to
     // print a line per error, which is its own kind of freeze.
@@ -287,12 +273,7 @@ export class WtDecoder {
   }
 
   onFrame(f: WtFrame): void {
-    if (
-      this.stopped ||
-      this.decoder === null ||
-      this.decoder.state !== "configured"
-    )
-      return;
+    if (this.stopped || this.decoder === null || this.decoder.state !== "configured") return;
     // Ordering lives in FrameOrderer - pure logic over frame numbers, tested
     // directly. Streams complete independently, so frames arrive out of order
     // and a late keyframe must still anchor the sequence.
@@ -363,22 +344,16 @@ export class WtDecoder {
       const d = cx.getImageData(0, 0, 8, 8).data;
       let lit = 0;
       for (let i = 0; i < d.length; i += 4) {
-        const r = d[i] ?? 0,
-          g = d[i + 1] ?? 0,
-          b = d[i + 2] ?? 0;
+        const r = d[i] ?? 0, g = d[i + 1] ?? 0, b = d[i + 2] ?? 0;
         if (r | g | b) lit++;
       }
       if (lit < 2) {
         this.renderMode = "bitmap";
-        console.info(
-          "wt: direct VideoFrame draw produced no pixels - using ImageBitmap renderer",
-        );
+        console.info("wt: direct VideoFrame draw produced no pixels - using ImageBitmap renderer");
       }
     } catch (e) {
       this.renderMode = "bitmap";
-      console.info(
-        "wt: direct VideoFrame draw unavailable - using ImageBitmap renderer",
-      );
+      console.info("wt: direct VideoFrame draw unavailable - using ImageBitmap renderer");
     }
   }
 
@@ -388,10 +363,7 @@ export class WtDecoder {
     // Missing submits (PTS reuse, stale outputs) must not drag the EMA to 0.
     if (submit !== undefined) {
       const decodeMs = performance.now() - submit;
-      this.decodeEmaMs =
-        this.decodeEmaMs === 0
-          ? decodeMs
-          : 0.9 * this.decodeEmaMs + 0.1 * decodeMs;
+      this.decodeEmaMs = this.decodeEmaMs === 0 ? decodeMs : 0.9 * this.decodeEmaMs + 0.1 * decodeMs;
     }
     this.framesDecoded++;
     // The codec produced a frame, so whatever failed before was transient.
@@ -417,8 +389,7 @@ export class WtDecoder {
       }
       if (ageMs >= 0 && ageMs < 5000) {
         this.ageSamples++;
-        this.glassEmaMs =
-          this.glassEmaMs === 0 ? ageMs : 0.9 * this.glassEmaMs + 0.1 * ageMs;
+        this.glassEmaMs = this.glassEmaMs === 0 ? ageMs : 0.9 * this.glassEmaMs + 0.1 * ageMs;
       }
     }
 
@@ -433,22 +404,13 @@ export class WtDecoder {
    *  over. No playout hold, no successor waiting — browser compositing and
    *  display scanout are the only latency after this call. */
   private presentNow(vf: VideoFrame): void {
-    if (
-      this.canvas.width !== vf.displayWidth ||
-      this.canvas.height !== vf.displayHeight
-    ) {
+    if (this.canvas.width !== vf.displayWidth || this.canvas.height !== vf.displayHeight) {
       this.canvas.width = vf.displayWidth;
       this.canvas.height = vf.displayHeight;
     }
     if (!this.renderProbed) this.probeRenderMode(vf);
     if (this.renderMode === "direct") {
-      this.ctx.drawImage(
-        vf as unknown as CanvasImageSource,
-        0,
-        0,
-        vf.displayWidth,
-        vf.displayHeight,
-      );
+      this.ctx.drawImage(vf as unknown as CanvasImageSource, 0, 0, vf.displayWidth, vf.displayHeight);
       this.finishPresent(vf);
       return;
     }
@@ -505,16 +467,9 @@ export class WtDecoder {
     this.lastPresentMs = nowMs;
     const offset = this.clockOffsetUs();
     if (offset !== null) {
-      const presentAgeMs = glassAgeMs(
-        performance.now() * 1000,
-        vf.timestamp,
-        offset,
-      );
+      const presentAgeMs = glassAgeMs(performance.now() * 1000, vf.timestamp, offset);
       if (presentAgeMs >= 0 && presentAgeMs < 5000) {
-        this.presentEmaMs =
-          this.presentEmaMs === 0
-            ? presentAgeMs
-            : 0.9 * this.presentEmaMs + 0.1 * presentAgeMs;
+        this.presentEmaMs = this.presentEmaMs === 0 ? presentAgeMs : 0.9 * this.presentEmaMs + 0.1 * presentAgeMs;
         this.presentSamples++;
       }
     }
@@ -551,16 +506,10 @@ export class WtDecoder {
     if (this.statsSnap.tMs !== 0 && dt >= 0.5) {
       const dRate = (this.framesDecoded - this.statsSnap.decoded) / dt;
       const pRate = (this.framesPresented - this.statsSnap.presented) / dt;
-      this.decodedFps =
-        this.decodedFps === 0 ? dRate : 0.6 * this.decodedFps + 0.4 * dRate;
-      this.presentedFps =
-        this.presentedFps === 0 ? pRate : 0.6 * this.presentedFps + 0.4 * pRate;
+      this.decodedFps = this.decodedFps === 0 ? dRate : 0.6 * this.decodedFps + 0.4 * dRate;
+      this.presentedFps = this.presentedFps === 0 ? pRate : 0.6 * this.presentedFps + 0.4 * pRate;
     }
-    this.statsSnap = {
-      tMs: nowMs,
-      decoded: this.framesDecoded,
-      presented: this.framesPresented,
-    };
+    this.statsSnap = { tMs: nowMs, decoded: this.framesDecoded, presented: this.framesPresented };
     const s = {
       framesDecoded: this.framesDecoded,
       framesDropped: this.framesDropped,
@@ -574,10 +523,7 @@ export class WtDecoder {
       framesPresented: this.framesPresented,
       freezeCount: this.freezeCount,
       totalFreezeMs: this.totalFreezeMs,
-      e2eMs:
-        Math.round(
-          (this.presentEmaMs > 0 ? this.presentEmaMs : this.glassEmaMs) * 10,
-        ) / 10,
+      e2eMs: Math.round((this.presentEmaMs > 0 ? this.presentEmaMs : this.glassEmaMs) * 10) / 10,
       decodedFps: Math.round(this.decodedFps),
       presentedFps: Math.round(this.presentedFps),
       lastAgeMs: this.lastAgeMs,

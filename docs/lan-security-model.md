@@ -27,17 +27,19 @@ host itself*. A remote LAN client needs real HTTPS on a name the browser trusts.
 ### `local-ca` (default)
 
 1. The host generates a **local CA** once — a self-signed root, key DPAPI-wrapped
-   at `%ProgramData%\InPhase\tls\ca.key`, cert at `ca.crt`.
+   at `%APPDATA%\InPhase\tls\ca.key`, cert at `ca.crt`.
 2. It issues a **leaf cert** signed by that CA covering `<machine>.local`, the
    bare machine name, `localhost`, and every non-loopback LAN IP (395-day, auto
    re-issued when it nears expiry or the IP set changes).
 3. It serves HTTPS (rustls via `axum-server`) on `tls.port` (default 443) on all
-   interfaces, and adds the CA to the OS trust store (`certutil -addstore Root`).
+   interfaces, and checks certificate trust without changing the trust store at normal startup.
 4. Other devices trust it once: **`GET /ca.crt`** (also served over plaintext
    HTTP so a phone can fetch it before it trusts anything), install, done.
 
-The **installer** runs `inphase-host --trust-ca` elevated during install, so on
-the host PC itself there is no warning and no manual step. On other devices the
+The **installer** runs `inphase-host --trust-ca` as the original Windows user.
+This explicitly adds the CA to that user's trust store (`certutil -user -addstore Root`).
+The host and certificate setup must use the same user profile, including when
+installation uses another administrator's credentials. On other devices the
 dashboard's "Play from another device" card links the certificate + per-OS steps
 (`web/src/main.ts` also shows this if you hit the host over plain HTTP).
 
@@ -54,8 +56,8 @@ the player cannot pair.
 
 - **Transport.** TLS to the host's own origin (real cert) — the browser
   authenticates the host. WireGuard (Tailscale) additionally encrypts and
-  authenticates the link between your devices. There is no third party to
-  man-in-the-middle, so signaling frames are plain JSON.
+  authenticates the link between your devices. Trust the initial CA only after verifying it came from your PC. Signaling JSON
+  travels inside TLS; a compromised initial certificate exchange is outside that protection.
 - **Host identity.** A long-term Ed25519 key generated on first run,
   DPAPI-wrapped at rest (`%APPDATA%\InPhase\host-identity.key`). Its public half
   is the **Host ID**, shown in `/api/v1/status`.
@@ -84,7 +86,10 @@ the player cannot pair.
 - **Emergency stop.** `Ctrl+Alt+Shift+F12` on the host cuts any active
   session regardless of network / browser state.
 - **Admin surface.** `/api/v1/admin/*` is loopback-only (served on
-  `127.0.0.1:admin_port` and, guarded, on the main listener).
+  `127.0.0.1:admin_port` and, guarded, on the main listener). Loopback authority
+  and browser Origin checks reject DNS rebinding and cross-origin administration.
+  API responses are not cached. Non-browser clients without Origin still need
+  all normal authentication and network checks.
 
 ## What this does not defend against
 

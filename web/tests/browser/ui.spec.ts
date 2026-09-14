@@ -1,6 +1,33 @@
 import { test, expect } from "@playwright/test";
 import { mockHost, openPlayer } from "./fixtures.js";
 
+test("malformed invitation links recover to manual pairing", async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  const calls = await mockHost(page);
+  await page.goto("/pair#%E0%A4%A");
+  await expect(page.getByLabel("Pairing code")).toBeVisible();
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe("");
+  await page.getByLabel("Pairing code").fill("ABC");
+  await page.locator("#go").click();
+  await expect(page.getByRole("alert")).toContainText("full code");
+  expect(calls).not.toContain("POST pair");
+  expect(errors).toEqual([]);
+});
+
+test("incomplete PINs are explained before sending credentials", async ({
+  page,
+}) => {
+  const calls = await mockHost(page, { paired: false });
+  await openPlayer(page);
+  await page.getByLabel("Pairing PIN").fill("123");
+  await page.getByRole("button", { name: "Pair this device" }).click();
+  await expect(page.getByRole("alert")).toContainText("all six digits");
+  expect(calls).not.toContain("POST pair");
+});
+
 test("dashboard shows pairing data, safe device names and a usable QR image", async ({
   page,
 }, info) => {

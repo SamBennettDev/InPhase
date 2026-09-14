@@ -14,9 +14,9 @@ use inphase_host::http::HttpState;
 
 fn state(remote_enabled: bool) -> HttpState {
     let tmp = std::env::temp_dir().join(format!(
-        "inphase-ra-test-{}-{:?}",
+        "inphase-ra-test-{}-{}",
         std::process::id(),
-        std::thread::current().id()
+        rand::random::<u64>()
     ));
     std::fs::create_dir_all(&tmp).unwrap();
     let mut cfg = Config::default();
@@ -34,12 +34,13 @@ fn state(remote_enabled: bool) -> HttpState {
             stats.clone(),
         )),
         stats,
-        // Both write under the config dir; point that at a temp dir so the
-        // test never touches real host state.
+        // Both stores are isolated from the developer's real host profile.
         identity: Arc::new(
             inphase_host::identity::HostIdentity::load_or_create_at(&tmp.join("id.key")).unwrap(),
         ),
-        acl: Arc::new(inphase_host::identity::acl::ControllerAcl::load()),
+        acl: Arc::new(inphase_host::identity::acl::ControllerAcl::load_at(
+            tmp.join("controllers.json"),
+        )),
         invites: Arc::new(inphase_host::identity::pairing_invite::InviteStore::new()),
         host_name: "test".into(),
         play_url: "https://test/".into(),

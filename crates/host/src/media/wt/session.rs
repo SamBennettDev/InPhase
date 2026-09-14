@@ -523,6 +523,16 @@ pub(super) async fn read_line(
     LineReader::new().read_line(rx, cap).await
 }
 
+/// Write one JSON line; `false` when the stream is gone.
+async fn write_msg(tx: &mut wtransport::SendStream, msg: &WtHostMessage) -> bool {
+    let mut line = match serde_json::to_string(msg) {
+        Ok(l) => l,
+        Err(_) => return false,
+    };
+    line.push('\n');
+    tx.write_all(line.as_bytes()).await.is_ok()
+}
+
 #[cfg(test)]
 mod line_reader_tests {
     use super::LineReader;
@@ -553,14 +563,4 @@ mod line_reader_tests {
         assert_eq!(r.take_line().unwrap(), "auth");
         assert_eq!(r.take_line().unwrap(), "next");
     }
-}
-
-/// Write one JSON line; `false` when the stream is gone.
-async fn write_msg(tx: &mut wtransport::SendStream, msg: &WtHostMessage) -> bool {
-    let mut line = match serde_json::to_string(msg) {
-        Ok(l) => l,
-        Err(_) => return false,
-    };
-    line.push('\n');
-    tx.write_all(line.as_bytes()).await.is_ok()
 }

@@ -15,7 +15,11 @@
 // final): if this transport fails the glass freezes until the watchdog
 // resets/redials the WT path itself.
 
-import { parseFrame, WT_VIDEO_HEADER_LEN, type WtFrame } from "./wtvideo.js";
+import {
+  parseFrame,
+  WT_VIDEO_HEADER_LEN,
+  type WtFrame,
+} from "./wtvideo.js";
 
 export interface WtVideoInfo {
   token: string;
@@ -102,10 +106,10 @@ function concat(parts: Uint8Array[], total: number): Uint8Array {
 
 function hexToBytes32(hex: string): Uint8Array<ArrayBuffer> {
   const out = new Uint8Array(new ArrayBuffer(32));
-  for (let i = 0; i < 32; i++)
-    out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  for (let i = 0; i < 32; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
   return out;
 }
+
 
 export class WtVideoClient {
   private wt: WebTransport | null = null;
@@ -123,8 +127,7 @@ export class WtVideoClient {
    *  browser (or connection) has no datagram send path. */
   private inputWriter: WritableStreamDefaultWriter<Uint8Array> | null = null;
   /** Dedicated input stream (no head-of-line blocking behind NACKs). */
-  private inputStreamWriter: WritableStreamDefaultWriter<Uint8Array> | null =
-    null;
+  private inputStreamWriter: WritableStreamDefaultWriter<Uint8Array> | null = null;
   /** Liveness: the pong clock and the datagram clock (silent-connection watchdog). */
   private lastPongAt = 0;
   private lastDatagramAt = 0;
@@ -174,14 +177,10 @@ export class WtVideoClient {
 
   /** Any live input writer? False while still dialing - callers skip. */
   inputReady(): boolean {
-    return (
-      this.inputWriter !== null ||
-      this.inputStreamWriter !== null ||
-      this.controlWriter !== null
-    );
+    return this.inputWriter !== null || this.inputStreamWriter !== null || this.controlWriter !== null;
   }
 
-  /** Last pong-derived RTT (ms), 0 until the first pong. */ rttMs(): number {
+  /** Last pong-derived RTT (ms), 0 until the first pong. */  rttMs(): number {
     return Math.round(this.lastRttMs * 100) / 100;
   }
 
@@ -222,8 +221,7 @@ export class WtVideoClient {
       // Last resort: the control stream (reliable but serialized behind
       // NACKs - only for browsers without the dedicated stream).
       let bin = "";
-      for (let i = 0; i < bytes.length; i++)
-        bin += String.fromCharCode(bytes[i]!);
+      for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]!);
       const b64 = btoa(bin);
       void this.send({ type: "input", data_b64: b64.replace(/=+$/, "") });
       sent = this.controlWriter !== null;
@@ -247,8 +245,7 @@ export class WtVideoClient {
   }
 
   async dial(info: WtVideoInfo, h: WtClientHandlers): Promise<void> {
-    if (!("WebTransport" in globalThis))
-      throw new Error("WebTransport unsupported in this browser");
+    if (!("WebTransport" in globalThis)) throw new Error("WebTransport unsupported in this browser");
     const url = `https://${info.hostname ?? globalThis.location?.hostname}:${info.port}/wt-video`;
     console.info(`wt: dialing ${url} (pin ${info.cert_sha256.slice(0, 8)}…)`);
     const hash = hexToBytes32(info.cert_sha256);
@@ -262,7 +259,7 @@ export class WtVideoClient {
       await wt.ready;
     } catch (e) {
       this.wt = null;
-      this.inputWriter = null;
+    this.inputWriter = null;
       throw new Error(`WebTransport handshake failed: ${String(e)}`);
     }
     wt.closed.then(
@@ -275,9 +272,7 @@ export class WtVideoClient {
     const writer = stream.writable.getWriter();
     this.controlWriter = writer;
     await writer.write(
-      new TextEncoder().encode(
-        JSON.stringify({ type: "auth", token: info.token }) + "\n",
-      ),
+      new TextEncoder().encode(JSON.stringify({ type: "auth", token: info.token }) + "\n"),
     );
     void this.readControl(stream.readable, h).catch((e) =>
       this.reportClosed(h, `wt control stream: ${String(e)}`),
@@ -322,9 +317,7 @@ export class WtVideoClient {
     // build-id guard usually catches this first; this is the backstop.)
     this.pingTimer = setInterval(() => {
       if (this.parseFailures > 30 && this.framesReceived === 0) {
-        console.warn(
-          "wt: frames arriving that this build cannot parse - host updated; reloading",
-        );
+        console.warn("wt: frames arriving that this build cannot parse - host updated; reloading");
         h.onReload?.();
       }
       this.pingAtMs = performance.now();
@@ -342,17 +335,12 @@ export class WtVideoClient {
    *  failure until the connection itself is gone - the host resets the
    *  channel when a write overruns its budget, and the fresh channel is how
    *  sending resumes. */
-  private async videoChannelLoop(
-    wt: WebTransport,
-    h: WtClientHandlers,
-  ): Promise<void> {
+  private async videoChannelLoop(wt: WebTransport, h: WtClientHandlers): Promise<void> {
     const gone = wt.closed.then(() => "gone" as const);
     for (;;) {
       try {
         const vch = await wt.createBidirectionalStream();
-        const marker = new TextEncoder().encode(
-          JSON.stringify({ type: "video_channel" }),
-        );
+        const marker = new TextEncoder().encode(JSON.stringify({ type: "video_channel" }));
         const framed = new Uint8Array(2 + marker.length);
         framed[0] = marker.length >> 8;
         framed[1] = marker.length & 0xff;
@@ -373,10 +361,7 @@ export class WtVideoClient {
       } catch {
         // channel reset or connection gone; reopen after a beat
       }
-      if (
-        (await Promise.race([gone, new Promise((r) => setTimeout(r, 250))])) ===
-        "gone"
-      ) {
+      if ((await Promise.race([gone, new Promise((r) => setTimeout(r, 250))])) === "gone") {
         return;
       }
     }
@@ -384,10 +369,7 @@ export class WtVideoClient {
 
   /** Audio stays on datagrams: a 10 ms Opus packet fits in one, and a late
    *  one is worth less than the next one. */
-  private async readDatagrams(
-    wt: WebTransport,
-    h: WtClientHandlers,
-  ): Promise<void> {
+  private async readDatagrams(wt: WebTransport, h: WtClientHandlers): Promise<void> {
     const reader = wt.datagrams.readable.getReader();
     for (;;) {
       const { value, done } = await reader.read();
@@ -400,11 +382,7 @@ export class WtVideoClient {
       // fragments start with version byte 4 (see protocol wtvideo.rs). The
       // two never collide, so the reader demultiplexes on the first byte.
       if (value.byteLength > 13 && value[0] === 0x41) {
-        const view = new DataView(
-          value.buffer,
-          value.byteOffset,
-          value.byteLength,
-        );
+        const view = new DataView(value.buffer, value.byteOffset, value.byteLength);
         const ptsUs = Number(view.getBigUint64(5, false));
         h.onAudio?.(value.subarray(13), ptsUs);
         // A delivered audio datagram is the capability probe: host→client
@@ -424,17 +402,17 @@ export class WtVideoClient {
   // ---- v4: deadline-aware datagram video (research doc P0) ----
 
   /** Reassembly state for the v4 fragment carrier: frame_no → parts. */
-  private v4 = new Map<number, V4Assembly>();
+  private v4 = new Map<
+    number,
+    V4Assembly
+  >();
   private v4Received = 0;
   private keysReceived = 0;
   /** Fragments rebuilt locally from FEC parity - no NACK, no RTT. */
   private v4Repaired = 0;
   /** Parity fragments that arrived before their frame's first data
    *  fragment (datagrams reorder); merged on assembly-state creation. */
-  private v4Parity = new Map<
-    number,
-    { p1: Map<number, Uint8Array>; p2: Map<number, Uint8Array>; atMs: number }
-  >();
+  private v4Parity = new Map<number, { p1: Map<number, Uint8Array>; p2: Map<number, Uint8Array>; atMs: number }>();
   /** NACKs sent for missing fragments (diagnosis: repair rate vs IDR waits). */
   private nacksSent = 0;
   /** Frame numbers already assembled - late re-sends land here and stop. */
@@ -587,19 +565,13 @@ export class WtVideoClient {
       if (st.key) this.keysReceived++;
       this.lastFrameAtMs = nowMs;
       if (this.offsetEmaUs !== null) {
-        const ageMs =
-          (performance.now() * 1000 - (st.captureUs + this.offsetEmaUs)) / 1000;
+        const ageMs = (performance.now() * 1000 - (st.captureUs + this.offsetEmaUs)) / 1000;
         if (ageMs >= 0 && ageMs < 5_000) {
           this.latBuf.push(ageMs);
           if (this.latBuf.length > 512) this.latBuf.shift();
         }
       }
-      h.onFrame({
-        frame_no: frameNo,
-        capture_us: st.captureUs,
-        key: st.key,
-        payload,
-      });
+      h.onFrame({ frame_no: frameNo, capture_us: st.captureUs, key: st.key, payload });
     }
   }
 
@@ -612,17 +584,11 @@ export class WtVideoClient {
    *  - and falls to the NACK path instead. */
   private tryRepair(st: V4Assembly): void {
     const groups = Math.ceil(st.cnt / 8);
-    const xor = (
-      acc: Uint8Array,
-      p: Uint8Array,
-      skip: (i: number) => boolean,
-      range: [number, number],
-    ) => {
+    const xor = (acc: Uint8Array, p: Uint8Array, skip: (i: number) => boolean, range: [number, number]) => {
       for (let i = range[0]; i < range[1]; i++) {
         if (skip(i)) continue;
         const p0 = st.parts[i]!;
-        for (let j = 0; j < p0.byteLength; j++)
-          acc[j] = (acc[j] ?? 0) ^ (p0[j] ?? 0);
+        for (let j = 0; j < p0.byteLength; j++) acc[j] = (acc[j] ?? 0) ^ (p0[j] ?? 0);
       }
     };
     for (let g = 0; g < groups; g++) {
@@ -655,17 +621,11 @@ export class WtVideoClient {
         const oddMiss = aOdd ? a : b;
         // accOdd = row2 ^ present odds = the lost odd-offset fragment.
         const accOdd = new Uint8Array(p2);
-        xor(
-          accOdd,
-          p2,
-          (i) => i === evenMiss || i === oddMiss || (i - lo) % 2 === 0,
-          [lo, hi],
-        );
+        xor(accOdd, p2, (i) => i === evenMiss || i === oddMiss || (i - lo) % 2 === 0, [lo, hi]);
         // accEven = row1 ^ row2 ^ present evens (row1^row2 = E ^ Σe_present:
         // O and the odd sums cancel) = the lost even-offset fragment.
         const accEven = new Uint8Array(p1);
-        for (let j = 0; j < accEven.byteLength; j++)
-          accEven[j] = (accEven[j] ?? 0) ^ (p2[j] ?? 0);
+        for (let j = 0; j < accEven.byteLength; j++) accEven[j] = (accEven[j] ?? 0) ^ (p2[j] ?? 0);
         xor(accEven, p1, (i) => i === evenMiss || (i - lo) % 2 === 1, [lo, hi]);
         st.parts[evenMiss] = accEven;
         st.parts[oddMiss] = accOdd;
@@ -688,10 +648,7 @@ export class WtVideoClient {
    * independently and serialising here would reintroduce the head-of-line
    * blocking the whole transport exists to avoid.
    */
-  private async readFrameStreams(
-    wt: WebTransport,
-    h: WtClientHandlers,
-  ): Promise<void> {
+  private async readFrameStreams(wt: WebTransport, h: WtClientHandlers): Promise<void> {
     const streams = wt.incomingUnidirectionalStreams.getReader();
     for (;;) {
       const { value, done } = await streams.read();
@@ -712,16 +669,10 @@ export class WtVideoClient {
     for (;;) {
       try {
         const head = await this.readExact(reader, WT_VIDEO_HEADER_LEN, state);
-        const len = new DataView(
-          head.buffer,
-          head.byteOffset,
-          head.byteLength,
-        ).getUint32(14, true);
+        const len = new DataView(head.buffer, head.byteOffset, head.byteLength)
+          .getUint32(14, true);
         const payload = await this.readExact(reader, len, state);
-        const buf = concat(
-          [head, payload],
-          head.byteLength + payload.byteLength,
-        );
+        const buf = concat([head, payload], head.byteLength + payload.byteLength);
         this.winBytes += buf.byteLength;
         const frame = parseFrame(buf);
         if (frame === null) {
@@ -740,9 +691,7 @@ export class WtVideoClient {
         // anchor is quantized by RTT/2, so single samples are fuzzy - the
         // percentiles over hundreds of frames are the measurement.
         if (this.offsetEmaUs !== null) {
-          const ageMs =
-            (performance.now() * 1000 - (frame.capture_us + this.offsetEmaUs)) /
-            1000;
+          const ageMs = (performance.now() * 1000 - (frame.capture_us + this.offsetEmaUs)) / 1000;
           if (ageMs >= 0 && ageMs < 5_000) {
             this.latBuf.push(ageMs);
             if (this.latBuf.length > 512) this.latBuf.shift();
@@ -805,9 +754,7 @@ export class WtVideoClient {
           ]);
       if (res === "wedged") {
         this.streamsWedged++;
-        console.warn(
-          "wt: frame stream wedged - cancelled to release flow credit",
-        );
+        console.warn("wt: frame stream wedged - cancelled to release flow credit");
         void reader.cancel().catch(() => {});
         throw new Error("wedged");
       }
@@ -817,9 +764,7 @@ export class WtVideoClient {
         // Zero bytes is a legal chunk, but a storm of them is the WebKit
         // silent-stream bug: fail fast so the caller abandons and reopens.
         if (++state.emptyReads > 64) {
-          console.warn(
-            `wt: ${state.emptyReads} empty chunks in a row - stream is a zombie`,
-          );
+          console.warn(`wt: ${state.emptyReads} empty chunks in a row - stream is a zombie`);
           this.streamsWedged++;
           void reader.cancel().catch(() => {});
           throw new Error("empty-chunk storm");
@@ -842,15 +787,11 @@ export class WtVideoClient {
     // v4 safety net: if the datagram carrier delivered nothing 5 s after we
     // asked for it - while the connection is otherwise alive (this line runs
     // on the control stream) - switch back to the reliable stream carrier.
-    if (
-      this.datagramVideoEnabled &&
-      this.v4Received === 0 &&
-      nowMs - this.datagramVideoToggledAtMs > 5_000
-    ) {
+    if (this.datagramVideoEnabled
+        && this.v4Received === 0
+        && nowMs - this.datagramVideoToggledAtMs > 5_000) {
       this.datagramVideoEnabled = false;
-      console.warn(
-        "wt: datagram video carrier silent - reverting to the stream",
-      );
+      console.warn("wt: datagram video carrier silent - reverting to the stream");
       void this.send({ type: "disable_datagram_video" });
     }
     const stats = this.statsProvider?.();
@@ -865,8 +806,7 @@ export class WtVideoClient {
       parseFailures: this.parseFailures,
       streamsWedged: this.streamsWedged,
       datagramsSeen: this.datagramsSeen,
-      lastFrameAgeMs:
-        this.lastFrameAtMs === 0 ? -1 : Math.round(nowMs - this.lastFrameAtMs),
+      lastFrameAgeMs: this.lastFrameAtMs === 0 ? -1 : Math.round(nowMs - this.lastFrameAtMs),
     });
     // No fragment-loss estimate any more: QUIC retransmits within a stream, so
     // the client cannot see loss and does not need to. What it can report is
@@ -880,9 +820,7 @@ export class WtVideoClient {
       // Rate over this window, not the cumulative count divided by it - that
       // reported 1617 fps on a 60 fps stream and fed the host nonsense.
       decoded_fps: stats
-        ? Math.round(
-            ((stats.framesDecoded - this.lastFramesDecoded) / dtSec) * 100,
-          ) / 100
+        ? Math.round(((stats.framesDecoded - this.lastFramesDecoded) / dtSec) * 100) / 100
         : 0,
       frames_dropped: stats?.framesDropped ?? 0,
       // WT has no browser jitter buffer; the adaptive present delay is the
@@ -981,10 +919,7 @@ export class WtVideoClient {
         width: Number(m.width ?? 0),
         height: Number(m.height ?? 0),
         fps,
-        start_bitrate_kbps:
-          m.start_bitrate_kbps === undefined
-            ? undefined
-            : Number(m.start_bitrate_kbps),
+        start_bitrate_kbps: m.start_bitrate_kbps === undefined ? undefined : Number(m.start_bitrate_kbps),
         description,
       });
     } else if (m.type === "pong" && typeof m.at_us === "number") {
@@ -1003,10 +938,7 @@ export class WtVideoClient {
         // percentile reported -1 for the whole 21:51 session.
         const sample = (this.pingSentUs + t2Us) / 2 - hostUs;
         const wasUnsynced = this.offsetEmaUs === null;
-        this.offsetEmaUs =
-          this.offsetEmaUs === null
-            ? sample
-            : 0.8 * this.offsetEmaUs + 0.2 * sample;
+        this.offsetEmaUs = this.offsetEmaUs === null ? sample : 0.8 * this.offsetEmaUs + 0.2 * sample;
         if (wasUnsynced) {
           console.info(
             `wt clock sync: offset ${(this.offsetEmaUs / 1000).toFixed(1)} ms (host_us ${hostUs})`,
@@ -1035,9 +967,7 @@ export class WtVideoClient {
   async send(msg: Record<string, unknown>): Promise<void> {
     if (this.controlWriter === null) return;
     try {
-      await this.controlWriter.write(
-        new TextEncoder().encode(JSON.stringify(msg) + "\n"),
-      );
+      await this.controlWriter.write(new TextEncoder().encode(JSON.stringify(msg) + "\n"));
     } catch {
       // stream gone; the closed handler reports it
     }
@@ -1097,9 +1027,7 @@ export function opusSupportProbe(): boolean | undefined {
         })
           .then((r) => {
             opusProbeResult = r.supported;
-            console.info(
-              `wt: opus-over-WT audio probe: ${r.supported ? "supported" : "unsupported"}`,
-            );
+            console.info(`wt: opus-over-WT audio probe: ${r.supported ? "supported" : "unsupported"}`);
           })
           .catch(() => {
             opusProbeResult = false;

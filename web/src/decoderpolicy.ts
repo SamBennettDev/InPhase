@@ -27,8 +27,7 @@ export class KeyframeThrottle {
 
   /** True if a request may be sent now; stamps the clock when it says yes. */
   allow(nowMs: number): boolean {
-    if (this.lastMs !== null && nowMs - this.lastMs < this.minIntervalMs)
-      return false;
+    if (this.lastMs !== null && nowMs - this.lastMs < this.minIntervalMs) return false;
     this.lastMs = nowMs;
     return true;
   }
@@ -109,9 +108,6 @@ export class DecoderRestartPolicy {
 export const MAX_DECODE_QUEUE = 6;
 
 /** True when the decoder is too far behind to be worth feeding. */
-export function decoderIsBehind(
-  queueSize: number,
-  limit: number = MAX_DECODE_QUEUE,
-): boolean {
+export function decoderIsBehind(queueSize: number, limit: number = MAX_DECODE_QUEUE): boolean {
   return queueSize > limit;
 }

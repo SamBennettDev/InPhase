@@ -280,12 +280,13 @@ specified in docs/RELEASING.md. This candidate is not a completed source offer.
 
 Copy-Item (Join-Path $root "LICENSE") (Join-Path $OutDir "licenses\InPhase-LICENSE.txt")
 Copy-Item (Join-Path $root "NOTICE") (Join-Path $OutDir "licenses\NOTICE.txt")
+& (Join-Path $PSScriptRoot "collect-notices.ps1") -OutDir (Join-Path $OutDir "licenses")
 # Preserve notices supplied by the exact GStreamer distribution used to build.
 $gstLicenses = Join-Path $GstRoot "share\licenses"
 if (Test-Path $gstLicenses) {
     Copy-Item $gstLicenses (Join-Path $OutDir "licenses\gstreamer-distribution") -Recurse
 } else {
-    Write-Warning "GStreamer distribution has no share\licenses directory. Review source/notices before publishing."
+    throw "GStreamer distribution license notices are missing."
 }
 # Rust dependency license inventory (compiled into the exe, not separate files).
 Push-Location $root
@@ -293,6 +294,25 @@ Push-Location $root
     Sort-Object -Unique | Set-Content (Join-Path $OutDir "licenses\rust-crates.txt")
 if ($LASTEXITCODE -ne 0) { throw "Rust dependency inventory failed." }
 Pop-Location
+
+# Include notices and inventories in the checksum manifest. The manifest excludes
+# itself; the component table above contains the binary license classifications.
+$binaryRows = @{}
+foreach ($row in $rows) { $binaryRows[$row.path] = $row }
+$rows = @(Get-ChildItem $OutDir -Recurse -File | Where-Object { $_.Name -ne "MANIFEST.csv" } | ForEach-Object {
+    $relative = $_.FullName.Substring($OutDir.Length).TrimStart('\')
+    if ($binaryRows.ContainsKey($relative)) { $binaryRows[$relative] }
+    else {
+        [pscustomobject]@{
+            path = $relative
+            bytes = $_.Length
+            sha256 = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            license = "n/a"
+            source = ""
+        }
+    }
+})
+$rows | Sort-Object path | Export-Csv (Join-Path $OutDir "MANIFEST.csv") -NoTypeInformation -Encoding utf8
 
 # ---------------------------------------------------------------------------
 # 5. Gate.

@@ -470,7 +470,7 @@ pub async fn serve(state: HttpState, tls: Option<ResolvedTls>) -> anyhow::Result
     // (served by the ACME resolver once a validation is pending), browser
     // traffic → issued ACME cert, or the local-CA leaf before issuance.
     let mut public_cfg = rustls::ServerConfig::builder_with_provider(Arc::new(
-        rustls::crypto::ring::default_provider().into(),
+        rustls::crypto::ring::default_provider(),
     ))
     .with_safe_default_protocol_versions()
     .expect("tls versions")

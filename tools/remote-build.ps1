@@ -28,8 +28,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$Root       = 'C:\Users\sambe\InPhase-wt'
-$Tarball    = 'C:\Users\sambe\inphase-ship.tgz'
+$Root       = Join-Path $env:USERPROFILE 'InPhase-dev'
+$Tarball    = Join-Path $PSScriptRoot 'inphase-ship.tgz'
 $InstallExe = 'C:\Program Files\InPhase\InPhaseHost.exe'
 $TaskName   = 'InPhaseWTStart'
 $StatusUrl  = 'http://127.0.0.1:47800/api/v1/status'
@@ -135,7 +135,7 @@ OK "installed, hash matches the build"
 # --- restart ----------------------------------------------------------------
 # Launch via the scheduled task, not directly: this SSH session is not the
 # interactive console session, and DXGI desktop duplication only captures from
-# one. The task runs as sambe/Interactive, which lands in session 1.
+# one. The task runs in the interactive user session, which lands in session 1.
 Say "restart"
 $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
 if (-not $task) { Fail 4 "scheduled task $TaskName is missing - cannot start into the interactive session" }

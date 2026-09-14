@@ -1,28 +1,18 @@
 // Browser capability probing (architecture report §7 steps 2–3, §10, §12, §24).
 // The host uses these to decide what it can *promise*, not to gate the connection.
 
-import type {
-  ClientFeatures,
-  DecodeHint,
-  RtpCodecCapability,
-  VideoCodec,
-} from "./signaling.js";
+import type { ClientFeatures, DecodeHint, RtpCodecCapability, VideoCodec } from "./signaling.js";
 
 export function detectFeatures(): ClientFeatures {
-  const rtcReceiverProto = (
-    window as unknown as { RTCRtpReceiver?: { prototype: object } }
-  ).RTCRtpReceiver?.prototype;
+  const rtcReceiverProto = (window as unknown as { RTCRtpReceiver?: { prototype: object } })
+    .RTCRtpReceiver?.prototype;
   return {
     secure_context: window.isSecureContext === true,
-    jitter_buffer_target:
-      !!rtcReceiverProto && "jitterBufferTarget" in rtcReceiverProto,
-    keyboard_lock:
-      "keyboard" in navigator &&
-      "lock" in (navigator as Navigator & { keyboard?: object }).keyboard!,
+    jitter_buffer_target: !!rtcReceiverProto && "jitterBufferTarget" in rtcReceiverProto,
+    keyboard_lock: "keyboard" in navigator && "lock" in (navigator as Navigator & { keyboard?: object }).keyboard!,
     pointer_lock: "requestPointerLock" in Element.prototype,
     pointer_lock_unadjusted_movement: true, // feature-tested for real at lock time
-    request_video_frame_callback:
-      "requestVideoFrameCallback" in HTMLVideoElement.prototype,
+    request_video_frame_callback: "requestVideoFrameCallback" in HTMLVideoElement.prototype,
     gamepad: "getGamepads" in navigator,
   };
 }
@@ -34,12 +24,7 @@ export interface HostAudioEndpoint {
   is_default: boolean;
   active: boolean;
 }
-export type AudioHealth =
-  | "disabled"
-  | "healthy"
-  | "degraded"
-  | "failed"
-  | "restarting";
+export type AudioHealth = "disabled" | "healthy" | "degraded" | "failed" | "restarting";
 export interface HostCapabilities {
   audio: {
     enabled: boolean;
@@ -70,9 +55,7 @@ export function mediaCapabilities(): MediaCapabilities {
   const md = navigator.mediaDevices as
     | (MediaDevices & { selectAudioOutput?: unknown })
     | undefined;
-  const mediaEl = HTMLMediaElement.prototype as HTMLMediaElement & {
-    setSinkId?: unknown;
-  };
+  const mediaEl = HTMLMediaElement.prototype as HTMLMediaElement & { setSinkId?: unknown };
   return {
     secureContext: window.isSecureContext === true,
     mediaDevices: !!md,
@@ -80,12 +63,11 @@ export function mediaCapabilities(): MediaCapabilities {
     // Output *selection* needs both the picker and setSinkId — much narrower
     // than enumeration, and still marked experimental in some browsers.
     audioOutputSelection:
-      typeof md?.selectAudioOutput === "function" &&
-      typeof mediaEl.setSinkId === "function",
+      typeof md?.selectAudioOutput === "function" && typeof mediaEl.setSinkId === "function",
     keyboardLock:
       "keyboard" in navigator &&
-      typeof (navigator as Navigator & { keyboard?: { lock?: unknown } })
-        .keyboard?.lock === "function",
+      typeof (navigator as Navigator & { keyboard?: { lock?: unknown } }).keyboard?.lock ===
+        "function",
     pointerLock: "requestPointerLock" in Element.prototype,
     fullscreen: "requestFullscreen" in Element.prototype,
   };
@@ -129,12 +111,7 @@ export async function setHostAudioDevice(id: string | null): Promise<boolean> {
  * on `client_has("video/H265")`.
  */
 export function usableVideoCodecs(
-  modes: {
-    codec: VideoCodec;
-    width: number;
-    height: number;
-    framerate: number;
-  }[],
+  modes: { codec: VideoCodec; width: number; height: number; framerate: number }[],
   hints: Awaited<ReturnType<typeof decodeHints>>,
 ): RtpCodecCapability[] {
   const seen = new Set<string>();
@@ -160,12 +137,7 @@ export function usableVideoCodecs(
  */
 function codecCandidates(codec: VideoCodec): string[] {
   return codec === "h265"
-    ? [
-        "hev1.1.6.L93.B0",
-        "hev1.1.6.L123.B0",
-        "hev1.1.6.L153.B0",
-        "hev1.1.6.L186.B0",
-      ]
+    ? ["hev1.1.6.L93.B0", "hev1.1.6.L123.B0", "hev1.1.6.L153.B0", "hev1.1.6.L186.B0"]
     : ["avc1.42e01f", "avc1.4d401f", "avc1.640028"];
 }
 
@@ -196,18 +168,10 @@ export function receiveAudioCodecs(): RtpCodecCapability[] {
  * MediaCapabilities' *file* probe when it is available and default to false.
  */
 export async function decodeHints(
-  modes: {
-    codec: VideoCodec;
-    width: number;
-    height: number;
-    framerate: number;
-  }[],
+  modes: { codec: VideoCodec; width: number; height: number; framerate: number }[],
 ): Promise<DecodeHint[]> {
-  const VD = (globalThis as { VideoDecoder?: typeof VideoDecoder })
-    .VideoDecoder;
-  const mc = (
-    navigator as Navigator & { mediaCapabilities?: MediaCapabilities }
-  ).mediaCapabilities;
+  const VD = (globalThis as { VideoDecoder?: typeof VideoDecoder }).VideoDecoder;
+  const mc = (navigator as Navigator & { mediaCapabilities?: MediaCapabilities }).mediaCapabilities;
   const out: DecodeHint[] = [];
   for (const m of modes) {
     let supported = false;
@@ -263,12 +227,8 @@ export function preferCodec(pc: RTCPeerConnection, codec: VideoCodec) {
   const caps = RTCRtpReceiver.getCapabilities?.("video");
   if (!caps) return;
   const ordered = [
-    ...caps.codecs.filter(
-      (c) => c.mimeType.toLowerCase() === wanted.toLowerCase(),
-    ),
-    ...caps.codecs.filter(
-      (c) => c.mimeType.toLowerCase() !== wanted.toLowerCase(),
-    ),
+    ...caps.codecs.filter((c) => c.mimeType.toLowerCase() === wanted.toLowerCase()),
+    ...caps.codecs.filter((c) => c.mimeType.toLowerCase() !== wanted.toLowerCase()),
   ];
   for (const t of pc.getTransceivers()) {
     if (!("setCodecPreferences" in t)) continue;

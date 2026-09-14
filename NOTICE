@@ -43,11 +43,10 @@ under its own license terms, notably:
   * libsrtp and other media libraries ............. BSD-family
   * ~390 Rust crates .............................. mostly MIT / Apache-2.0
 
-No GPL-incompatible component is used or shipped.
-
-Packaged builds ship a complete, per-file manifest with SPDX identifiers and
-upstream sources (`MANIFEST.csv`, `OPEN-SOURCE-COMPONENTS.txt`, `licenses/`),
-generated from the final runtime bundle.
+Packaged candidates include a binary license inventory and upstream references
+(`MANIFEST.csv`, `OPEN-SOURCE-COMPONENTS.txt`, `licenses/`). Review this inventory,
+exact notices and matching corresponding source before publishing binaries; see
+docs/RELEASING.md. The inventory alone is not a license-compatibility proof.
 
 --------------------------------------------------------------------------------
 Codec patents

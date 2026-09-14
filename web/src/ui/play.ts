@@ -549,6 +549,7 @@ function showPair(root: HTMLElement) {
         );
       const res = await fetch("/api/v1/pair", {
         method: "POST",
+        signal: AbortSignal.timeout(8000),
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           pin: pin.value.trim(),

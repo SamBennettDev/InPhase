@@ -34,7 +34,11 @@ pub struct ControllerAcl {
 
 impl ControllerAcl {
     pub fn load() -> Self {
-        let path = Config::config_dir().join("controllers.json");
+        Self::load_at(Config::config_dir().join("controllers.json"))
+    }
+
+    /// Explicit storage location for isolated integration tests and host profiles.
+    pub fn load_at(path: PathBuf) -> Self {
         let inner = std::fs::read_to_string(&path)
             .ok()
             .and_then(|s| serde_json::from_str::<Vec<Controller>>(&s).ok())

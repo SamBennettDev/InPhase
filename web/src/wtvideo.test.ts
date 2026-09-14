@@ -11,16 +11,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { WtVideoVectors as vectors } from "./wtvideo.vectors.gen.js";
-import {
-  parseFrame,
-  WT_VIDEO_HEADER_LEN,
-  WT_VIDEO_PROTOCOL_VERSION,
-} from "./wtvideo.js";
+import { parseFrame, WT_VIDEO_HEADER_LEN, WT_VIDEO_PROTOCOL_VERSION } from "./wtvideo.js";
 
 function hexToBytes(h: string): Uint8Array {
   const out = new Uint8Array(h.length / 2);
-  for (let i = 0; i < out.length; i++)
-    out[i] = parseInt(h.slice(i * 2, i * 2 + 2), 16);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(h.slice(i * 2, i * 2 + 2), 16);
   return out;
 }
 function bytesToHex(b: Uint8Array): string {

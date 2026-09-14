@@ -38,11 +38,7 @@ test("recovery: reset fires once per stall, redial after 10 s, cooldowns hold", 
   c.advance(500);
   assert.equal(r.observe(5), "none", "redial cooldown suppresses repeats");
   c.advance(21000);
-  assert.equal(
-    r.observe(5),
-    "redial",
-    "still frozen after cooldown → redial again",
-  );
+  assert.equal(r.observe(5), "redial", "still frozen after cooldown → redial again");
 });
 
 test("recovery: new progress after a reset disarms the ladder", () => {
@@ -54,11 +50,7 @@ test("recovery: new progress after a reset disarms the ladder", () => {
   c.advance(500);
   assert.equal(r.observe(7), "none", "frames flow again — ladder disarmed");
   c.advance(4500);
-  assert.equal(
-    r.observe(7),
-    "reset",
-    "a fresh stall re-arms the ladder (reset cooldown elapsed)",
-  );
+  assert.equal(r.observe(7), "reset", "a fresh stall re-arms the ladder (reset cooldown elapsed)");
 });
 
 test("recovery: reset() forgets history", () => {

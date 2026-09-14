@@ -21,10 +21,7 @@ import {
 
 /** Re-render any `<i data-lucide>` placeholders inside `scope` as SVGs. */
 export function refreshIcons(scope: ParentNode = document) {
-  createIcons({
-    icons: { Volume2, Volume1, VolumeX, TriangleAlert, Settings, Maximize },
-    nameAttr: "data-lucide",
-  });
+  createIcons({ icons: { Volume2, Volume1, VolumeX, TriangleAlert, Settings, Maximize }, nameAttr: "data-lucide" });
   void scope;
 }
 
@@ -42,13 +39,7 @@ export interface HudMetrics {
   decodeMs?: number;
   packetsLost?: number;
   /** Inbound audio verdict from telemetry, or null if audio is off. */
-  audioState?:
-    | "no-track"
-    | "no-packets"
-    | "no-samples"
-    | "silent"
-    | "signal"
-    | null;
+  audioState?: "no-track" | "no-packets" | "no-samples" | "silent" | "signal" | null;
   audioHostFailed?: boolean;
   /** Path label ("LAN" | "VPN" | "Direct" …), or null before ICE settles. */
   path?: string | null;
@@ -65,10 +56,7 @@ export class Hud {
     private readonly onApply: (s: StreamSettings) => void,
     private readonly onDisconnect: () => void,
     private readonly onSendKey: (scanCode: number) => void,
-    private readonly onAudio: (
-      volume: number,
-      muted: boolean,
-    ) => void = () => {},
+    private readonly onAudio: (volume: number, muted: boolean) => void = () => {},
     /** Mount the shared audio settings section into a container (in-session). */
     private readonly mountAudio: (el: HTMLElement) => void = () => {},
     /** Metrics-overlay toggle (persisted by the Session). */
@@ -89,28 +77,19 @@ export class Hud {
       </div>
       <div class="hud-panel" hidden></div>`;
     for (const b of this.root.querySelectorAll<HTMLElement>("[data-key]")) {
-      b.addEventListener("click", () =>
-        this.onSendKey(Number(b.dataset["key"])),
-      );
+      b.addEventListener("click", () => this.onSendKey(Number(b.dataset["key"])));
     }
-    this.root
-      .querySelector('[data-act="panel"]')!
-      .addEventListener("click", () => this.togglePanel());
-    this.root
-      .querySelector('[data-act="fs"]')!
-      .addEventListener("click", () => {
-        const stage = this.root.closest(".stage");
-        if (!stage) return;
-        if (document.fullscreenElement)
-          void document.exitFullscreen().catch(() => {});
-        else void stage.requestFullscreen?.().catch(() => {});
-      });
-    this.root
-      .querySelector('[data-act="mute"]')!
-      .addEventListener("click", () => {
-        this.settings.muted = !this.settings.muted;
-        this.pushAudio();
-      });
+    this.root.querySelector('[data-act="panel"]')!.addEventListener("click", () => this.togglePanel());
+    this.root.querySelector('[data-act="fs"]')!.addEventListener("click", () => {
+      const stage = this.root.closest(".stage");
+      if (!stage) return;
+      if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
+      else void stage.requestFullscreen?.().catch(() => {});
+    });
+    this.root.querySelector('[data-act="mute"]')!.addEventListener("click", () => {
+      this.settings.muted = !this.settings.muted;
+      this.pushAudio();
+    });
     // HUD clicks/keys must never reach the stage's InputManager: a gear or
     // panel click used to bubble to the surface handler and re-capture the
     // pointer - "I pressed an icon on the paused screen and it resumed".
@@ -156,10 +135,7 @@ export class Hud {
     }
     b.innerHTML = `<i data-lucide="${icon}"></i>`;
     refreshIcons(b);
-    b.classList.toggle(
-      "warn",
-      (silent || this.audioHostFailed) && !this.settings.muted,
-    );
+    b.classList.toggle("warn", (silent || this.audioHostFailed) && !this.settings.muted);
     const v = this.root.querySelector<HTMLInputElement>('[data-s="vol"]');
     if (v) v.value = String(Math.round(this.settings.volume * 100));
   }
@@ -174,9 +150,7 @@ export class Hud {
     this.audioHostFailed = !!m.audioHostFailed;
     this.paintMute();
 
-    const decoded = Math.round(
-      m.decodedFps > 1 ? m.decodedFps : m.presentedFps,
-    );
+    const decoded = Math.round(m.decodedFps > 1 ? m.decodedFps : m.presentedFps);
     const presented = Math.round(m.presentedFps);
     const fpsText =
       presented > 1 && Math.abs(presented - decoded) > 2
@@ -211,12 +185,10 @@ export class Hud {
 
     const streamParts: StatPart[] = [];
     if (m.width > 0) streamParts.push({ text: `${m.width}×${m.height}` });
-    if (m.inboundKbps > 0)
-      streamParts.push({ text: bitrateLabel(Math.round(m.inboundKbps)) });
+    if (m.inboundKbps > 0) streamParts.push({ text: bitrateLabel(Math.round(m.inboundKbps)) });
     const codec = m.codec ? m.codec.replace(/^video\//i, "").toUpperCase() : "";
     if (codec) streamParts.push({ text: codec });
-    if (m.path)
-      streamParts.push({ text: m.path, title: m.pathDetail || "network path" });
+    if (m.path) streamParts.push({ text: m.path, title: m.pathDetail || "network path" });
     if (m.packetsLost != null && m.packetsLost > 0) {
       streamParts.push({ text: `${m.packetsLost} lost`, warn: true });
     }
@@ -239,26 +211,20 @@ export class Hud {
       span.textContent = part.text;
       if (part.title) span.title = part.title;
       if (part.warn) span.style.color = "var(--warn)";
-      else if (part.tint)
-        tint(span, part.tint.v, part.tint.good, part.tint.bad);
+      else if (part.tint) tint(span, part.tint.v, part.tint.good, part.tint.bad);
       el.appendChild(span);
     });
   }
 
   private togglePanel() {
     this.panelOpen = !this.panelOpen;
-    this.root.querySelector<HTMLElement>(".hud-panel")!.hidden =
-      !this.panelOpen;
+    this.root.querySelector<HTMLElement>(".hud-panel")!.hidden = !this.panelOpen;
   }
 
   private buildPanel() {
     const p = this.root.querySelector<HTMLElement>(".hud-panel")!;
-    const resList = RESOLUTIONS.map(
-      (r) => `<option value="${r.width}x${r.height}">${r.label}</option>`,
-    ).join("");
-    const fpsList = FPS_CHOICES.map(
-      (f) => `<option value="${f}"></option>`,
-    ).join("");
+    const resList = RESOLUTIONS.map((r) => `<option value="${r.width}x${r.height}">${r.label}</option>`).join("");
+    const fpsList = FPS_CHOICES.map((f) => `<option value="${f}"></option>`).join("");
     const s = this.settings;
     p.innerHTML = `
       <label>Resolution (w × h)
@@ -292,8 +258,7 @@ export class Hud {
         <button data-act="disc" class="secondary">Disconnect</button>
       </div>`;
     this.mountAudio(p.querySelector<HTMLElement>("[data-audio-mount]")!);
-    const el = (k: string) =>
-      p.querySelector<HTMLInputElement | HTMLSelectElement>(`[data-s="${k}"]`)!;
+    const el = (k: string) => p.querySelector<HTMLInputElement | HTMLSelectElement>(`[data-s="${k}"]`)!;
     (el("preset") as HTMLSelectElement).value = this.settings.preset;
 
     // Metrics overlay applies live and persists immediately.
@@ -306,8 +271,7 @@ export class Hud {
 
     // Volume applies live (no reconnect).
     el("vol").addEventListener("input", () => {
-      this.settings.volume =
-        Number((el("vol") as HTMLInputElement).value) / 100;
+      this.settings.volume = Number((el("vol") as HTMLInputElement).value) / 100;
       if (this.settings.volume > 0) this.settings.muted = false;
       this.pushAudio();
     });
@@ -320,15 +284,12 @@ export class Hud {
         height: clampDimension(num("h"), 360, 2160),
         fps: clampFps(num("fps")),
         maxBitrateKbps: clampBitrate(num("br") * 1000),
-        preset: (el("preset") as HTMLSelectElement)
-          .value as StreamSettings["preset"],
+        preset: (el("preset") as HTMLSelectElement).value as StreamSettings["preset"],
       };
       this.togglePanel();
       this.onApply(this.settings);
     });
-    p.querySelector('[data-act="disc"]')!.addEventListener("click", () =>
-      this.onDisconnect(),
-    );
+    p.querySelector('[data-act="disc"]')!.addEventListener("click", () => this.onDisconnect());
   }
 }
 
@@ -340,12 +301,5 @@ interface StatPart {
 }
 
 function tint(el: HTMLElement, v: number, good: number, bad: number) {
-  el.style.color =
-    v <= 0
-      ? ""
-      : v < good
-        ? "var(--ok)"
-        : v < bad
-          ? "var(--warn)"
-          : "var(--err)";
+  el.style.color = v <= 0 ? "" : v < good ? "var(--ok)" : v < bad ? "var(--warn)" : "var(--err)";
 }

@@ -30,7 +30,7 @@ log text. One place decides whether a run passed.
 tools/remote-e2e.sh 45
 
 # also hard-kill the browser mid-session and check the slot is freed
-E2E_STATUS=http://127.0.0.1:47800/api/v1/status tools/remote-e2e.sh 45 100.127.176.18 kill --kill
+E2E_STATUS=http://127.0.0.1:47800/api/v1/status HOST_SSH=user@pc tools/remote-e2e.sh 45 gaming-pc.local kill --kill
 
 # the harness on its own
 node tools/e2e/run.js "<invite-url>" 60 --out /tmp/wte2e

@@ -1,26 +1,42 @@
-LAN-first, browser-native gaming-PC remote play. One windowless tray binary on
-the gaming PC — no cloud service, no accounts.
+# InPhase release candidate
 
-### Install
+A Windows host for browser-based desktop and game streaming. No InPhase account
+or hosted relay is required. Download `InPhaseSetup.exe` from this release's assets,
+run setup on the gaming PC, then use the tray dashboard to pair another device.
 
-Download **`InPhaseSetup.exe`** and run it. It installs to `Program Files\InPhase`,
-adds a "start at sign-in" entry, and trusts the bundled local CA on this PC so
-HTTPS works with no warning. The host lives in the system tray — right-click for
-status, the current pairing PIN, the remote-access / start-at-sign-in toggles,
-the dashboard, and quit.
+## Changes
 
-On another device: open the play URL shown on the dashboard, install the CA once
-from `GET /ca.crt`, and enter the PIN.
+- New host dashboard and searchable, responsive game library.
+- Working QR invitations, explicit action failures and saved stream settings.
+- Per-user certificate/key setup and stronger local administration checks.
+- Self-contained DLL layout, broader encoder plugin bundle and strict packaging.
+- Browser regression tests and an isolated Windows package smoke check.
 
-### Notes
+## Before publishing this draft
 
-- **Unsigned.** Windows SmartScreen will warn on first run — "More info" →
-  "Run anyway". A code-signing certificate is the next release blocker.
-- Windows 10 20H1 (build 19041) or newer, x64, with an NVIDIA / AMD / Intel
-  hardware H.264 / HEVC encoder.
-- Remote access (direct global IPv6 + a PCP / NAT-PMP router pinhole) is **off
-  by default**; enable it from the tray. Pairing stays LAN-only.
+This candidate is **unsigned** unless a maintainer signs and verifies the final
+artifacts. Complete docs/RELEASING.md: attach matching corresponding source and
+record clean-install, GPU, audio, input and network results. Do not publish broad
+compatibility or performance claims without those measurements.
 
-GPL-3.0-or-later. Bundles a license-clean GStreamer 1.28.x runtime — only the
-plugins InPhase loads (`OPEN-SOURCE-COMPONENTS.txt` / `MANIFEST.csv` in the
-install folder).
+Automated checks verify build, protocol/policy behavior, simulated browser flows
+and packaged DLL/plugin loading. They do not verify real GPU streaming.
+
+## Requirements and limits
+
+Windows 10 build 19041 or newer, or Windows 11, x64; a supported hardware encoder,
+current driver and active desktop/display. Start with 1080p/60 on a trusted LAN.
+Virtual gamepad support requires a separate compatible driver and input opt-in.
+Remote access is off by default and depends on router/ISP reachability.
+
+## Certificate migration
+
+Setup retires the old shared `%ProgramData%\InPhase\tls` CA. TLS material now
+belongs to your Windows user. Remove the old InPhase CA from player devices and
+follow Certificate setup again. See docs/TROUBLESHOOTING.md.
+
+## Verify
+
+Compare the installer SHA-256 with `InPhaseSetup.exe.sha256`. Keep the binary
+manifest and component notices with the release. InPhase-owned code is
+GPL-3.0-or-later; dependencies retain their own terms.

@@ -16,7 +16,15 @@ use inphase_host::media::wt::{WtTransportConfig, WtVideoTransport};
 use inphase_protocol::SignalMessage;
 
 fn state_with(wt: Option<Arc<WtVideoTransport>>) -> HttpState {
-    let cfg = Arc::new(Config::default());
+    let tmp = std::env::temp_dir().join(format!(
+        "inphase-wt-test-{}-{}",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let mut config = Config::default();
+    config.pairing.persist_sessions = false;
+    let cfg = Arc::new(config);
     let stats = Arc::new(inphase_host::stats::StatsCollector::default());
     HttpState {
         cfg: cfg.clone(),
@@ -28,8 +36,12 @@ fn state_with(wt: Option<Arc<WtVideoTransport>>) -> HttpState {
             stats.clone(),
         )),
         stats,
-        identity: Arc::new(inphase_host::identity::HostIdentity::load_or_create().unwrap()),
-        acl: Arc::new(inphase_host::identity::acl::ControllerAcl::load()),
+        identity: Arc::new(
+            inphase_host::identity::HostIdentity::load_or_create_at(&tmp.join("id.key")).unwrap(),
+        ),
+        acl: Arc::new(inphase_host::identity::acl::ControllerAcl::load_at(
+            tmp.join("controllers.json"),
+        )),
         invites: Arc::new(inphase_host::identity::pairing_invite::InviteStore::new()),
         host_name: "test-host".into(),
         play_url: "http://127.0.0.1:8765/".into(),

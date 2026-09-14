@@ -14,7 +14,7 @@ members = ["crates/protocol", "crates/host"]
 [workspace.package]
 version = "0.1.1"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.98"
 # InPhase-owned code is GPL-3.0-or-later (see LICENSE + NOTICE). Third-party
 # components keep their own licenses; packaged builds ship a per-file manifest.
 license = "GPL-3.0-or-later"

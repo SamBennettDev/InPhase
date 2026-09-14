@@ -31,18 +31,14 @@ function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, 1);
     req.onupgradeneeded = () => {
-      if (!req.result.objectStoreNames.contains(STORE))
-        req.result.createObjectStore(STORE);
+      if (!req.result.objectStoreNames.contains(STORE)) req.result.createObjectStore(STORE);
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
 }
 
-async function idb<T>(
-  mode: IDBTransactionMode,
-  fn: (s: IDBObjectStore) => IDBRequest,
-): Promise<T> {
+async function idb<T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest): Promise<T> {
   const db = await openDb();
   try {
     return await new Promise<T>((resolve, reject) => {
@@ -103,16 +99,12 @@ export function getControllerIdentity(): Promise<ControllerIdentity | null> {
       }
     }
 
-    const signRaw = new Uint8Array(
-      await crypto.subtle.exportKey("raw", pair.signPublic),
-    );
+    const signRaw = new Uint8Array(await crypto.subtle.exportKey("raw", pair.signPublic));
     const signPrivate = pair.signPrivate;
     return {
       publicKeyHex: hex(signRaw),
       sign: async (data: BufferSource) =>
-        new Uint8Array(
-          await crypto.subtle.sign({ name: "Ed25519" }, signPrivate, data),
-        ),
+        new Uint8Array(await crypto.subtle.sign({ name: "Ed25519" }, signPrivate, data)),
     };
   })();
   return cached;
@@ -132,12 +124,8 @@ export async function forgetControllerIdentity(): Promise<void> {
 export function deviceLabel(): string {
   const ua = navigator.userAgent;
   const brand =
-    (
-      navigator as Navigator & {
-        userAgentData?: { brands?: { brand: string }[] };
-      }
-    ).userAgentData?.brands?.find((b) => !/Not.?A.?Brand/i.test(b.brand))
-      ?.brand ??
+    (navigator as Navigator & { userAgentData?: { brands?: { brand: string }[] } }).userAgentData
+      ?.brands?.find((b) => !/Not.?A.?Brand/i.test(b.brand))?.brand ??
     (/\bEdg\//.test(ua)
       ? "Edge"
       : /\bFirefox\//.test(ua)

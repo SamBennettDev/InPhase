@@ -155,8 +155,7 @@ impl BitrateController {
         // What survives is the signal that answers the actual question - are
         // frames reaching the decoder? Erasure that parity and NACK repair is
         // not congestion, however much of it there is.
-        let decode_collapsed =
-            fb.target_fps > 0 && (fb.decoded_fps as f32) < fb.target_fps as f32 * 0.7;
+        let decode_collapsed = fb.target_fps > 0 && fb.decoded_fps < fb.target_fps as f32 * 0.7;
         let route_failing = decode_collapsed;
 
         // Both cut branches require `route_failing`. A bare `loss_frac > 0.30`

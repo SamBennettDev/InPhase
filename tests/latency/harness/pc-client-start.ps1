@@ -8,7 +8,7 @@ param(
 )
 $ErrorActionPreference = "Continue"
 $chrome = "C:\Program Files\Google\Chrome\Application\chrome.exe"
-$prof = "C:\Users\sambe\stress\cdp-profile"
+$prof = "$env:USERPROFILE\stress\cdp-profile"
 Get-Process chrome -EA SilentlyContinue |
   Where-Object { $_.Path -eq $chrome } |
   Where-Object { (Get-CimInstance Win32_Process -Filter "ProcessId=$($_.Id)").CommandLine -match 'stress\\cdp-profile' } |

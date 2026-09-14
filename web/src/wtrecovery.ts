@@ -54,20 +54,14 @@ export class WtRecovery {
       return "none";
     }
     const frozenFor = now - this.progressAt;
-    if (
-      frozenFor > this.redialAfterMs &&
-      now - this.lastRedialAt > this.redialCooldownMs
-    ) {
+    if (frozenFor > this.redialAfterMs && now - this.lastRedialAt > this.redialCooldownMs) {
       this.lastRedialAt = now;
       // A redial implies the decoder reset too: the lower rung must not
       // re-fire while the redial cooldown is still holding the ladder.
       this.lastResetAt = now;
       return "redial";
     }
-    if (
-      frozenFor > this.resetAfterMs &&
-      now - this.lastResetAt > this.resetCooldownMs
-    ) {
+    if (frozenFor > this.resetAfterMs && now - this.lastResetAt > this.resetCooldownMs) {
       this.lastResetAt = now;
       return "reset";
     }

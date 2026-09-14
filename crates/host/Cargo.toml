@@ -47,7 +47,7 @@ hkdf = { workspace = true }
 subtle = { workspace = true }
 # The host serves its own HTTPS so the browser gets a secure context (WebCrypto,
 # Keyboard Lock, gamepad). A bundled local CA (rcgen) generates the leaf; the
-# installer trusts the root machine-wide, other devices install it from
+# installer trusts the root for the original user; other devices install it from
 # `/ca.crt`. rustls + ring — no OpenSSL entanglement with the bundled GStreamer.
 axum-server = { version = "0.7", default-features = false, features = ["tls-rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }

@@ -222,8 +222,10 @@ impl WtVideoTransport {
         // paper over is fixed in vendor/quinn-proto; the big buffer is no
         // longer doing any work here.
         quic_cfg.datagram_send_buffer_size(256 * 1024);
+        // The play URL can resolve to IPv4 on a home LAN. V6 explicitly disables
+        // IPv4 in wtransport; dual-stack keeps both LAN and IPv6 clients reachable.
         let server_config = wtransport::ServerConfig::builder()
-            .with_bind_config(wtransport::config::IpBindConfig::InAddrAnyV6, cfg.port)
+            .with_bind_config(wtransport::config::IpBindConfig::InAddrAnyDual, cfg.port)
             .with_custom_transport(identity, quic_cfg)
             // No server-side keep-alive on purpose: keep-alives would hold a
             // vanished client's connection open forever (the video slot then
@@ -671,8 +673,6 @@ impl WtVideoTransport {
             next_frame_no: std::sync::atomic::AtomicU32::new(0),
         })
     }
-
-    /// Data-fragment count of the most recent keyframe sent, or `None` before
 
     /// UDP port actually bound (useful when the config said 0).
     pub fn port(&self) -> u16 {
@@ -1328,7 +1328,7 @@ mod tests {
 
         // Client side: read datagrams, reassemble fragments into frames. The
         // keyframe must NOT be among them - it rides the reliable stream.
-        use inphase_protocol::{WtFragment, WT_AUDIO_DATAGRAM_TAG};
+        use inphase_protocol::WtFragment;
         let mut parts: std::collections::HashMap<u32, Vec<Option<Vec<u8>>>> =
             std::collections::HashMap::new();
         let mut got = Vec::new();

@@ -70,9 +70,7 @@ export class InputManager {
   /** Pointer lock + (Chromium, HTTPS) keyboard lock. Runs once we're fullscreen. */
   private async engageCapture() {
     const el = this.surface as HTMLElement & {
-      requestPointerLock: (opts?: {
-        unadjustedMovement?: boolean;
-      }) => Promise<void> | void;
+      requestPointerLock: (opts?: { unadjustedMovement?: boolean }) => Promise<void> | void;
     };
     try {
       const p = el.requestPointerLock({ unadjustedMovement: true });
@@ -87,14 +85,7 @@ export class InputManager {
       this.unadjustedActive = false;
     }
     // §12.1: Keyboard Lock — Chromium only, secure context only, needs fullscreen.
-    const kb = (
-      navigator as Navigator & {
-        keyboard?: {
-          lock?: (k?: string[]) => Promise<void>;
-          unlock?: () => void;
-        };
-      }
-    ).keyboard;
+    const kb = (navigator as Navigator & { keyboard?: { lock?: (k?: string[]) => Promise<void>; unlock?: () => void } }).keyboard;
     if (window.isSecureContext && kb?.lock) {
       try {
         await kb.lock(["Escape", "Tab", "MetaLeft", "MetaRight"]);
@@ -119,8 +110,7 @@ export class InputManager {
   /** Release capture by leaving fullscreen (`onFsChange` does the teardown). */
   release() {
     const d = document as Document & { webkitExitFullscreen?: () => void };
-    if (document.fullscreenElement)
-      void document.exitFullscreen().catch(() => {});
+    if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
     else if (isFullscreen()) d.webkitExitFullscreen?.();
     else {
       this.releaseAll();
@@ -137,12 +127,7 @@ export class InputManager {
     if (down) this.held.add(scanCode);
     else this.held.delete(scanCode);
     this.sink.sendInput(
-      this.enc.encode({
-        kind: InputKind.Key,
-        physicalCode: scanCode,
-        down,
-        modifiers: this.modifiers,
-      }),
+      this.enc.encode({ kind: InputKind.Key, physicalCode: scanCode, down, modifiers: this.modifiers }),
     );
   }
 
@@ -160,10 +145,7 @@ export class InputManager {
     this.surface.addEventListener("contextmenu", this.onContextMenu);
     window.addEventListener("keydown", this.onKey);
     window.addEventListener("keyup", this.onKey);
-    this.snapshotTimer = window.setInterval(
-      this.sendSnapshot,
-      1000 / SNAPSHOT_HZ,
-    );
+    this.snapshotTimer = window.setInterval(this.sendSnapshot, 1000 / SNAPSHOT_HZ);
     this.rafId = requestAnimationFrame(this.pollGamepad);
   }
 
@@ -250,10 +232,7 @@ export class InputManager {
     if (down) this.mouseButtons |= 1 << bit;
     else this.mouseButtons &= ~(1 << bit);
     this.sink.sendInput(
-      this.enc.encode({
-        kind: InputKind.MouseButtons,
-        buttons: this.mouseButtons,
-      }),
+      this.enc.encode({ kind: InputKind.MouseButtons, buttons: this.mouseButtons }),
     );
   }
 
@@ -325,9 +304,7 @@ export class InputManager {
         const key = JSON.stringify(gp);
         if (key !== this.lastGamepadKey) {
           this.lastGamepadKey = key;
-          this.sink.sendInput(
-            this.enc.encode({ kind: InputKind.Gamepad, state: gp }),
-          );
+          this.sink.sendInput(this.enc.encode({ kind: InputKind.Gamepad, state: gp }));
         }
       }
     } catch (err) {
@@ -366,12 +343,9 @@ export class InputManager {
         state: { mouseButtons: 0, modifiers: 0, heldKeys: [] },
       }),
     );
-    if (document.pointerLockElement === this.surface)
-      document.exitPointerLock();
+    if (document.pointerLockElement === this.surface) document.exitPointerLock();
     if (this.keyboardLocked) {
-      (
-        navigator as Navigator & { keyboard?: { unlock?: () => void } }
-      ).keyboard?.unlock?.();
+      (navigator as Navigator & { keyboard?: { unlock?: () => void } }).keyboard?.unlock?.();
       this.keyboardLocked = false;
     }
   };

@@ -50,8 +50,15 @@ fn main() -> anyhow::Result<()> {
         println!("inphase-host {}", inphase_host::HOST_VERSION);
         return Ok(());
     }
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!("InPhase Host\n\n  --open-dashboard  Start the host and open its dashboard\n  --doctor [--json]  Check this PC's environment\n  --support-bundle [path]  Write diagnostics for review\n  --trust-ca        Set up HTTPS trust for the current user\n  --enable-startup  Start at sign-in for the current user\n  --disable-startup Remove the current user's startup entry\n  --print-config    Print a configuration template\n  --version         Print the version");
+        return Ok(());
+    }
     if args.iter().any(|a| a == "--enable-startup") {
         return inphase_host::platform::set_start_at_login(true);
+    }
+    if args.iter().any(|a| a == "--disable-startup") {
+        return inphase_host::platform::set_start_at_login(false);
     }
     if args.iter().any(|a| a == "--print-config") {
         println!("{}", Config::default().to_toml());
@@ -122,6 +129,14 @@ fn main() -> anyhow::Result<()> {
     }
 
     let cfg = Config::load().context("loading configuration")?;
+    #[cfg(windows)]
+    let _instance = match claim_instance()? {
+        Some(instance) => instance,
+        None => {
+            inphase_host::app::open_dashboard(cfg.network.http_port);
+            return Ok(());
+        }
+    };
     // A restart is the single most common explanation for "it stopped working",
     // so make it unmissable in host.log and carry the build id: matching this
     // against a client's build_id is what separates "the host restarted" from
@@ -149,6 +164,8 @@ fn main() -> anyhow::Result<()> {
 #[cfg(windows)]
 fn attach_console_for_cli(args: &[String]) {
     const CLI_FLAGS: &[&str] = &[
+        "--help",
+        "-h",
         "--version",
         "-V",
         "--print-config",
@@ -173,6 +190,41 @@ fn attach_console_for_cli(args: &[String]) {
 
 #[cfg(not(windows))]
 fn attach_console_for_cli(_args: &[String]) {}
+
+/// A second launch opens the existing host instead of racing its ports and keys.
+#[cfg(windows)]
+struct InstanceLock(windows::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+impl Drop for InstanceLock {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = windows::Win32::Foundation::CloseHandle(self.0);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn claim_instance() -> anyhow::Result<Option<InstanceLock>> {
+    use std::hash::{Hash, Hasher};
+    use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS};
+    use windows::Win32::System::Threading::CreateMutexW;
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    Config::config_path().hash(&mut hash);
+    let name: Vec<u16> = format!("Local\\InPhaseHost-{:016x}", hash.finish())
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    unsafe {
+        let handle = CreateMutexW(None, false, windows::core::PCWSTR(name.as_ptr()))?;
+        if GetLastError() == ERROR_ALREADY_EXISTS {
+            let _ = CloseHandle(handle);
+            Ok(None)
+        } else {
+            Ok(Some(InstanceLock(handle)))
+        }
+    }
+}
 
 fn init_tracing() {
     // §26: never log PINs, cookies, SDP secrets or raw input events. The code

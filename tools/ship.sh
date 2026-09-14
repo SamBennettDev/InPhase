@@ -28,13 +28,9 @@ set -euo pipefail
 # pipeline mid-ship (this bit us repeatedly). Every grep below is either the
 # subject of an `if`, or terminated with `|| true`. Do not "tidy" that away.
 
-readonly REMOTE_DEFAULT="sambe@100.127.176.18"
-# The single canonical build directory. C:\Users\sambe\{inphase,InPhase-build}
-# are abandoned checkouts from earlier sessions (InPhase-build sits on 195a172,
-# ~30 commits back) and are NOT to be built from — a deploy out of one of those
-# is how a stale exe shipped twice. This one is canonical because the boot task
-# already launches from it and its cargo/npm caches are warm.
-readonly REMOTE_DIR='C:\Users\sambe\InPhase-wt'
+# Explicit opt-in target; never default to a maintainer's private PC.
+readonly REMOTE_DEFAULT="${INPHASE_SSH_TARGET:-}"
+readonly REMOTE_DIR='InPhase-dev in the remote user profile'
 readonly REMOTE_TASK="InPhaseWTStart"
 readonly INSTALL_EXE='C:\Program Files\InPhase\InPhaseHost.exe'
 readonly STATUS_URL="http://127.0.0.1:47800/api/v1/status"
@@ -53,6 +49,8 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+
+[ -n "$REMOTE" ] || { echo "Set INPHASE_SSH_TARGET or pass --host user@pc" >&2; exit 1; }
 
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)
@@ -131,8 +129,8 @@ if grep -qP '[^\x00-\x7F]' "$ROOT/tools/remote-build.ps1"; then
 $(grep -nP '[^\x00-\x7F]' "$ROOT/tools/remote-build.ps1" | sed 's/^/     /')"
 fi
 
-scp -q "$TARBALL" "$REMOTE:C:/Users/sambe/inphase-ship.tgz" || die 2 "scp of source tarball failed"
-scp -q "$ROOT/tools/remote-build.ps1" "$REMOTE:C:/Users/sambe/inphase-remote-build.ps1" || die 2 "scp of remote build script failed"
+scp -q "$TARBALL" "$REMOTE:inphase-ship.tgz" || die 2 "scp of source tarball failed"
+scp -q "$ROOT/tools/remote-build.ps1" "$REMOTE:inphase-remote-build.ps1" || die 2 "scp of remote build script failed"
 ok "uploaded"
 
 # --- 4/5/6. remote build, verify, install, restart, verify ------------------
@@ -141,7 +139,7 @@ ok "uploaded"
 say "remote build + verify"
 set +e
 ssh -o BatchMode=yes "$REMOTE" \
-  "powershell -NoProfile -ExecutionPolicy Bypass -File C:\\Users\\sambe\\inphase-remote-build.ps1 -BuildId $BUILD_ID -Install $INSTALL"
+  "powershell -NoProfile -ExecutionPolicy Bypass -File inphase-remote-build.ps1 -BuildId $BUILD_ID -Install $INSTALL"
 RC=$?
 set -e
 case "$RC" in

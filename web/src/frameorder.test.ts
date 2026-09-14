@@ -4,12 +4,7 @@ import { FrameOrderer, MAX_REORDER } from "./frameorder.js";
 import type { WtFrame } from "./wtvideo.js";
 
 function frame(frame_no: number, key = false): WtFrame {
-  return {
-    frame_no,
-    capture_us: frame_no * 16_667,
-    key,
-    payload: new Uint8Array([frame_no & 0xff]),
-  };
+  return { frame_no, capture_us: frame_no * 16_667, key, payload: new Uint8Array([frame_no & 0xff]) };
 }
 const nums = (fs: WtFrame[]) => fs.map((f) => f.frame_no);
 
@@ -54,11 +49,7 @@ test("out-of-order deltas are reassembled in order", () => {
   o.accept(frame(1, true));
   assert.deepEqual(nums(o.accept(frame(4))), []);
   assert.deepEqual(nums(o.accept(frame(3))), []);
-  assert.deepEqual(
-    nums(o.accept(frame(2))),
-    [2, 3, 4],
-    "the run drains at once",
-  );
+  assert.deepEqual(nums(o.accept(frame(2))), [2, 3, 4], "the run drains at once");
 });
 
 test("nothing decodes before a keyframe anchors", () => {
@@ -79,11 +70,7 @@ test("a hole that never fills gives up instead of stalling", () => {
   assert.deepEqual(nums(o.accept(frame(2))), [2]);
   // Frame 3 was dropped by the host. Everything after it piles up.
   for (let n = 4; n <= 4 + MAX_REORDER; n++) o.accept(frame(n));
-  assert.equal(
-    o.needsResync,
-    true,
-    "must ask for a keyframe, not wait forever",
-  );
+  assert.equal(o.needsResync, true, "must ask for a keyframe, not wait forever");
   assert.ok(
     o.held < MAX_REORDER,
     `must drop the undecodable backlog, still holding ${o.held}`,
@@ -149,14 +136,8 @@ test("a real arrival trace decodes, stale frames from a previous pipeline and al
   // Everything from the anchoring keyframe onward must decode, in order. The
   // stragglers ahead of it belong to the previous pipeline and must not appear.
   const keyAt = RealArrivals.findIndex((a) => a.key);
-  const expected = [...new Set(RealArrivals.slice(keyAt).map((a) => a.n))].sort(
-    (x, y) => x - y,
-  );
-  assert.deepEqual(
-    decoded,
-    expected,
-    "every frame after the anchor decodes in order",
-  );
+  const expected = [...new Set(RealArrivals.slice(keyAt).map((a) => a.n))].sort((x, y) => x - y);
+  assert.deepEqual(decoded, expected, "every frame after the anchor decodes in order");
   const stale = RealArrivals.slice(0, keyAt).map((a) => a.n);
   assert.ok(
     stale.length > 0 && !decoded.some((n) => stale.includes(n)),
@@ -171,9 +152,5 @@ test("a frame absurdly far ahead of the anchor is not a reorder", () => {
   // Not out-of-order delivery - a different sequence entirely.
   assert.deepEqual(nums(o.accept(frame(99_999))), [], "dropped, not held");
   assert.equal(o.held, 0, "must not poison the hold buffer");
-  assert.deepEqual(
-    nums(o.accept(frame(12))),
-    [12],
-    "the real stream continues",
-  );
+  assert.deepEqual(nums(o.accept(frame(12))), [12], "the real stream continues");
 });

@@ -415,7 +415,6 @@ mod tests {
         let t2 = sm
             .claim(PeerInfo::default(), tx2)
             .await
-            .ok()
             .expect("a new claim reclaims a stale session instead of BUSY");
         assert!(matches!(rx1.try_recv(), Ok(SignalMessage::Bye)));
         // A's late close must not touch B's session; B's own close does.

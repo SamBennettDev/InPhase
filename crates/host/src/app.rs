@@ -177,7 +177,7 @@ impl HostRuntime {
                             let n = input_pkts.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             if !input_logged.swap(true, std::sync::atomic::Ordering::Relaxed) {
                                 info!("wt: first input packet received ({} bytes) - the client's touch/input path works", bytes.len());
-                            } else if n > 0 && n % 500 == 0 {
+                            } else if n > 0 && n.is_multiple_of(500) {
                                 info!("wt: {} input packets received so far", n + 1);
                             }
                             sessions.with_player(|p| {
@@ -522,6 +522,11 @@ fn tray_pin_line(pairing: &PairingManager) -> String {
 }
 
 /// Open a URL in the default browser (tray "Open dashboard").
+/// Open the loopback dashboard, including when the user launches a second copy.
+pub fn open_dashboard(port: u16) {
+    open_url(&format!("http://127.0.0.1:{port}/?dashboard"));
+}
+
 fn open_url(url: &str) {
     #[cfg(windows)]
     {

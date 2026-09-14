@@ -27,58 +27,24 @@ const CHAR: Record<string, { code: string; shift: boolean }> = {};
   const row = (chars: string, codes: string[]) => {
     [...chars].forEach((c, i) => (CHAR[c] = { code: codes[i]!, shift: false }));
   };
-  row(
-    "abcdefghijklmnopqrstuvwxyz",
-    [..."abcdefghijklmnopqrstuvwxyz"].map((c) => "Key" + c.toUpperCase()),
-  );
-  [..."ABCDEFGHIJKLMNOPQRSTUVWXYZ"].forEach(
-    (c) => (CHAR[c] = { code: "Key" + c, shift: true }),
-  );
-  row("1234567890", [
-    "Digit1",
-    "Digit2",
-    "Digit3",
-    "Digit4",
-    "Digit5",
-    "Digit6",
-    "Digit7",
-    "Digit8",
-    "Digit9",
-    "Digit0",
-  ]);
+  row("abcdefghijklmnopqrstuvwxyz", [..."abcdefghijklmnopqrstuvwxyz"].map((c) => "Key" + c.toUpperCase()));
+  [..."ABCDEFGHIJKLMNOPQRSTUVWXYZ"].forEach((c) => (CHAR[c] = { code: "Key" + c, shift: true }));
+  row("1234567890", ["Digit1", "Digit2", "Digit3", "Digit4", "Digit5", "Digit6", "Digit7", "Digit8", "Digit9", "Digit0"]);
   const sym: [string, string, boolean][] = [
-    ["-", "Minus", false],
-    ["_", "Minus", true],
-    ["=", "Equal", false],
-    ["+", "Equal", true],
-    ["[", "BracketLeft", false],
-    ["{", "BracketLeft", true],
-    ["]", "BracketRight", false],
-    ["}", "BracketRight", true],
-    ["\\", "Backslash", false],
-    ["|", "Backslash", true],
-    [";", "Semicolon", false],
-    [":", "Semicolon", true],
-    ["'", "Quote", false],
-    ['"', "Quote", true],
-    [",", "Comma", false],
-    ["<", "Comma", true],
-    [".", "Period", false],
-    [">", "Period", true],
-    ["/", "Slash", false],
-    ["?", "Slash", true],
-    ["`", "Backquote", false],
-    ["~", "Backquote", true],
-    ["!", "Digit1", true],
-    ["@", "Digit2", true],
-    ["#", "Digit3", true],
-    ["$", "Digit4", true],
-    ["%", "Digit5", true],
-    ["^", "Digit6", true],
-    ["&", "Digit7", true],
-    ["*", "Digit8", true],
-    ["(", "Digit9", true],
-    [")", "Digit0", true],
+    ["-", "Minus", false], ["_", "Minus", true],
+    ["=", "Equal", false], ["+", "Equal", true],
+    ["[", "BracketLeft", false], ["{", "BracketLeft", true],
+    ["]", "BracketRight", false], ["}", "BracketRight", true],
+    ["\\", "Backslash", false], ["|", "Backslash", true],
+    [";", "Semicolon", false], [":", "Semicolon", true],
+    ["'", "Quote", false], ['"', "Quote", true],
+    [",", "Comma", false], ["<", "Comma", true],
+    [".", "Period", false], [">", "Period", true],
+    ["/", "Slash", false], ["?", "Slash", true],
+    ["`", "Backquote", false], ["~", "Backquote", true],
+    ["!", "Digit1", true], ["@", "Digit2", true], ["#", "Digit3", true], ["$", "Digit4", true],
+    ["%", "Digit5", true], ["^", "Digit6", true], ["&", "Digit7", true], ["*", "Digit8", true],
+    ["(", "Digit9", true], [")", "Digit0", true],
   ];
   for (const [ch, code, shift] of sym) CHAR[ch] = { code, shift };
 })();

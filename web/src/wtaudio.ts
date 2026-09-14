@@ -32,8 +32,7 @@ export class WtAudio {
   }
 
   setVolume(volume: number, muted: boolean): void {
-    if (this.gain)
-      this.gain.gain.value = muted ? 0 : Math.max(0, Math.min(1, volume));
+    if (this.gain) this.gain.gain.value = muted ? 0 : Math.max(0, Math.min(1, volume));
   }
 
   start(): void {
@@ -45,21 +44,13 @@ export class WtAudio {
       output: (data) => this.enqueue(data),
       error: (e) => console.warn("wt audio decoder error:", e.message),
     });
-    this.decoder.configure({
-      codec: "opus",
-      sampleRate: 48000,
-      numberOfChannels: 2,
-    });
+    this.decoder.configure({ codec: "opus", sampleRate: 48000, numberOfChannels: 2 });
   }
 
   stop(): void {
     // Keep the context alive across redials - recreating it outside a gesture
     // is exactly the suspended-context trap. Per-session state only.
-    try {
-      this.decoder?.close();
-    } catch {
-      /* already closed */
-    }
+    try { this.decoder?.close(); } catch { /* already closed */ }
     this.decoder = null;
     for (const q of this.queue) q.data.close();
     this.queue = [];
@@ -69,13 +60,11 @@ export class WtAudio {
   /** One Opus packet from a WT audio datagram (payload after the 13-byte header). */
   push(opus: Uint8Array, ptsUs: number): void {
     if (!this.decoder || this.decoder.state !== "configured") return;
-    this.decoder.decode(
-      new EncodedAudioChunk({
-        type: "key",
-        timestamp: ptsUs,
-        data: opus,
-      }),
-    );
+    this.decoder.decode(new EncodedAudioChunk({
+      type: "key",
+      timestamp: ptsUs,
+      data: opus,
+    }));
   }
 
   private decoded = 0;
@@ -87,8 +76,7 @@ export class WtAudio {
       return;
     }
     this.decoded++;
-    if (this.decoded === 1)
-      console.info("wt audio: samples reaching the speakers");
+    if (this.decoded === 1) console.info("wt audio: samples reaching the speakers");
     this.queue.push({ data });
     void this.drain();
   }
@@ -116,18 +104,14 @@ export class WtAudio {
       const buf = ctx.createBuffer(data.numberOfChannels, frames, 48000);
       for (let ch = 0; ch < data.numberOfChannels; ch++) {
         const dst = new Float32Array(frames);
-        data.copyTo(dst.buffer, {
-          format: "f32-planar",
-          planeIndex: ch,
-          frameCount: frames,
-        });
+        data.copyTo(dst.buffer, { format: "f32-planar", planeIndex: ch, frameCount: frames });
         buf.copyToChannel(dst, ch);
       }
       const src = ctx.createBufferSource();
       src.buffer = buf;
       src.connect(this.gain!);
       src.start(startUs / 1e6);
-      this.nextStartUs = startUs + (frames * 1e6) / 48000;
+      this.nextStartUs = startUs + frames * 1e6 / 48000;
       data.close();
     }
   }

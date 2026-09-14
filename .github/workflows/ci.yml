@@ -1,7 +1,7 @@
 name: ci
 on:
   push:
-    branches: [main, codex/release-polish]
+    branches: [main, 'codex/**']
   pull_request:
   workflow_call:
 permissions:

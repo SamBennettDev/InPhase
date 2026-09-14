@@ -42,18 +42,20 @@ impl HostIdentity {
 
     /// Testable variant with an explicit path.
     pub fn load_or_create_at(path: &std::path::Path) -> Result<Self> {
-        if let Ok(blob) = std::fs::read(path) {
-            if let Ok(plain) = unwrap_at_rest(&blob) {
-                if let Some((id, seed_len)) = Self::parse(&plain) {
-                    // Migrate a legacy V1 (had a trailing X25519 seed) file forward.
-                    if seed_len != FORMATTED_V2_LEN {
-                        id.persist(path)?;
-                        tracing::info!("rewrote host identity file (dropped unused Noise static)");
-                    }
-                    return Ok(id);
+        match std::fs::read(path) {
+            Ok(blob) => {
+                let plain = unwrap_at_rest(&blob).context("unlocking existing host identity")?;
+                let (id, seed_len) = Self::parse(&plain).context(
+                    "host identity is unreadable; restore it instead of replacing trust",
+                )?;
+                if seed_len != FORMATTED_V2_LEN {
+                    id.persist(path)?;
+                    tracing::info!("rewrote host identity file (dropped unused Noise static)");
                 }
+                return Ok(id);
             }
-            tracing::warn!("host identity file unreadable — regenerating");
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error).context("reading existing host identity"),
         }
 
         let mut ed = [0u8; 32];
@@ -131,11 +133,12 @@ pub fn hex(bytes: &[u8]) -> String {
 }
 
 pub fn unhex(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    let (pairs, remainder) = s.as_bytes().as_chunks::<2>();
+    if !remainder.is_empty() {
         return None;
     }
-    s.as_bytes()
-        .chunks_exact(2)
+    pairs
+        .iter()
         .map(|pair| {
             let hi = (pair[0] as char).to_digit(16)?;
             let lo = (pair[1] as char).to_digit(16)?;
@@ -242,6 +245,22 @@ mod dpapi {
 
 #[cfg(test)]
 mod hex_tests {
+    #[test]
+    fn unreadable_identity_is_not_overwritten() {
+        let path = std::env::temp_dir().join(format!(
+            "inphase-invalid-identity-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, b"invalid identity").unwrap();
+        assert!(super::HostIdentity::load_or_create_at(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"invalid identity");
+        std::fs::remove_file(path).unwrap();
+    }
+
     #[test]
     fn malformed_unicode_hex_cannot_panic() {
         for value in ["aéa", "😀", "あa", "zz", "0"] {

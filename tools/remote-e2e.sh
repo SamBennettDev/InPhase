@@ -25,12 +25,12 @@
 set -uo pipefail
 
 DUR="${1:-45}"
-ADDR="${2:-100.127.176.18}"
+ADDR="${2:?Pass the gaming PC address as argument 2}"
 LABEL="${3:-clean}"
 KILL=""
 for a in "$@"; do [ "$a" = "--kill" ] && KILL="--kill"; done
 
-HOST_SSH="${HOST_SSH:-sambe@100.127.176.18}"
+HOST_SSH="${HOST_SSH:?Set HOST_SSH to user@pc}"
 OUT="${OUT:-/tmp/wte2e}"
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 
