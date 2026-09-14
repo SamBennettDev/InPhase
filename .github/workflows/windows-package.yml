@@ -98,13 +98,13 @@ jobs:
             Invoke-CheckedProcess $setup $setupArgs "Initial install" "inphase-initial-install.log"
             if (-not (Test-Path $hostExe)) { throw "Installed host is missing" }
 
-            $host = Start-Process $hostExe -PassThru
+            $hostProcess = Start-Process $hostExe -PassThru
             Start-Sleep -Seconds 3
-            if ($host.HasExited) { throw "Installed host exited before upgrade test" }
+            if ($hostProcess.HasExited) { throw "Installed host exited before upgrade test" }
 
             Invoke-CheckedProcess $setup $setupArgs "Upgrade over running host" "inphase-upgrade.log"
-            $host.Refresh()
-            if (-not $host.HasExited) { throw "Upgrade left the old host process running" }
+            $hostProcess.Refresh()
+            if (-not $hostProcess.HasExited) { throw "Upgrade left the old host process running" }
 
             $uninstaller = Join-Path $installDir "unins000.exe"
             if (-not (Test-Path $uninstaller)) { throw "Uninstaller is missing" }
