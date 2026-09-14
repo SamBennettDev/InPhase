@@ -91,7 +91,7 @@ jobs:
           }
 
           $setup = (Resolve-Path "dist\InPhaseSetup.exe").Path
-          $setupArgs = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/TASKS=""')
+          $setupArgs = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/TASKS=""', '/SkipCertificateSetup=yes')
           $installDir = Join-Path $env:ProgramFiles "InPhase"
           $hostExe = Join-Path $installDir "InPhaseHost.exe"
           try {
