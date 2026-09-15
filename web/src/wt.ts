@@ -53,24 +53,26 @@ export class WtVideoClient {
   }
 
   rttMs(): number {
-    return this.worker !== null ? Math.round(this.lastRtt * 100) / 100 : this.core!.rttMs();
+    return this.worker !== null
+      ? Math.round(this.lastRtt * 100) / 100
+      : (this.core?.rttMs() ?? 0);
   }
 
   inboundKbps(): number {
-    return this.worker !== null ? this.winKbps : this.core!.inboundKbps();
+    return this.worker !== null ? this.winKbps : (this.core?.inboundKbps() ?? 0);
   }
 
   /** Ms since the last sign of life (pong or datagram), worker clocks folded
    *  into page time: snapshot age + staleness measured worker-side at the
    *  snapshot. */
   staleMs(): number {
-    if (this.worker === null) return this.core!.staleMs();
+    if (this.worker === null) return this.core?.staleMs() ?? 0;
     if (this.stale.atPage === 0) return 0;
     return performance.now() - this.stale.atPage + this.stale.staleMs;
   }
 
   get datagramCount(): number {
-    return this.worker !== null ? 0 : this.core!.datagramCount;
+    return this.worker !== null ? 0 : (this.core?.datagramCount ?? 0);
   }
 
   /** Playout stats the periodic telemetry message reports to the host. In
@@ -194,7 +196,7 @@ export class WtVideoClient {
   /** Host↔client clock offset (µs, capture-clock aligned) once synced,
    *  adjusted onto the PAGE clock for the decoder's glass ages. */
   clockOffsetUs(): number | null {
-    return this.worker !== null ? this.offsetPageUs : this.core!.clockOffsetUs();
+    return this.worker !== null ? this.offsetPageUs : (this.core?.clockOffsetUs() ?? null);
   }
 
   /** Upper bound on the offset error (ms). null while unsynced. */
@@ -203,12 +205,12 @@ export class WtVideoClient {
       ? this.offsetPageUs === null
         ? null
         : this.lastRtt / 2
-      : this.core!.syncErrorMs();
+      : (this.core?.syncErrorMs() ?? null);
   }
 
   async send(msg: Record<string, unknown>): Promise<void> {
     if (this.worker !== null) this.worker.postMessage({ t: "send", msg });
-    else await this.core!.send(msg);
+    else await this.core?.send(msg);
   }
 
   requestKeyframe(): void {
@@ -221,7 +223,8 @@ export class WtVideoClient {
       this.worker.postMessage({ t: "input", bytes: bytes.slice() });
       return true;
     }
-    return this.core!.sendInput(bytes);
+    if (this.core === null) return false;
+    return this.core.sendInput(bytes);
   }
 
   private killWorker(): void {

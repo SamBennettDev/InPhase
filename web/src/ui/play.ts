@@ -922,7 +922,8 @@ export class Session {
     );
     this.wtSyncError = () => client.syncErrorMs();
     this.wtClose = () => client.close();
-    this.wtInput = (b) => client.sendInput(b);
+    const wtInput = (b: Uint8Array) => client.sendInput(b);
+    this.wtInput = wtInput;
     client
       .dial(info, {
         onVideoConfig: (cfg) => {
@@ -1017,6 +1018,8 @@ export class Session {
       })
       .catch((e) => {
         console.info("wt dial failed (watchdog will redial):", String(e));
+        if (this.wtInput === wtInput) this.wtInput = null;
+        if (this.wtClient === client) this.wtClient = null;
         client.close();
         decoder.stop();
       });

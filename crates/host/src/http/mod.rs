@@ -150,19 +150,12 @@ async fn security_headers(
     if is_api && !same_origin_request(req.headers()) {
         return (StatusCode::FORBIDDEN, "cross-origin request rejected").into_response();
     }
-    let authority = req
+    let host = req
         .headers()
         .get(axum::http::header::HOST)
-        .and_then(|h| h.to_str().ok())
-        .and_then(|h| h.parse::<axum::http::uri::Authority>().ok())
-        .filter(|h| !h.as_str().contains('@'));
-    let mut connect_src = "'self'".to_string();
-    if let Some(authority) = authority {
-        connect_src.push_str(&format!(" ws://{authority} wss://{authority}"));
-        if let Some(wt) = st.wt.as_ref() {
-            connect_src.push_str(&format!(" https://{}:{}", authority.host(), wt.port()));
-        }
-    }
+        .and_then(|v| v.to_str().ok());
+    let wt_port = st.wt.as_ref().map(|w| w.port());
+    let connect_src = connect_src_directive(host, wt_port);
     let mut res = next.run(req).await;
     let h = res.headers_mut();
     if is_api {
@@ -243,6 +236,48 @@ async fn loopback_only(
     } else {
         (StatusCode::FORBIDDEN, "admin API is loopback-only").into_response()
     }
+}
+
+/// Host header without a trailing HTTP port. Unbracketed IPv6 is left intact
+/// (multiple colons); a last-hextet of all digits must not be treated as a port.
+fn host_from_header(host: &str) -> &str {
+    if host.starts_with('[') {
+        if let Some(end) = host.find(']') {
+            return &host[..=end];
+        }
+        return host;
+    }
+    if host.bytes().filter(|&b| b == b':').count() > 1 {
+        return host;
+    }
+    match host.rsplit_once(':') {
+        Some((name, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => name,
+        _ => host,
+    }
+}
+
+/// CSP `connect-src` for the LAN HTTP listener.
+///
+/// Always includes `https://*:<wt_port>` when WebTransport is bound so the
+/// client can dial the advertised hostname (sslip.io, mDNS, IPv6) even when
+/// that name is not the HTTP Host header.
+fn connect_src_directive(host: Option<&str>, wt_port: Option<u16>) -> String {
+    let mut connect_src = "'self'".to_string();
+    if let Some(host) = host.filter(|h| !h.is_empty()) {
+        connect_src.push_str(&format!(" ws://{host} wss://{host}"));
+        if let Some(port) = wt_port {
+            let hostname = host_from_header(host);
+            if hostname.contains(':') && !hostname.starts_with('[') {
+                connect_src.push_str(&format!(" https://[{hostname}]:{port}"));
+            } else {
+                connect_src.push_str(&format!(" https://{hostname}:{port}"));
+            }
+        }
+    }
+    if let Some(port) = wt_port {
+        connect_src.push_str(&format!(" https://*:{port}"));
+    }
+    connect_src
 }
 
 /// Check browser Origin and Fetch Metadata. Native clients may omit Origin;
@@ -583,3 +618,64 @@ pub fn peer_ip(ConnectInfo(addr): &ConnectInfo<std::net::SocketAddr>) -> std::ne
 // Re-export for `app.rs`.
 pub use api::{HostStatus, WtStatus};
 pub use signal::wt_advertisement;
+
+#[cfg(test)]
+mod connect_src_tests {
+    use super::{connect_src_directive, host_from_header};
+
+    #[test]
+    fn wildcard_when_wt_bound_even_without_host() {
+        assert_eq!(
+            connect_src_directive(None, Some(4433)),
+            "'self' https://*:4433"
+        );
+    }
+
+    #[test]
+    fn no_wildcard_when_wt_unbound() {
+        assert_eq!(
+            connect_src_directive(Some("pc.local"), None),
+            "'self' ws://pc.local wss://pc.local"
+        );
+    }
+
+    #[test]
+    fn sslip_host_and_wildcard() {
+        let host = "2605-a601-800b-2100-0-0-0-100.sslip.io";
+        let src = connect_src_directive(Some(host), Some(4433));
+        assert!(src.contains(&format!("https://{host}:4433")), "{src}");
+        assert!(src.contains("https://*:4433"), "{src}");
+    }
+
+    #[test]
+    fn ipv6_literal_is_bracketed() {
+        let src = connect_src_directive(Some("2605:a601:800b:2100:0:0:0:100"), Some(4433));
+        assert!(
+            src.contains("https://[2605:a601:800b:2100:0:0:0:100]:4433"),
+            "{src}"
+        );
+        assert!(src.contains("https://*:4433"), "{src}");
+    }
+
+    #[test]
+    fn http_port_stripped_for_wt_origin() {
+        let src = connect_src_directive(Some("pc.local:8080"), Some(4433));
+        assert!(src.contains("https://pc.local:4433"), "{src}");
+        assert!(src.contains("ws://pc.local:8080"), "{src}");
+        assert!(src.contains("https://*:4433"), "{src}");
+    }
+
+    #[test]
+    fn strips_http_port_not_ipv6_hextet() {
+        assert_eq!(host_from_header("pc.local:8080"), "pc.local");
+        assert_eq!(host_from_header("192.168.1.5:80"), "192.168.1.5");
+        assert_eq!(
+            host_from_header("2605:a601:800b:2100:0:0:0:100"),
+            "2605:a601:800b:2100:0:0:0:100"
+        );
+        assert_eq!(
+            host_from_header("[2605:a601:800b:2100:0:0:0:100]:8080"),
+            "[2605:a601:800b:2100:0:0:0:100]"
+        );
+    }
+}
