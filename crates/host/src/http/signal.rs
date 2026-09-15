@@ -453,7 +453,7 @@ async fn handle_message(
                 }));
                 match res {
                     Ok(Ok(())) => Ok(()),
-                    Ok(Err(e)) => Err(e.to_string()),
+                    Ok(Err(e)) => Err(format!("{e:#}")),
                     Err(_) => Err("media pipeline panicked during construction".to_string()),
                 }
             });
