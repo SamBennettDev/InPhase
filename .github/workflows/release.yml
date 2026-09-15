@@ -22,7 +22,7 @@ jobs:
               version = tomllib.load(f)["workspace"]["package"]["version"]
           assert os.environ["GITHUB_REF_NAME"] == "v" + version, "Tag and Cargo version differ"
           PY
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: InPhase-windows-candidate
           path: dist
