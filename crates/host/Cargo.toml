@@ -60,7 +60,7 @@ rust-embed = { version = "8", features = ["debug-embed"] }
 # Direct play URL + QR code on the host dashboard (§25 "direct URL/QR code").
 qrcode = "0.14"
 # LAN interface enumeration / adapter filtering (§8.1).
-if-addrs = "0.13"
+if-addrs = "0.15"
 mime_guess = "2"
 # Keyless game cover art from Steam's public store API + CDN (`crate::gameart`).
 # rustls only — no OpenSSL, shares the process's ring provider.
