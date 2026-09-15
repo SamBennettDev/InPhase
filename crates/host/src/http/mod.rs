@@ -256,6 +256,15 @@ fn host_from_header(host: &str) -> &str {
     }
 }
 
+fn csp_safe_host(host: &str) -> Option<&str> {
+    if host.is_empty() || host.contains('@') {
+        return None;
+    }
+    host.bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_' | b':' | b'[' | b']'))
+        .then_some(host)
+}
+
 /// CSP `connect-src` for the LAN HTTP listener.
 ///
 /// Always includes `https://*:<wt_port>` when WebTransport is bound so the
@@ -263,7 +272,7 @@ fn host_from_header(host: &str) -> &str {
 /// that name is not the HTTP Host header.
 fn connect_src_directive(host: Option<&str>, wt_port: Option<u16>) -> String {
     let mut connect_src = "'self'".to_string();
-    if let Some(host) = host.filter(|h| !h.is_empty()) {
+    if let Some(host) = host.and_then(csp_safe_host) {
         connect_src.push_str(&format!(" ws://{host} wss://{host}"));
         if let Some(port) = wt_port {
             let hostname = host_from_header(host);
@@ -663,6 +672,14 @@ mod connect_src_tests {
         assert!(src.contains("https://pc.local:4433"), "{src}");
         assert!(src.contains("ws://pc.local:8080"), "{src}");
         assert!(src.contains("https://*:4433"), "{src}");
+    }
+
+    #[test]
+    fn rejects_host_that_would_break_csp() {
+        let src = connect_src_directive(Some("evil; script-src *"), Some(4433));
+        assert_eq!(src, "'self' https://*:4433");
+        let src = connect_src_directive(Some("user@pc.local"), None);
+        assert_eq!(src, "'self'");
     }
 
     #[test]
