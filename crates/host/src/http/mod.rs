@@ -134,13 +134,14 @@ pub fn admin_router(state: HttpState) -> Router {
 /// Strict CSP + framing/referrer hardening for the play origin (§14.1: *"use a
 /// strict Content-Security-Policy; serve no third-party JS or fonts"*).
 ///
-/// The CSP is built per-request for exactly one reason: the WebTransport video
-/// endpoint (ADR-0011) listens on its own port, and the browser must be allowed
-/// to dial it. The client reaches the host under whichever hostname it loaded
-/// the page from (IPv6 literal, mDNS name, LAN name), so the grant is scoped by
-/// *port*, not host — `https://*:<wt_port>` — and only appears once a transport
-/// is actually bound. Without one, the policy is byte-identical to the old
-/// static string.
+/// The CSP is built per-request for the WebTransport video endpoint (ADR-0011).
+/// That listener is a different origin (its own UDP/HTTPS port) and is dialed
+/// with `serverCertificateHashes`. Chrome 140+ treats a hash-pinned
+/// WebTransport as a distinct identity: listing the URL in `connect-src` is
+/// not enough; the directive must also contain `'unsafe-webtransport-hashes'`.
+/// Without that keyword the console reports a violation of `connect-src 'self'`
+/// and the glass stays black. The port grant is `https://*:<wt_port>` so sslip.io,
+/// mDNS and IPv6 names can dial even when they are not the HTTP Host header.
 async fn security_headers(
     axum::extract::State(st): axum::extract::State<HttpState>,
     req: Request,
@@ -267,13 +268,14 @@ fn csp_safe_host(host: &str) -> Option<&str> {
 
 /// CSP `connect-src` for the LAN HTTP listener.
 ///
-/// Always includes `https://*:<wt_port>` when WebTransport is bound so the
-/// client can dial the advertised hostname (sslip.io, mDNS, IPv6) even when
-/// that name is not the HTTP Host header.
+/// Pre-polish this was `'self' ws: wss: https://*:<wt_port>`. The polish
+/// commit narrowed it to the HTTP Host header and dropped the scheme
+/// wildcards; Chrome then started requiring `'unsafe-webtransport-hashes'`
+/// for `serverCertificateHashes`. Restore the working grants plus that
+/// keyword whenever a transport is bound.
 fn connect_src_directive(host: Option<&str>, wt_port: Option<u16>) -> String {
-    let mut connect_src = "'self'".to_string();
+    let mut connect_src = "'self' ws: wss:".to_string();
     if let Some(host) = host.and_then(csp_safe_host) {
-        connect_src.push_str(&format!(" ws://{host} wss://{host}"));
         if let Some(port) = wt_port {
             let hostname = host_from_header(host);
             if hostname.contains(':') && !hostname.starts_with('[') {
@@ -284,7 +286,7 @@ fn connect_src_directive(host: Option<&str>, wt_port: Option<u16>) -> String {
         }
     }
     if let Some(port) = wt_port {
-        connect_src.push_str(&format!(" https://*:{port}"));
+        connect_src.push_str(&format!(" https://*:{port} 'unsafe-webtransport-hashes'"));
     }
     connect_src
 }
@@ -636,7 +638,7 @@ mod connect_src_tests {
     fn wildcard_when_wt_bound_even_without_host() {
         assert_eq!(
             connect_src_directive(None, Some(4433)),
-            "'self' https://*:4433"
+            "'self' ws: wss: https://*:4433 'unsafe-webtransport-hashes'"
         );
     }
 
@@ -644,7 +646,7 @@ mod connect_src_tests {
     fn no_wildcard_when_wt_unbound() {
         assert_eq!(
             connect_src_directive(Some("pc.local"), None),
-            "'self' ws://pc.local wss://pc.local"
+            "'self' ws: wss:"
         );
     }
 
@@ -654,6 +656,19 @@ mod connect_src_tests {
         let src = connect_src_directive(Some(host), Some(4433));
         assert!(src.contains(&format!("https://{host}:4433")), "{src}");
         assert!(src.contains("https://*:4433"), "{src}");
+        assert!(src.contains("'unsafe-webtransport-hashes'"), "{src}");
+    }
+
+    #[test]
+    fn hash_pinned_wt_needs_unsafe_keyword() {
+        let src = connect_src_directive(Some("2605-a601-800b-2100-0-0-0-100.sslip.io"), Some(4433));
+        assert!(
+            src.contains("'unsafe-webtransport-hashes'"),
+            "Chrome blocks serverCertificateHashes without this keyword: {src}"
+        );
+        assert!(
+            !connect_src_directive(Some("pc.local"), None).contains("'unsafe-webtransport-hashes'")
+        );
     }
 
     #[test]
@@ -670,16 +685,20 @@ mod connect_src_tests {
     fn http_port_stripped_for_wt_origin() {
         let src = connect_src_directive(Some("pc.local:8080"), Some(4433));
         assert!(src.contains("https://pc.local:4433"), "{src}");
-        assert!(src.contains("ws://pc.local:8080"), "{src}");
+        assert!(src.contains("ws:"), "{src}");
         assert!(src.contains("https://*:4433"), "{src}");
+        assert!(src.contains("'unsafe-webtransport-hashes'"), "{src}");
     }
 
     #[test]
     fn rejects_host_that_would_break_csp() {
         let src = connect_src_directive(Some("evil; script-src *"), Some(4433));
-        assert_eq!(src, "'self' https://*:4433");
+        assert_eq!(
+            src,
+            "'self' ws: wss: https://*:4433 'unsafe-webtransport-hashes'"
+        );
         let src = connect_src_directive(Some("user@pc.local"), None);
-        assert_eq!(src, "'self'");
+        assert_eq!(src, "'self' ws: wss:");
     }
 
     #[test]
