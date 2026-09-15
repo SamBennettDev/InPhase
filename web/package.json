@@ -21,7 +21,7 @@
     "@playwright/test": "^1.63.0"
   },
   "dependencies": {
-    "lucide": "^1.41.0"
+    "lucide": "^1.45.0"
   },
   "engines": {
     "node": ">=22.12"
