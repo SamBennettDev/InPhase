@@ -381,7 +381,7 @@ pub async fn resolve_tls(cfg: &Config) -> Option<ResolvedTls> {
                             crate::tls::machine_hostname(),
                             crate::net::stable_global_ipv6(cfg)
                         )
-                        .canonical_origin()
+                        .advertised_origin(&cfg.tls.acme_hostname)
                     ),
                     domain: primary,
                     certs,

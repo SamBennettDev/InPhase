@@ -62,6 +62,8 @@ export interface WtClientStats {
   codec: string | null;
   framesDecoded: number;
   framesDropped: number;
+  /** Frames actually drawn to the canvas this session. */
+  framesPresented: number;
   /** Reorder buffer depth (frames held behind a hole) and codec backlog. */
   held: number;
   queueSize: number;
@@ -154,6 +156,8 @@ export class WtVideoClient {
   private winDgrams = 0;
   /** Cumulative decoded count at the last telemetry send, for a true rate. */
   private lastFramesDecoded = 0;
+  /** Cumulative presented count at the last telemetry send. */
+  private lastFramesPresented = 0;
   private lastRttMs = 0;
   /** Host-clock − client-clock offset in µs (capture-clock aligned),
    *  EMA over pong samples; null until the first anchored pong. */
@@ -841,6 +845,13 @@ export class WtVideoClient {
       decoded_fps: stats
         ? Math.round(((stats.framesDecoded - this.lastFramesDecoded) / dtSec) * 100) / 100
         : 0,
+      // The host health rule treats omitted presented_fps as 0 and then
+      // shouts "decoding but not presenting" (the iOS Safari no-draw case).
+      // Desktop WT was never sending this field, so a healthy 60 fps glass
+      // looked like a render failure.
+      presented_fps: stats
+        ? Math.round(((stats.framesPresented - this.lastFramesPresented) / dtSec) * 100) / 100
+        : 0,
       frames_dropped: stats?.framesDropped ?? 0,
       // WT has no browser jitter buffer; the adaptive present delay is the
       // closest analogue and is what the HUD should show.
@@ -890,6 +901,7 @@ export class WtVideoClient {
     };
     void this.send(payload);
     this.lastFramesDecoded = stats?.framesDecoded ?? this.lastFramesDecoded;
+    this.lastFramesPresented = stats?.framesPresented ?? this.lastFramesPresented;
     this.winStartedMs = nowMs;
     this.winBytes = 0;
     this.winDgrams = 0;

@@ -29,6 +29,7 @@ let latestStats: WtClientStats | null = null;
 const ZERO_STATS: WtClientStats = {
   codec: null,
   framesDecoded: 0,
+  framesPresented: 0,
   framesDropped: 0,
   held: 0,
   queueSize: 0,

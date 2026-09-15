@@ -78,7 +78,7 @@ export function renderDashboard(root: HTMLElement) {
         <span class="connection-pill" id="connection" role="status"><span class="dot"></span>Connecting</span>
         <a class="icon-btn" href="https://github.com/SamBennettDev/InPhase#readme" target="_blank" rel="noreferrer" aria-label="Open InPhase help">${icon("help")}</a>
       </header>
-      <div class="page-heading"><div><p class="eyebrow">YOUR GAMING PC</p><h1 id="pc-name">Welcome to InPhase</h1><p class="sub">A little setup. A lot more freedom to play.</p></div><span class="quiet-tag">${icon("shield")} Only devices you pair</span></div>
+      <div class="page-heading"><div><h1>Welcome to InPhase</h1><p class="sub">A little setup. A lot more freedom to play.</p></div><span class="quiet-tag">${icon("shield")} Only devices you pair</span></div>
       <p class="action-message" id="message" role="status" hidden></p>
       <section class="host-overview" aria-label="Host status"><div class="host-symbol">${icon("monitor")}</div><div class="host-overview-copy"><p class="eyebrow">HOST STATUS</p><h2 id="state">Checking your PC…</h2><p id="state-detail">Fetching the latest host status.</p></div><div class="host-overview-meta"><span class="quiet-tag" id="access">${icon("wifi")} Checking access</span><span id="version" class="muted"></span></div></section>
       <div class="dashboard-columns"><div class="dashboard-primary">
@@ -381,7 +381,6 @@ export function renderDashboard(root: HTMLElement) {
         const b = $<HTMLButtonElement>(id);
         if (!pending.has(b)) b.disabled = false;
       }
-      $("#pc-name").textContent = pub.pc_name;
       $("#version").textContent = "InPhase " + pub.version;
       $("#pin").textContent = admin.pin;
       $("#pin-ttl").textContent =

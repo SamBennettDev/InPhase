@@ -147,8 +147,10 @@ pub fn assess(i: &HealthInput) -> Health {
                 });
             }
             // Fresh telemetry: the pixel rules below are meaningful.
+            // `presented_fps` is 0 when the client omits it (serde default).
+            // WT used to omit it while decoding 60 fps on a live canvas,
+            // which this rule treated as the iOS Safari no-draw failure.
             Some(_) => {
-                // The failure this whole module exists to shout about.
                 if i.decoded_fps > 0.0 && i.presented_fps <= 0.0 {
                     symptoms.push(Symptom {
                         code: "decoding-not-presenting",

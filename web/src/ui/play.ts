@@ -116,7 +116,7 @@ function showHome(root: HTMLElement) {
       <div class="page-heading"><div><p class="eyebrow">YOUR SPACE TO PLAY</p><h1>Library</h1><p class="sub">Your games. Your desktop. Right where you left them.</p></div><span class="quiet-tag">${icon("shield")} Paired device</span></div>
       <section class="desktop-hero" aria-label="Gaming PC">
         <div class="desktop-visual" aria-hidden="true"><div class="monitor-frame"><div class="monitor-wallpaper">${icon("monitor")}</div></div><div class="monitor-stand"></div></div>
-        <div class="desktop-copy"><p class="eyebrow" id="pc-name">YOUR GAMING PC</p><h2>Make yourself at home.</h2><p>Stream your whole desktop, open any launcher, and play your way.</p><button class="secondary compact" id="select-desktop">${icon("monitor")} Select desktop ${icon("chevron")}</button></div>
+        <div class="desktop-copy"><h2>Make yourself at home.</h2><p>Stream your whole desktop, open any launcher, and play your way.</p><button class="secondary compact" id="select-desktop">${icon("monitor")} Select desktop ${icon("chevron")}</button></div>
       </section>
       <section aria-labelledby="games-heading"><div class="library-toolbar"><div class="section-title"><h2 id="games-heading">Your games</h2><span id="game-count" class="count-badge">0</span></div>
         <div class="library-filters"><label class="search-field">${icon("search")}<input id="game-search" type="search" aria-label="Search games" placeholder="Search your library" autocomplete="off" /></label>
@@ -289,7 +289,6 @@ function showHome(root: HTMLElement) {
         activeStream = next;
         render();
       }
-      $("#pc-name").textContent = st.pc_name;
       available = !st.busy && st.available !== false;
       connect.disabled = !available;
       $("#host-status").className =
@@ -1015,6 +1014,7 @@ export class Session {
           return {
             codec: this.wtCodecLabel ?? null,
             framesDecoded: s.framesDecoded,
+            framesPresented: s.framesPresented,
             freezeCount: s.freezeCount,
             totalFreezeMs: s.totalFreezeMs,
             framesDropped: s.framesDropped,

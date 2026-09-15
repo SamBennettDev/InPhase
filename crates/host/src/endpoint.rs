@@ -66,10 +66,32 @@ impl EndpointPlan {
 
     /// The canonical HTTPS origin users and clients dial.
     pub fn canonical_origin(&self) -> String {
-        if self.https_port == 443 {
-            format!("https://{}", self.origin_host)
+        Self::https_origin(&self.origin_host, self.https_port)
+    }
+
+    /// Address shown for pairing / "connect another device".
+    ///
+    /// A configured domain wins. Otherwise the sslip.io name of the stable
+    /// global IPv6 (or a configured ACME hostname) so a phone can open a
+    /// publicly-trusted URL instead of `https://<pc>.local`.
+    pub fn advertised_origin(&self, acme_hostname: &str) -> String {
+        let host = if !self.origin_host.ends_with(".local") && self.origin_host != self.hostname {
+            self.origin_host.clone()
+        } else if !acme_hostname.is_empty() {
+            acme_hostname.to_string()
+        } else if let Some(v6) = self.ipv6 {
+            crate::acme::sslip_hostname(&v6.to_string()).unwrap_or_else(|| self.origin_host.clone())
         } else {
-            format!("https://{}:{}", self.origin_host, self.https_port)
+            self.origin_host.clone()
+        };
+        Self::https_origin(&host, self.https_port)
+    }
+
+    fn https_origin(host: &str, port: u16) -> String {
+        if port == 443 {
+            format!("https://{host}")
+        } else {
+            format!("https://{host}:{port}")
         }
     }
 
@@ -120,6 +142,14 @@ mod tests {
         // The mDNS name is canonical: the IPv6 prefix rotates, the name does
         // not (review §8). The literal remains a certificate identity.
         assert_eq!(p.canonical_origin(), "https://cin-pc.local");
+        assert_eq!(
+            p.advertised_origin(""),
+            "https://2605-a601-800b-2100-0-0-0-100.sslip.io"
+        );
+        assert_eq!(
+            p.advertised_origin("custom.sslip.io"),
+            "https://custom.sslip.io"
+        );
         let ids = p.certificate_identities(&[]);
         assert!(ids.contains(&"2605:a601:800b:2100::100".to_string()));
         assert!(ids.contains(&"cin-pc.local".to_string()));
@@ -132,6 +162,10 @@ mod tests {
         c.tls.port = 8443;
         let p = EndpointPlan::detect(&c, "cin-pc".into(), None);
         assert_eq!(p.canonical_origin(), "https://stream.example.com:8443");
+        assert_eq!(
+            p.advertised_origin("ignored.sslip.io"),
+            "https://stream.example.com:8443"
+        );
         assert!(p
             .certificate_identities(&[])
             .contains(&"stream.example.com".to_string()));

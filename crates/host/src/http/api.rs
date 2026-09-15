@@ -71,7 +71,8 @@ pub struct HostStatus {
     /// unless remote access is enabled.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remote_mapping: Option<crate::portmap::MappingStatus>,
-    /// The URL to open in a browser (`https://<machine>.local/` etc.).
+    /// The URL to open in a browser (`https://<sslip.io host>/` when IPv6
+    /// is available, otherwise `https://<machine>.local/`).
     pub play_url: String,
     /// WebTransport video transport (ADR-0011): dial port + pinned cert hash,
     /// present whenever the transport bound. `None` = transport did not start.
