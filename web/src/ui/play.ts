@@ -901,6 +901,14 @@ export class Session {
       () => {
         if (this.wtActive || this.closed) return;
         this.wtActive = true;
+        // The never-decoded ladder has been observe(0)-ing since dial. The
+        // first decoded frame calls here *and* hudTick(); on the bitmap path
+        // framesPresented is still 0 (present is async). Without forgetting
+        // that stall clock, a first picture that took >3 s — encoder warmup,
+        // or the 2 s stream wedge cancelling the startup IDR — is classified
+        // as "glass frozen" and the decoder is reset on the frame that just
+        // arrived.
+        this.wtRecovery.reset();
         this.wtAudio?.start();
         // The WT video is presenting - the session is visibly up. Mount the
         // full glass (HUD, touch input, telemetry) here too: on a cellular
