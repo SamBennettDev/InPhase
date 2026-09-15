@@ -26,7 +26,7 @@ jobs:
         with:
           name: InPhase-windows-candidate
           path: dist
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           draft: true
           body_path: installer/RELEASE_NOTES.md
