@@ -180,10 +180,7 @@ impl Pipeline {
         // client error "videorate" while WebTransport still advertised, so
         // the browser wedged on an empty frame stream. Skip it if absent:
         // a moving desktop still encodes; only a fully static one starves.
-        match gst::ElementFactory::make("videorate")
-            .name("vrate")
-            .build()
-        {
+        match gst::ElementFactory::make("videorate").name("vrate").build() {
             Ok(videorate) => {
                 pipeline.add_many([&src, &queue, &convert, &videorate, &capsfilter])?;
                 gst::Element::link_many([&src, &queue, &convert, &videorate, &capsfilter])
@@ -504,42 +501,50 @@ fn spawn_stats_poller(
 
                 // --- gather client feedback -------------------------------------
                 let client = stats.client_snapshot();
-                let (lost_delta, recv_kbps, decoded_fps, rtt_ms, have_client, client_lat_p95) = match &client {
-                    Some(c) => {
-                        let ld = match last_lost {
-                            Some(prev) => c.packets_lost.saturating_sub(prev),
-                            None => 0,
-                        };
-                        last_lost = Some(c.packets_lost);
-                        // Wire v2: per-frame QUIC streams hide packet loss from
-                        // the client entirely (packets_lost is structurally 0),
-                        // so the law's loss input must come from frames the
-                        // host reset mid-stream. Scaled to packet-equivalents
-                        // (a dropped frame costs ~its own size in packets) so
-                        // loss_frac keeps its scale - a 20 KB frame at 1100 B
-                        // per packet is ~18 packets of loss, not 1.
-                        let dropped = match last_incomplete_ctl {
-                            Some(prev) => c.frames_dropped_incomplete.saturating_sub(prev),
-                            None => 0,
-                        };
-                        last_incomplete_ctl = Some(c.frames_dropped_incomplete);
-                        // "fresh" = the client's counters actually moved recently.
-                        if c.frames_decoded != last_decoded || ld > 0 {
-                            last_client_move = now;
-                            last_decoded = c.frames_decoded;
+                let (lost_delta, recv_kbps, decoded_fps, rtt_ms, have_client, client_lat_p95) =
+                    match &client {
+                        Some(c) => {
+                            let ld = match last_lost {
+                                Some(prev) => c.packets_lost.saturating_sub(prev),
+                                None => 0,
+                            };
+                            last_lost = Some(c.packets_lost);
+                            // Wire v2: per-frame QUIC streams hide packet loss from
+                            // the client entirely (packets_lost is structurally 0),
+                            // so the law's loss input must come from frames the
+                            // host reset mid-stream. Scaled to packet-equivalents
+                            // (a dropped frame costs ~its own size in packets) so
+                            // loss_frac keeps its scale - a 20 KB frame at 1100 B
+                            // per packet is ~18 packets of loss, not 1.
+                            let dropped = match last_incomplete_ctl {
+                                Some(prev) => c.frames_dropped_incomplete.saturating_sub(prev),
+                                None => 0,
+                            };
+                            last_incomplete_ctl = Some(c.frames_dropped_incomplete);
+                            // "fresh" = the client's counters actually moved recently.
+                            if c.frames_decoded != last_decoded || ld > 0 {
+                                last_client_move = now;
+                                last_decoded = c.frames_decoded;
+                            }
+                            let fresh = now.duration_since(last_client_move).as_secs_f32() < 4.0;
+                            let bpf = if session.fps > 0 {
+                                (enc_bitrate as f32 * 1000.0 / 8.0 / session.fps as f32) as u64
+                            } else {
+                                0
+                            };
+                            let pkts_per_frame = (bpf / 1100).max(1);
+                            let ld = ld + dropped.saturating_mul(pkts_per_frame);
+                            (
+                                ld,
+                                c.inbound_bitrate_kbps,
+                                c.decoded_fps,
+                                c.rtt_ms,
+                                fresh,
+                                c.lat_p95_ms.max(0.0),
+                            )
                         }
-                        let fresh = now.duration_since(last_client_move).as_secs_f32() < 4.0;
-                        let bpf = if session.fps > 0 {
-                            (enc_bitrate as f32 * 1000.0 / 8.0 / session.fps as f32) as u64
-                        } else {
-                            0
-                        };
-                        let pkts_per_frame = (bpf / 1100).max(1);
-                        let ld = ld + dropped.saturating_mul(pkts_per_frame);
-                        (ld, c.inbound_bitrate_kbps, c.decoded_fps, c.rtt_ms, fresh, c.lat_p95_ms.max(0.0))
-                    }
-                    None => (0, 0.0, 0.0, 0.0, false, 0.0),
-                };
+                        None => (0, 0.0, 0.0, 0.0, false, 0.0),
+                    };
 
                 if let Some(enc) = venc
                     .as_ref()

@@ -1,0 +1,92 @@
+name: installer
+
+on:
+  pull_request:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/package.ps1"
+      - "scripts/build-installer.ps1"
+      - "scripts/build.ps1"
+      - "installer/**"
+      - "crates/host/**"
+      - "web/**"
+      - ".github/workflows/installer.yml"
+
+concurrency:
+  group: installer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Rust toolchain
+        run: rustup show
+
+      - name: Cache GStreamer installer
+        id: gst-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}\gstreamer.exe
+          # Keep in sync with scripts/provision-windows.ps1 + ADR-002.
+          key: gstreamer-1.28.6-msvc-x64-complete
+
+      - name: Install GStreamer 1.28.6 (runtime + devel)
+        shell: pwsh
+        run: |
+          $v = "1.28.6"
+          $exe = "$env:RUNNER_TEMP\gstreamer.exe"
+          if (-not (Test-Path $exe) -or (Get-Item $exe).Length -lt 100MB) {
+            $url = "https://gstreamer.freedesktop.org/data/pkg/windows/$v/msvc/gstreamer-1.0-msvc-x86_64-$v.exe"
+            curl.exe -sSL --retry 3 -o $exe $url
+          }
+          Start-Process $exe -Wait -ArgumentList `
+            '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-','/NOCANCEL','/TYPE=complete'
+          $gst = "C:\Program Files\gstreamer\1.0\msvc_x86_64"
+          if (-not (Test-Path "$gst\lib\pkgconfig\gstreamer-1.0.pc")) {
+            throw "GStreamer devel install failed"
+          }
+          if (-not (Test-Path "$gst\lib\gstreamer-1.0\gstvideorate.dll")) {
+            throw "GStreamer install is missing gstvideorate.dll"
+          }
+          # Machine scope: scripts/build.ps1 reads the machine env, not process env.
+          [Environment]::SetEnvironmentVariable("GSTREAMER_1_0_ROOT_MSVC_X86_64", "$gst\", "Machine")
+          [Environment]::SetEnvironmentVariable("PKG_CONFIG_PATH", "$gst\lib\pkgconfig", "Machine")
+          $mp = [Environment]::GetEnvironmentVariable("Path", "Machine")
+          if ($mp -notlike "*$gst\bin*") {
+            [Environment]::SetEnvironmentVariable("Path", "$gst\bin;$mp", "Machine")
+          }
+          "$gst\bin" | Out-File -Append $env:GITHUB_PATH
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Build installer
+        shell: pwsh
+        run: pwsh scripts\build-installer.ps1
+
+      - name: Confirm videorate is in the bundle
+        shell: pwsh
+        run: |
+          $p = "dist\InPhase\runtime\gstreamer\lib\gstreamer-1.0\gstvideorate.dll"
+          if (-not (Test-Path $p)) { throw "installer payload missing $p" }
+          Write-Host "ok $p $((Get-Item $p).Length) bytes"
+
+      - name: Upload InPhaseSetup.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: InPhaseSetup
+          path: |
+            dist/InPhaseSetup.exe
+            dist/InPhase/MANIFEST.csv
+          if-no-files-found: error

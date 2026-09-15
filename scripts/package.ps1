@@ -154,6 +154,14 @@ foreach ($p in $plugins) {
     $src = Join-Path $gstPlug "$p.dll"
     if (Test-Path $src) { Copy-Item $src $plugOut }
 }
+# Hard fail if a required plugin did not land. A missing gstvideorate.dll is
+# exactly the "session failed: videorate" bug: the host cannot build the
+# capture pipeline, WT still advertises, and the browser wedges on no frames.
+foreach ($must in @("gstvideorate.dll", "gstd3d11.dll", "gstnvcodec.dll", "gstcoreelements.dll")) {
+    if (-not (Test-Path (Join-Path $plugOut $must))) {
+        throw "packaging missed $must — the GStreamer install at $GstRoot does not have it, or it was not on the allowlist"
+    }
+}
 
 # No launcher script. InPhaseHost.exe is a windowless (GUI-subsystem) binary
 # that points GStreamer at .\runtime\gstreamer itself (`point_at_bundled_runtime`
