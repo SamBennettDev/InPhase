@@ -79,9 +79,9 @@ pub struct HealthInput {
     pub telemetry_age_secs: Option<f32>,
     /// Client's decoder output rate.
     pub decoded_fps: f32,
-    /// Rate the client actually paints. Zero while decoding is the iOS
-    /// render no-op signature.
-    pub presented_fps: f32,
+    /// Rate the client paints, when it reports one. `None` = not in the
+    /// telemetry (unknown, not "zero presents").
+    pub presented_fps: Option<f32>,
     /// Negotiated encode resolution.
     pub width: u32,
     pub height: u32,
@@ -147,11 +147,12 @@ pub fn assess(i: &HealthInput) -> Health {
                 });
             }
             // Fresh telemetry: the pixel rules below are meaningful.
-            // `presented_fps` is 0 when the client omits it (serde default).
-            // WT used to omit it while decoding 60 fps on a live canvas,
-            // which this rule treated as the iOS Safari no-draw failure.
             Some(_) => {
-                if i.decoded_fps > 0.0 && i.presented_fps <= 0.0 {
+                // Only a *reported* present rate of zero is the iOS no-draw
+                // signature. A missing field is unknown — every WT client
+                // before presented_fps was added omitted it, and treating
+                // that as 0 called every healthy 60 fps glass a failure.
+                if i.decoded_fps > 0.0 && i.presented_fps == Some(0.0) {
                     symptoms.push(Symptom {
                         code: "decoding-not-presenting",
                         severity: Severity::Critical,
@@ -255,7 +256,7 @@ mod tests {
             encoded_fps: 60.0,
             telemetry_age_secs: Some(1.0),
             decoded_fps: 60.0,
-            presented_fps: 60.0,
+            presented_fps: Some(60.0),
             width: 2560,
             height: 1440,
             route_loss_pct: 0.0,
@@ -289,11 +290,22 @@ mod tests {
     #[test]
     fn decoding_but_not_presenting_is_critical() {
         let h = assess(&HealthInput {
-            presented_fps: 0.0,
+            presented_fps: Some(0.0),
             ..healthy()
         });
         assert_eq!(codes(&h), ["decoding-not-presenting"]);
         assert_eq!(h.severity, Some(Severity::Critical));
+    }
+
+    /// WT telemetry used to omit presented_fps. That is "unknown", not a
+    /// black screen — the user is watching 60 fps while this rule shouted.
+    #[test]
+    fn omitted_present_rate_is_not_a_black_screen() {
+        let h = assess(&HealthInput {
+            presented_fps: None,
+            ..healthy()
+        });
+        assert!(h.ok, "expected ok, got {:?}", codes(&h));
     }
 
     /// The permanent-black signature: host encoding, client decoding nothing.
@@ -301,7 +313,7 @@ mod tests {
     fn host_capturing_with_no_client_decode_is_critical() {
         let h = assess(&HealthInput {
             decoded_fps: 0.0,
-            presented_fps: 0.0,
+            presented_fps: None,
             route_loss_pct: 9.5,
             incomplete_frames: 57,
             ..healthy()
@@ -320,7 +332,7 @@ mod tests {
     fn no_fragments_at_all_reads_differently_from_lossy_fragments() {
         let dead = assess(&HealthInput {
             decoded_fps: 0.0,
-            presented_fps: 0.0,
+            presented_fps: None,
             route_loss_pct: 0.0,
             incomplete_frames: 0,
             ..healthy()
@@ -328,7 +340,7 @@ mod tests {
         assert!(dead.symptoms[0].detail.contains("not reaching the client"));
         let lossy = assess(&HealthInput {
             decoded_fps: 0.0,
-            presented_fps: 0.0,
+            presented_fps: None,
             route_loss_pct: 12.0,
             incomplete_frames: 40,
             ..healthy()
@@ -366,7 +378,7 @@ mod tests {
         let h = assess(&HealthInput {
             telemetry_age_secs: Some(30.0),
             decoded_fps: 0.0,
-            presented_fps: 0.0,
+            presented_fps: None,
             ..healthy()
         });
         assert_eq!(
@@ -383,7 +395,7 @@ mod tests {
             capture_fps: 0.0,
             telemetry_age_secs: None,
             decoded_fps: 0.0,
-            presented_fps: 0.0,
+            presented_fps: None,
             ..healthy()
         });
         assert!(h.ok, "a 2s-old session must not alarm: {:?}", codes(&h));
@@ -437,7 +449,7 @@ mod tests {
     #[test]
     fn critical_outranks_warn_in_the_overall_severity() {
         let h = assess(&HealthInput {
-            presented_fps: 0.0,
+            presented_fps: Some(0.0),
             audio_health: AudioHealth::Failed,
             ..healthy()
         });

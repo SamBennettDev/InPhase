@@ -105,7 +105,8 @@ pub struct StatsSnapshot {
 pub struct ClientTelemetrySerde {
     pub codec: Option<String>,
     pub decoded_fps: f32,
-    pub presented_fps: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub presented_fps: Option<f32>,
     pub decode_time_ms_p95: f32,
     pub jitter_buffer_target_ms: f32,
     pub jitter_buffer_delay_ms: f32,
@@ -278,7 +279,7 @@ impl StatsCollector {
             encoded_fps: host.encoded_fps,
             telemetry_age_secs: self.telemetry_age().map(|d| d.as_secs_f32()),
             decoded_fps: client.as_ref().map(|c| c.decoded_fps).unwrap_or(0.0),
-            presented_fps: client.as_ref().map(|c| c.presented_fps).unwrap_or(0.0),
+            presented_fps: client.as_ref().and_then(|c| c.presented_fps),
             width: host.width,
             height: host.height,
             route_loss_pct: host.route_loss_pct,

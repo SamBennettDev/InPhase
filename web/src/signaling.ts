@@ -88,7 +88,8 @@ export interface ClientTelemetry {
   frames_decoded: number;
   decoded_fps: number;
   frames_dropped: number;
-  presented_fps: number;
+  /** Omitted by older WT clients; the host must not treat a hole as 0. */
+  presented_fps?: number;
   decode_time_ms_p50: number;
   decode_time_ms_p95: number;
   jitter_buffer_target_ms: number;

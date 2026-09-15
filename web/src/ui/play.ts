@@ -1015,6 +1015,7 @@ export class Session {
             codec: this.wtCodecLabel ?? null,
             framesDecoded: s.framesDecoded,
             framesPresented: s.framesPresented,
+            presentedFps: s.presentedFps,
             freezeCount: s.freezeCount,
             totalFreezeMs: s.totalFreezeMs,
             framesDropped: s.framesDropped,

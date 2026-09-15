@@ -295,8 +295,12 @@ pub struct ClientTelemetry {
     pub frames_dropped: u64,
     /// Rate the decoder receives frames — the real stream fps (§20).
     pub decoded_fps: f32,
-    /// Rate the browser actually paints — capped by the display refresh (§10).
-    pub presented_fps: f32,
+    /// Rate the browser actually paints. `None` when the client does not
+    /// report it (WT telemetry omitted this field for a long time; serde
+    /// used to default the hole to 0.0 and the host then screamed
+    /// "decoding but not presenting" at every healthy session).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presented_fps: Option<f32>,
     pub decode_time_ms_p50: f32,
     pub decode_time_ms_p95: f32,
     /// Jitter-buffer delay per frame over the client's last window (delta of
@@ -453,5 +457,22 @@ mod tests {
         assert!(json.contains("\"type\":\"wt_video_info\""));
         let back: SignalMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(msg, back);
+    }
+
+    /// WT clients omitted this field for a long time. That must stay
+    /// "unknown", not 0.0 — the host used to treat the hole as a black screen.
+    #[test]
+    fn omitted_presented_fps_deserializes_as_none() {
+        let t: ClientTelemetry =
+            serde_json::from_str(r#"{"at_us":1,"decoded_fps":61.0,"frames_decoded":61}"#).unwrap();
+        assert_eq!(t.presented_fps, None);
+        assert_eq!(t.decoded_fps, 61.0);
+    }
+
+    #[test]
+    fn explicit_zero_presented_fps_is_some_zero() {
+        let t: ClientTelemetry =
+            serde_json::from_str(r#"{"decoded_fps":61.0,"presented_fps":0.0}"#).unwrap();
+        assert_eq!(t.presented_fps, Some(0.0));
     }
 }

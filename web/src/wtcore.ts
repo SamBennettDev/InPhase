@@ -64,6 +64,9 @@ export interface WtClientStats {
   framesDropped: number;
   /** Frames actually drawn to the canvas this session. */
   framesPresented: number;
+  /** Decoder's smoothed present rate (fps). Used when the worker reuses a
+   *  stale snapshot and the cumulative counter did not move this tick. */
+  presentedFps?: number;
   /** Reorder buffer depth (frames held behind a hole) and codec backlog. */
   held: number;
   queueSize: number;
@@ -158,6 +161,10 @@ export class WtVideoClient {
   private lastFramesDecoded = 0;
   /** Cumulative presented count at the last telemetry send. */
   private lastFramesPresented = 0;
+  /** Last positive present rate (fps). Worker telemetry and the page stats
+   *  push are unsynced 1 Hz loops; a tick that reuses the previous snapshot
+   *  would otherwise report presented_fps: 0 and trip the host alarm. */
+  private lastPresentedRate = 0;
   private lastRttMs = 0;
   /** Host-clock − client-clock offset in µs (capture-clock aligned),
    *  EMA over pong samples; null until the first anchored pong. */
@@ -801,6 +808,30 @@ export class WtVideoClient {
     return out;
   }
 
+  /** Present rate for this telemetry window, or `undefined` to omit the field.
+   *  The host used to serde-default a missing `presented_fps` to 0 and then
+   *  diagnose a healthy WT session as the iOS no-draw failure. */
+  private presentRate(stats: WtClientStats | undefined, dtSec: number): number | undefined {
+    if (!stats) return undefined;
+    if (stats.framesPresented > this.lastFramesPresented) {
+      const rate = Math.round(((stats.framesPresented - this.lastFramesPresented) / dtSec) * 100) / 100;
+      if (rate > 0) this.lastPresentedRate = rate;
+      return rate;
+    }
+    if ((stats.presentedFps ?? 0) > 0) {
+      this.lastPresentedRate = stats.presentedFps!;
+      return stats.presentedFps;
+    }
+    if (this.lastPresentedRate > 0 && stats.framesPresented > 0) {
+      return this.lastPresentedRate;
+    }
+    // Decoding while the canvas has never painted: the real no-draw case.
+    if (stats.framesDecoded > this.lastFramesDecoded && stats.framesPresented === 0) {
+      return 0;
+    }
+    return undefined;
+  }
+
   /** One `client_telemetry`-shaped message per second over the control stream.
    *  Same shape as the WebRTC path's telemetry so the host's congestion
    *  controller (`media/bitrate.rs`) treats both carriers identically. */
@@ -845,13 +876,11 @@ export class WtVideoClient {
       decoded_fps: stats
         ? Math.round(((stats.framesDecoded - this.lastFramesDecoded) / dtSec) * 100) / 100
         : 0,
-      // The host health rule treats omitted presented_fps as 0 and then
-      // shouts "decoding but not presenting" (the iOS Safari no-draw case).
-      // Desktop WT was never sending this field, so a healthy 60 fps glass
-      // looked like a render failure.
-      presented_fps: stats
-        ? Math.round(((stats.framesPresented - this.lastFramesPresented) / dtSec) * 100) / 100
-        : 0,
+      // JSON.stringify drops `undefined`. Omit until we know a rate: older
+      // hosts serde-default a missing field to 0.0 and shout "presenting
+      // none". Send 0 only for the real iOS no-draw case (decoding, never
+      // painted). A stale worker snapshot keeps the last positive rate.
+      presented_fps: this.presentRate(stats, dtSec),
       frames_dropped: stats?.framesDropped ?? 0,
       // WT has no browser jitter buffer; the adaptive present delay is the
       // closest analogue and is what the HUD should show.

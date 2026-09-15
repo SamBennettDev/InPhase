@@ -449,7 +449,7 @@ function renderMetrics(box: HTMLElement, admin: Admin, live: boolean) {
       : "—";
   const cells = [
     ["Resolution", live && h["width"] ? h["width"] + " × " + h["height"] : "—"],
-    ["Frame rate", live ? num(c["presented_fps"], "fps") : "—"],
+    ["Frame rate", live ? num(c["presented_fps"] ?? c["decoded_fps"], "fps") : "—"],
     ["Bandwidth", live ? num(t["outbound_bitrate_kbps"], "Mbps", 1000) : "—"],
     ["Round-trip time", live ? num(t["rtt_ms"], "ms") : "—"],
     [

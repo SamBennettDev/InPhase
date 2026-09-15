@@ -80,6 +80,9 @@ export class WtVideoClient {
   setStatsProvider(p: () => WtClientStats): void {
     this.statsProvider = p;
     this.core?.setStatsProvider(p);
+    // Don't wait a full second for the first push: worker telemetry would
+    // otherwise send presented_fps 0 (ZERO_STATS) while the glass is up.
+    if (this.worker !== null) this.worker.postMessage({ t: "stats", s: p() });
   }
 
   async dial(info: WtVideoInfo, h: WtClientHandlers): Promise<void> {
