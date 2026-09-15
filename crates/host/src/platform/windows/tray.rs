@@ -30,8 +30,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SetForegroundWindow,
     SetWindowLongPtrW, TrackPopupMenu, TranslateMessage, GWLP_USERDATA, HICON, ICONINFO,
     MF_CHECKED, MF_GRAYED, MF_SEPARATOR, MF_STRING, MSG, SM_CXSMICON, TPM_BOTTOMALIGN,
-    TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WM_APP, WM_COMMAND, WM_DESTROY, WM_LBUTTONDBLCLK, WM_NULL,
-    WM_RBUTTONUP, WNDCLASSW, WS_OVERLAPPED,
+    TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WM_APP, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_ENDSESSION,
+    WM_LBUTTONDBLCLK, WM_NULL, WM_QUERYENDSESSION, WM_RBUTTONUP, WNDCLASSW, WS_OVERLAPPED,
 };
 
 use super::tray_mask;
@@ -231,6 +231,15 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 dispatch(ctx, wp.0 & 0xFFFF);
                 LRESULT(0)
             }
+            WM_CLOSE | WM_ENDSESSION => {
+                // Restart Manager / logoff send WM_CLOSE to this hidden window.
+                // DefWindowProc would destroy it and only the tray thread would
+                // exit; the host process kept Program Files locked and the
+                // installer showed "unable to automatically close all applications".
+                (ctx.actions.quit)();
+                LRESULT(0)
+            }
+            WM_QUERYENDSESSION => LRESULT(1),
             WM_DESTROY => {
                 PostQuitMessage(0);
                 LRESULT(0)

@@ -44,7 +44,13 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 WizardStyle=modern
 MinVersion=10.0.19041
-CloseApplications=yes
+; The host is a windowless tray process. Restart Manager's graceful close
+; (CloseApplications=yes) sends WM_CLOSE to the hidden tray window, the tray
+; thread exits, and InPhaseHost.exe keeps the Program Files locks - which is
+; exactly the "unable to automatically close all applications" dialog.
+; `force` TerminateProcess-es leftovers; PrepareToInstall also taskkill's first
+; so an elevated Setup can stop the unelevated user-session host (UAC split).
+CloseApplications=force
 CloseApplicationsFilter=InPhaseHost.exe
 RestartApplications=no
 #ifdef SignTool
@@ -114,6 +120,33 @@ Type: filesandordirs; Name: "{localappdata}\InPhase\gst-registry.bin"
 Type: filesandordirs; Name: "{commonappdata}\InPhase\tls"
 
 [Code]
+procedure StopRunningHost;
+var
+  ResultCode: Integer;
+begin
+  { tools/ship.sh's interactive boot task must not relaunch mid-copy. }
+  Exec(ExpandConstant('{sys}\schtasks.exe'),
+    '/End /TN "InPhaseWTStart"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec(ExpandConstant('{sys}\taskkill.exe'),
+    '/F /T /IM InPhaseHost.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec(ExpandConstant('{sys}\taskkill.exe'),
+    '/F /T /IM inphase-host.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Sleep(800);
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  NeedsRestart := False;
+  StopRunningHost;
+  Result := '';
+end;
+
+function InitializeUninstall(): Boolean;
+begin
+  StopRunningHost;
+  Result := True;
+end;
+
 // Offer to remove user data (config + host log) on uninstall.
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
