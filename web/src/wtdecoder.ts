@@ -393,11 +393,15 @@ export class WtDecoder {
       }
     }
 
+    // Present before announcing: onFirstFrame runs hudTick, and the
+    // freeze watchdog keys off framesPresented. Announcing first left that
+    // counter at 0 on the very tick the glass came up, so a session that
+    // had been observe(0)-ing since dial reset the decoder on frame one.
+    this.presentNow(vf);
     if (!this.announced) {
       this.announced = true;
       this.onFirstFrame();
     }
-    this.presentNow(vf);
   }
 
   /** Immediate presentation: draw the frame the moment the decoder hands it

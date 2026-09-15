@@ -665,7 +665,12 @@ export class WtVideoClient {
     // Per-stream read state: queued chunk excess + empty-read run (see
     // readExact). One abandon per stream; a multi-frame stream that dies
     // mid-frame loses only its tail.
-    const state = { queued: [] as Uint8Array[], queuedBytes: 0, emptyReads: 0 };
+    const state = {
+      queued: [] as Uint8Array[],
+      queuedBytes: 0,
+      emptyReads: 0,
+      gotData: false,
+    };
     for (;;) {
       try {
         const head = await this.readExact(reader, WT_VIDEO_HEADER_LEN, state);
@@ -722,11 +727,21 @@ export class WtVideoClient {
    *    therefore fatal to the stream, not something to spin on.
    *  Each real read also races a 2 s watchdog: a stalled stream is cancelled
    *  (STOP_SENDING returns flow credit) instead of blocking the frame loop.
+   *  The watchdog does NOT arm until this stream has delivered at least one
+   *  byte: the first IDR still has to wait on encoder warmup and the video-
+   *  channel marker RTT, and cancelling that wait aborted the keyframe the
+   *  host was writing (7 kbps / 1 incomplete frame, then the glass watchdog
+   *  reset the decoder on the first decoded picture).
    */
   private async readExact(
     reader: ReadableStreamDefaultReader<Uint8Array>,
     n: number,
-    state: { queued: Uint8Array[]; queuedBytes: number; emptyReads: number },
+    state: {
+      queued: Uint8Array[];
+      queuedBytes: number;
+      emptyReads: number;
+      gotData: boolean;
+    },
   ): Promise<Uint8Array> {
     const out = new Uint8Array(n);
     let off = 0;
@@ -744,9 +759,12 @@ export class WtVideoClient {
       }
       // In v4 mode the video channel carries only forced IDRs and sits idle
       // between them — no watchdog, or every idle gap would churn channels.
-      // A genuinely wedged channel still recovers: the host's next IDR write
-      // times out and resets the stream, which throws here.
-      const res = this.datagramVideoEnabled
+      // The same is true of a brand-new channel waiting for its first byte:
+      // there is no flow credit to recover until the host starts writing.
+      // A genuinely wedged *mid-frame* channel still recovers: the host's
+      // next IDR write times out and resets the stream, which throws here.
+      const waitForever = this.datagramVideoEnabled || !state.gotData;
+      const res = waitForever
         ? await reader.read()
         : await Promise.race([
             reader.read(),
@@ -772,6 +790,7 @@ export class WtVideoClient {
         continue;
       }
       state.emptyReads = 0;
+      state.gotData = true;
       state.queued.push(value);
       state.queuedBytes += value.byteLength;
     }

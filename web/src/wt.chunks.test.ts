@@ -67,3 +67,36 @@ test("an empty-chunk storm is fatal to the stream, not a silent spin", async () 
   assert.equal((c as unknown as { framesAbandoned: number }).framesAbandoned, 1);
   assert.equal((c as unknown as { streamsWedged: number }).streamsWedged, 1);
 });
+
+test("a slow first byte is not a 2s wedge", async () => {
+  // The startup IDR has to wait on encoder warmup and the video-channel
+  // marker RTT. Cancelling that wait (STOP_SENDING) aborted the keyframe
+  // the host was writing — 7 kbps, 1 incomplete frame, then the glass
+  // watchdog reset the decoder. Mid-frame stalls still wedge (gotData).
+  const c = new WtVideoClient();
+  const frames: number[] = [];
+  let ctrl!: ReadableStreamDefaultController<Uint8Array>;
+  const stream = new ReadableStream<Uint8Array>({
+    start(c) {
+      ctrl = c;
+    },
+  });
+  const done = (
+    c as unknown as {
+      readOneFrame(s: ReadableStream<Uint8Array>, h: unknown): Promise<void>;
+    }
+  ).readOneFrame(stream, {
+    onFrame: (f: FrameLike) => frames.push(f.frame_no),
+  });
+  await new Promise((r) => setTimeout(r, 2500));
+  assert.equal(
+    (c as unknown as { streamsWedged: number }).streamsWedged,
+    0,
+    "no data yet is not a wedge",
+  );
+  ctrl.enqueue(frame(1, 4, 1));
+  ctrl.close();
+  await done;
+  assert.deepEqual(frames, [1]);
+  assert.equal((c as unknown as { streamsWedged: number }).streamsWedged, 0);
+});

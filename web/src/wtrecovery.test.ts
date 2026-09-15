@@ -62,3 +62,21 @@ test("recovery: reset() forgets history", () => {
   r.reset();
   assert.equal(r.observe(1), "none");
 });
+
+test("recovery: first presented frame after a never-decoded stall is not a reset", () => {
+  // play.ts observe(0)s while the dial has not presented. The first decoded
+  // picture then hudTicks with framesPresented still 0. Forgetting the stall
+  // clock at that flip (WtRecovery.reset) must not immediately fire "reset"
+  // — that was the 15 Sep glass-frozen-on-first-frame spiral.
+  const c = fakeClock();
+  const r = new WtRecovery({ now: c.now });
+  assert.equal(r.observe(0), "none");
+  c.advance(3500);
+  assert.equal(r.observe(0), "reset", "still never-decoded → decoder reset + IDR");
+  r.reset();
+  assert.equal(r.observe(0), "none", "first-frame announce starts a fresh stall clock");
+  c.advance(2000);
+  assert.equal(r.observe(0), "none");
+  c.advance(3500);
+  assert.equal(r.observe(0), "reset", "a real freeze after first frame still recovers");
+});
