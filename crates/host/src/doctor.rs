@@ -177,6 +177,7 @@ fn check_gstreamer() -> Vec<Check> {
     let required: &[(&str, bool)] = &[
         ("d3d11screencapturesrc", true),
         ("d3d11convert", true),
+        ("videorate", true),
         ("h264parse", true),
         ("rtph264pay", true),
         ("webrtcbin", true),
@@ -566,4 +567,16 @@ fn now_iso() -> String {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     format!("unix:{secs}")
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn packaged_runtime_ships_videorate() {
+        let ps1 = include_str!("../../../scripts/package.ps1");
+        assert!(
+            ps1.contains("\"gstvideorate\""),
+            "scripts/package.ps1 must ship gstvideorate (gst-plugins-base)"
+        );
+    }
 }

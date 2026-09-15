@@ -6,8 +6,9 @@
 //! Video: d3d11screencapturesrc(dxgi|wgc, monitor N)
 //!          -> queue(max-buffers=3, leaky=downstream)      // drop stale frames
 //!          -> d3d11convert                                // GPU BGRA->NV12 §5.1
+//!          -> videorate                                   // repeat last frame at target fps
 //!          -> video/x-raw(memory:D3D11Memory),NV12,W x H @ fps
-//!          -> webrtcbin (see `media::webrtc`)
+//!          -> encoder + WT tap (see `media::webrtc`)
 //! Audio:   wasapi2src(loopback, low-latency)
 //!          -> audioconvert -> audioresample -> 48k stereo
 //!          -> opusenc(10ms, ~160k) -> webrtcbin
@@ -172,12 +173,27 @@ impl Pipeline {
         // buffer to encode a ForceKeyUnit request never materializes - the
         // client's decoder sat on a black glass waiting for an IDR that could
         // not exist (2026-09-08 Safari session).
-        let videorate = gst::ElementFactory::make("videorate")
-            .name("vrate")
-            .build()
-            .context("videorate")?;
-        pipeline.add_many([&src, &queue, &convert, &videorate, &capsfilter])?;
-        gst::Element::link_many([&src, &queue, &convert, &videorate, &capsfilter])?;
+        //
+        // The element is in gst-plugins-base (`gstvideorate.dll`). The
+        // bundled runtime must ship that plugin — see scripts/package.ps1.
+        match gst::ElementFactory::make("videorate").name("vrate").build() {
+            Ok(videorate) => {
+                pipeline.add_many([&src, &queue, &convert, &videorate, &capsfilter])?;
+                gst::Element::link_many([&src, &queue, &convert, &videorate, &capsfilter])
+                    .context("link capture → videorate → caps")?;
+            }
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    "videorate missing from the GStreamer registry \
+                     (bundle gstvideorate from gst-plugins-base) — \
+                     static desktops will not generate frames"
+                );
+                pipeline.add_many([&src, &queue, &convert, &capsfilter])?;
+                gst::Element::link_many([&src, &queue, &convert, &capsfilter])
+                    .context("link capture → caps")?;
+            }
+        }
         bridge.attach_video(&pipeline, &capsfilter)?;
 
         // ---- audio branch (Phase 2, §11 — now WT-only, ADR-0011) ------------

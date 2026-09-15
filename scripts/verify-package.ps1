@@ -28,7 +28,7 @@ try {
         if ($proc.ExitCode -ne 0) { throw "Packaged host failed DLL/startup check (exit $($proc.ExitCode))." }
         $inspector = Join-Path $PackageDir "gst-inspect-1.0.exe"
         foreach ($element in @("queue", "appsink", "d3d11screencapturesrc", "d3d11convert",
-            "h264parse", "h265parse", "webrtcbin", "nicesink", "dtlssrtpenc",
+            "videorate", "h264parse", "h265parse", "webrtcbin", "nicesink", "dtlssrtpenc",
             "srtpenc", "wasapi2src", "opusenc", "rtph264pay", "rtpopuspay")) {
             & $inspector $element | Out-Null
             if ($LASTEXITCODE -ne 0) { throw "Required packaged GStreamer element failed to load: $element" }

@@ -57,6 +57,7 @@ $plugins = @(
     "gstsrtp",                # SRTP (libsrtp2)                     (gst-plugins-bad)
     "gstnice",                # ICE (libnice)                       (gst-plugins-bad, LGPL/MPL)
     "gstopus",                # opusenc (libopus)                   (gst-plugins-base)
+    "gstvideorate",           # videorate — repeat last frame at target fps (gst-plugins-base)
     "gstaudioconvert", "gstaudioresample",
     "gstvideoconvertscale",
     "gstvideoparsersbad",     # h264parse                           (gst-plugins-bad)
