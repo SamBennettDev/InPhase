@@ -1,4 +1,9 @@
-# InPhase
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/inphase-logo-dark-bg.svg">
+    <img alt="InPhase" src="docs/brand/inphase-logo.svg" width="360">
+  </picture>
+</h1>
 
 **Your gaming PC, on your other screen.**
 

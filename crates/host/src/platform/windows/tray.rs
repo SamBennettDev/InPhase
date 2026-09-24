@@ -1,8 +1,8 @@
 //! System-tray icon + control menu (Windows).
 //!
 //! One `Shell_NotifyIconW` icon on a dedicated thread that owns a hidden window
-//! and its own message loop. The icon is the InPhase phase-mark, rendered from
-//! a baked alpha mask (`super::tray_mask`): electric blue while a session is
+//! and its own message loop. The icon is the InPhase mark, rendered from a
+//! baked alpha mask (`super::tray_mask`): brand cyan while a session is
 //! streaming, dim (50 % black) while idle.
 //!
 //! Right-click opens a menu that shows the current status and toggles the
@@ -362,7 +362,7 @@ unsafe fn apply_icon(hwnd: HWND, ctx: &mut Ctx, force: bool) {
     let _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
 }
 
-/// Build an `HICON` of the phase-mark tinted for the current state.
+/// Build an `HICON` of the mark tinted for the current state.
 unsafe fn make_icon(streaming: bool) -> Option<HICON> {
     let want = (GetSystemMetrics(SM_CXSMICON).max(16) as usize).min(64);
     let (mask, msz): (&[u8], usize) = if want <= 20 {
@@ -370,9 +370,9 @@ unsafe fn make_icon(streaming: bool) -> Option<HICON> {
     } else {
         (&tray_mask::MASK_32, 32)
     };
-    // #16B8FF electric blue while streaming; 50 %-alpha black while idle.
+    // #22D3EE brand cyan while streaming; 50 %-alpha black while idle.
     let (r, g, b, alpha_mul): (u32, u32, u32, u32) = if streaming {
-        (0x16, 0xB8, 0xFF, 255)
+        (0x22, 0xD3, 0xEE, 255)
     } else {
         (0x00, 0x00, 0x00, 128)
     };

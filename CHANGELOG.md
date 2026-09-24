@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- New brand: monitor-and-wave mark with a cyan-to-violet wave. Updated the web
+  UI logo, favicons and touch icon, installer icon, and the tray icon (cyan
+  while streaming). Start-menu shortcuts and Apps & features now show the
+  InPhase icon instead of a generic program icon. The full kit is in
+  `docs/brand/`.
 - Present video through WebGL on Safari and every iOS browser. The 2D canvas
   route cost enough per frame that Safari's page refresh fell under load: on
   an iPhone at 120 Hz a bare page showed ~105 of 120 fps at 1440p and 52 at

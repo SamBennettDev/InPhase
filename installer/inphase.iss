@@ -33,7 +33,7 @@ LicenseFile=..\LICENSE
 DefaultDirName={autopf}\InPhase
 DefaultGroupName=InPhase
 DisableProgramGroupPage=yes
-UninstallDisplayIcon={app}\{#AppExe}
+UninstallDisplayIcon={app}\inphase.ico
 UninstallDisplayName={#AppName}
 OutputDir=..\dist
 OutputBaseFilename=InPhaseSetup
@@ -67,11 +67,13 @@ Name: "startup"; Description: "Start InPhase Host automatically when I sign in";
 ; Everything package.ps1 emitted: InPhaseHost.exe, runtime\, MANIFEST.csv,
 ; OPEN-SOURCE-COMPONENTS.txt, licenses\ ...
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
+; The host EXE carries no icon resource; shortcuts and Apps & features use this.
+Source: "inphase.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\InPhase Host";        Filename: "{app}\{#AppExe}"; WorkingDir: "{app}"; Comment: "Start InPhase Host"
-Name: "{group}\InPhase Diagnostics"; Filename: "{app}\{#AppExe}"; Parameters: "--doctor"; WorkingDir: "{app}"; Comment: "Check this PC's InPhase environment"
-Name: "{group}\Open InPhase (this PC)"; Filename: "http://127.0.0.1:47800/?dashboard"
+Name: "{group}\InPhase Host";        Filename: "{app}\{#AppExe}"; WorkingDir: "{app}"; IconFilename: "{app}\inphase.ico"; Comment: "Start InPhase Host"
+Name: "{group}\InPhase Diagnostics"; Filename: "{app}\{#AppExe}"; Parameters: "--doctor"; WorkingDir: "{app}"; IconFilename: "{app}\inphase.ico"; Comment: "Check this PC's InPhase environment"
+Name: "{group}\Open InPhase (this PC)"; Filename: "http://127.0.0.1:47800/?dashboard"; IconFilename: "{app}\inphase.ico"
 Name: "{group}\Uninstall InPhase Host"; Filename: "{uninstallexe}"
 
 [InstallDelete]

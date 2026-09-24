@@ -21,7 +21,7 @@ use anyhow::Context;
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_video as gst_video;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 use inphase_protocol::{SessionConfig, SignalMessage, VideoCodec};
 

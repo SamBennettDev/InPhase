@@ -1,9 +1,9 @@
 /** InPhase logo kit (web/public/brand/). */
 
-// The intrinsic ratio must match `lockup.svg`'s viewBox (2500×800 = 25:8) exactly
+// The intrinsic ratio must match `lockup.svg`'s viewBox (564×160) exactly
 // — a mismatched width/height pair here makes the browser letterbox-squish it.
 export function brandLogo(className = "brand-logo"): string {
-  return `<img class="${className}" src="/brand/lockup.svg" width="250" height="80" alt="InPhase" />`;
+  return `<img class="${className}" src="/brand/lockup.svg" width="282" height="80" alt="InPhase" />`;
 }
 
 /** True when Keyboard Lock is unavailable — Esc always exits fullscreen. */
