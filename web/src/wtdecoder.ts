@@ -17,6 +17,7 @@ import {
   behindIsSustained,
   decoderIsBehind,
   KeyframeThrottle,
+  RefreshCoalescer,
   shouldCountFreeze,
 } from "./decoderpolicy.js";
 import { FrameOrderer } from "./frameorder.js";
@@ -592,7 +593,40 @@ export class WtDecoder {
   /** Immediate presentation: draw the frame the moment the decoder hands it
    *  over. No playout hold, no successor waiting — browser compositing and
    *  display scanout are the only latency after this call. */
+  /** One draw per display refresh (see RefreshCoalescer). */
+  private readonly refresh = new RefreshCoalescer<VideoFrame>();
+  private refreshArmed = false;
+  /** Frames decoded but superseded before any refresh could show them. */
+  framesCoalesced = 0;
+
+  private armRefresh(): void {
+    if (this.refreshArmed) return;
+    this.refreshArmed = true;
+    requestAnimationFrame(() => {
+      this.refreshArmed = false;
+      if (this.stopped) return;
+      const held = this.refresh.onRefresh();
+      if (held !== null) {
+        this.drawFrame(held);
+        this.armRefresh();
+      }
+    });
+  }
+
   private presentNow(vf: VideoFrame): void {
+    const verdict = this.refresh.offer(vf);
+    if (verdict.action === "hold") {
+      if (verdict.release !== null) {
+        verdict.release.close();
+        this.framesCoalesced++;
+      }
+    } else {
+      this.drawFrame(vf);
+    }
+    this.armRefresh();
+  }
+
+  private drawFrame(vf: VideoFrame): void {
     if (this.canvas.width !== vf.displayWidth || this.canvas.height !== vf.displayHeight) {
       this.canvas.width = vf.displayWidth;
       this.canvas.height = vf.displayHeight;
@@ -681,6 +715,7 @@ export class WtDecoder {
    * only the decode state is rebuilt.
    */
   reset(): void {
+    this.refresh.clear()?.close();
     this.submitTimes.clear();
     this.order.reset();
     this.announced = true; // already rendering — don't re-run first-frame wiring
@@ -741,6 +776,7 @@ export class WtDecoder {
 
   stop(): void {
     this.stopped = true;
+    this.refresh.clear()?.close();
     document.removeEventListener("visibilitychange", this.onVisibility);
     // A decode error may already have closed the codec — closing again throws.
     if (this.decoder && this.decoder.state !== "closed") this.decoder.close();

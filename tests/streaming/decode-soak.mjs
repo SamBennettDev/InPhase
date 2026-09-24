@@ -13,6 +13,8 @@
 // something wrong at this rate": if this dies too, it is not our code.
 
 const [W, H, FPS, SECS, DRAW, LABEL] = process.argv.slice(2);
+// HEVC by default; SOAK_CODEC=avc1.640034 for H.264.
+const CODEC = process.env.SOAK_CODEC ?? "hvc1.1.6.L153.B0";
 const WD = "http://127.0.0.1:4444";
 const wd = async (m, p, b) => {
   const r = await fetch(WD + p, {
@@ -34,11 +36,11 @@ if (!ORIGIN) throw new Error("set INPHASE_ORIGIN=https://<host play URL> (any se
 await wd("POST", `${S}/url`, { url: `${ORIGIN}/?soak` });
 
 const setup = await wd("POST", `${S}/execute/async`, {
-  args: [Number(W), Number(H), Number(FPS), Number(DRAW)],
+  args: [Number(W), Number(H), Number(FPS), Number(DRAW), CODEC],
   script: `
-  const [W, H, FPS, DRAW, done] = arguments;
+  const [W, H, FPS, DRAW, CODEC, done] = arguments;
   (async () => {
-    const codec = 'hvc1.1.6.L153.B0';
+    const codec = CODEC;
     const src = new OffscreenCanvas(W, H);
     const g = src.getContext('2d');
     const chunks = [];
@@ -64,7 +66,24 @@ const setup = await wd("POST", `${S}/execute/async`, {
     const vx = view.getContext('2d', { alpha: false, desynchronized: true });
     const st = { decoded: 0, errors: 0, queueMax: 0, chunks: chunks.length, bytes: chunks.reduce((a, c) => a + c.data.length, 0) };
     window.__soak = st;
-    const dec = new VideoDecoder({ output: (vf) => { if (DRAW) vx.drawImage(vf, 0, 0, W, H); vf.close(); st.decoded++; }, error: (e) => { st.errors++; st.lastError = String(e); } });
+    // DRAW 1: draw every frame immediately. DRAW 2: at most one draw per
+    // animation frame - the newest; frames superseded before the next
+    // refresh are closed undrawn.
+    let pending = null, rafArmed = false;
+    st.drawn = 0; st.skipped = 0;
+    // Mirrors RefreshCoalescer: each refresh banks one draw, at most two banked.
+    let tokens = 2;
+    const arm = () => { if (!rafArmed) { rafArmed = true; requestAnimationFrame(onRaf); } };
+    const onRaf = () => { st.rafs = (st.rafs || 0) + 1; rafArmed = false; tokens = Math.min(2, tokens + 1); if (pending) { vx.drawImage(pending, 0, 0, W, H); pending.close(); pending = null; st.drawn++; tokens--; arm(); } };
+    const dec = new VideoDecoder({ output: (vf) => {
+      st.decoded++;
+      if (DRAW === 1) { vx.drawImage(vf, 0, 0, W, H); vf.close(); st.drawn++; return; }
+      if (DRAW === 2) {
+        if (!pending && tokens > 0) { tokens--; vx.drawImage(vf, 0, 0, W, H); vf.close(); st.drawn++; arm(); return; }
+        if (pending) { pending.close(); st.skipped++; }
+        pending = vf; arm(); return;
+      }
+      vf.close(); }, error: (e) => { st.errors++; st.lastError = String(e); } });
     if (!decCfg) { done({ error: 'encoder gave no decoderConfig' }); return; }
     dec.configure({ ...decCfg, optimizeForLatency: true });
     st.decCodec = decCfg.codec;
@@ -98,7 +117,7 @@ while (Date.now() - t0 < Number(SECS) * 1000) {
   try {
     const st = await wd("POST", `${S}/execute/sync`, { script: "return window.__soak;", args: [] });
     const secs = (Date.now() - t0) / 1000;
-    console.log(`[${LABEL}] t=${secs.toFixed(0)}s decoded=${st.decoded} (+${((st.decoded - last) / 5).toFixed(0)}/s) fed=${st.fed} queue=${st.queue} queueMax=${st.queueMax} errors=${st.errors}${st.lastError ? " " + st.lastError : ""}`);
+    console.log(`[${LABEL}] t=${secs.toFixed(0)}s decoded=${st.decoded} (+${((st.decoded - last) / 5).toFixed(0)}/s) drawn=${st.drawn} rafs=${st.rafs} skipped=${st.skipped} fed=${st.fed} queue=${st.queue} queueMax=${st.queueMax} errors=${st.errors}${st.lastError ? " " + st.lastError : ""}`);
     last = st.decoded;
   } catch (e) {
     console.log(`[${LABEL}] PAGE GONE at t=${((Date.now() - t0) / 1000).toFixed(0)}s: ${String(e).slice(0, 120)}`);

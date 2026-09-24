@@ -223,3 +223,34 @@ test("a working decoder that fails twice steps down; an early failure still fall
   floor.onProgress(20_100);
   assert.equal(floor.onError(25_000, false, false), "rebuild", "no step-down left: the old policy applies");
 });
+
+test("refresh coalescer: draws at once while a draw is banked, never faster than refresh", async () => {
+  const { RefreshCoalescer } = await import("./decoderpolicy.js");
+  const c = new RefreshCoalescer<string>();
+  assert.deepEqual(c.offer("f1"), { action: "draw" }, "a banked draw presents immediately");
+  assert.deepEqual(c.offer("f2"), { action: "draw" }, "a jitter pair in one interval both draw");
+  assert.deepEqual(c.offer("f3"), { action: "hold", release: null }, "bank empty: wait for the refresh");
+  assert.deepEqual(c.offer("f4"), { action: "hold", release: "f3" }, "superseded frame is released undrawn");
+  assert.equal(c.onRefresh(), "f4", "the newest held frame draws at the refresh");
+  assert.deepEqual(c.offer("f5"), { action: "hold", release: null }, "that refresh's draw is spent");
+  assert.equal(c.onRefresh(), "f5");
+  assert.equal(c.onRefresh(), null, "an idle refresh banks a draw");
+  assert.deepEqual(c.offer("f6"), { action: "draw" });
+});
+
+test("refresh coalescer: 120 fps on a 60 Hz display draws 60, on 120 Hz with jitter draws all", async () => {
+  const { RefreshCoalescer } = await import("./decoderpolicy.js");
+  const run = (framesPerRefresh: number[]) => {
+    const c = new RefreshCoalescer<number>();
+    let drawn = 0, n = 0;
+    for (const k of framesPerRefresh) {
+      for (let i = 0; i < k; i++) if (c.offer(n++).action === "draw") drawn++;
+      if (c.onRefresh() !== null) drawn++;
+    }
+    return drawn;
+  };
+  assert.equal(run(Array(100).fill(2)), 102, "60 Hz: one draw per refresh (+ the initial bank of 2)");
+  // 120 Hz, jitter: pairs then gaps.
+  const jitter = Array.from({ length: 100 }, (_, i) => (i % 4 === 1 ? 2 : i % 4 === 2 ? 0 : 1));
+  assert.equal(run(jitter), 100, "every frame drawn when the average matches the refresh");
+});

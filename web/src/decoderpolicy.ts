@@ -267,3 +267,64 @@ export function sameDecoderConfig(
   for (let i = 0; i < a.byteLength; i++) if (a[i] !== b[i]) return false;
   return true;
 }
+
+/**
+ * Draws no faster than the display refreshes, without delaying any frame
+ * that can be shown now.
+ *
+ * A token bucket: each display refresh earns one draw, and at most
+ * REFRESH_DRAW_BURST are banked. A frame that arrives with a draw banked is
+ * drawn immediately; one that arrives with none is held, newest only, and
+ * drawn at the next refresh. A held frame that is superseded is released
+ * undrawn (it could never have been seen).
+ *
+ * Drawing every decoded frame is what broke 1440p120 on iPhone Safari (60 Hz
+ * page refresh): half the draws could never reach the screen, the GPU backed
+ * up holding their frames, the decoder ran out of output surfaces and failed.
+ * Measured 2026-09-24 with a bare Safari page: drawing every frame failed
+ * within seconds at 1440p120; one draw per refresh ran 1440p120 and 4K120 at a
+ * steady 121 decoded fps with zero errors. The hardware decoder was never the
+ * limit.
+ *
+ * The bank is what lets a stream at the refresh rate draw every frame. A
+ * strict one-draw-per-interval rule lost ~45% of frames at 120 fps on a
+ * 120 Hz page (Safari with the 60 fps preference off): network jitter put two
+ * frames in one interval and none in the next, and the first of the pair was
+ * dropped. A banked draw covers the pair; the sustained rate stays capped at
+ * the refresh rate.
+ */
+export const REFRESH_DRAW_BURST = 2;
+
+export class RefreshCoalescer<T> {
+  private tokens = REFRESH_DRAW_BURST;
+  private held: T | null = null;
+
+  /** A decoded frame arrived. `draw`: present it now. `hold`: it waits for the
+   *  next refresh; `release` is a previously held frame to close undrawn. */
+  offer(frame: T): { action: "draw" } | { action: "hold"; release: T | null } {
+    if (this.held === null && this.tokens > 0) {
+      this.tokens--;
+      return { action: "draw" };
+    }
+    const release = this.held;
+    this.held = frame;
+    return { action: "hold", release };
+  }
+
+  /** A display refresh happened: the held frame (if any) to draw now. */
+  onRefresh(): T | null {
+    this.tokens = Math.min(REFRESH_DRAW_BURST, this.tokens + 1);
+    const f = this.held;
+    this.held = null;
+    if (f !== null) this.tokens--;
+    return f;
+  }
+
+  /** Drop everything (stream reset); returns a held frame to close. */
+  clear(): T | null {
+    const f = this.held;
+    this.held = null;
+    this.tokens = REFRESH_DRAW_BURST;
+    return f;
+  }
+}

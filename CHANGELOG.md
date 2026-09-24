@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Draw video no faster than the page refreshes. iPhone Safari renders pages at
+  60 Hz by default; drawing all 120 decoded frames a second backed up the GPU
+  until the decoder failed, which looked like a decoder limit (the hardware
+  decodes 4K120 fine). Each refresh now earns one draw, two can be banked for
+  jitter, and a frame with no draw available waits for the next refresh (only
+  the newest). With Safari's "Prefer Page Rendering Updates near 60fps" flag
+  off an idle page refreshes at 120 Hz, but under a 120 fps canvas the
+  refresh drops with frame size (bare Safari, iPhone: ~94 Hz at 1080p, ~88 at
+  1440p, ~53 at 4K); the player shows ~68 at 1440p120 and decodes ~115.
 - Pace each frame to its own interval instead of at a fixed rate. At 1440p120
   a fixed 18000/s with a 32-datagram burst needed 4 ms for an average frame and
   up to 30 ms for a busy one, against 8.3 ms: the send queue filled and evicted
