@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title">
+  <title id="title">InPhase favicon</title>
+  <rect width="1024" height="1024" rx="224" fill="#080B10"/>
+  <g fill="#FFFFFF" transform="translate(118 118) scale(.76953125)">
+    <rect x="474" y="300" width="76" height="424" rx="2"/>
+    <path d="M390 110C235 175 150 320 150 512s85 337 240 402C277 803 224 660 224 512s53-291 166-402Z"/>
+    <path d="M418 260c-88 53-132 143-132 252s44 199 132 252c-62-71-88-156-88-252s26-181 88-252Z"/>
+    <path d="M634 110c155 65 240 210 240 402s-85 337-240 402c113-111 166-254 166-402s-53-291-166-402Z"/>
+    <path d="M606 260c88 53 132 143 132 252s-44 199-132 252c62-71 88-156 88-252s-26-181-88-252Z"/>
+  </g>
+</svg>

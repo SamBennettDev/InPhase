@@ -1,0 +1,126 @@
+[package]
+name = "inphase-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+description = "InPhase Windows host: LAN-first, browser-native gaming PC remote play."
+default-run = "inphase-host"
+
+[[bin]]
+name = "inphase-host"
+path = "src/main.rs"
+
+[features]
+default = ["virtual-hid"]
+# Enhanced Input Compatibility: virtual-HID gamepad backend (Phase 5, §13).
+virtual-hid = ["dep:vigem-client"]
+
+[dependencies]
+inphase-protocol = { workspace = true }
+tokio = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+getrandom = { workspace = true }
+rand = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+bytes = { workspace = true }
+base64 = { workspace = true }
+futures-util = { workspace = true }
+parking_lot = { workspace = true }
+time = { workspace = true }
+# Host + controller identity keys. BSD-3-Clause.
+ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
+# Pairing-invite proof (HMAC over the one-time secret) + constant-time compare.
+sha2 = { workspace = true }
+hmac = { workspace = true }
+hkdf = { workspace = true }
+subtle = { workspace = true }
+# The host serves its own HTTPS so the browser gets a secure context (WebCrypto,
+# Keyboard Lock, gamepad). A bundled local CA (rcgen) generates the leaf; the
+# installer trusts the root for the original user; other devices install it from
+# `/ca.crt`. rustls + ring — no OpenSSL entanglement with the bundled GStreamer.
+axum-server = { version = "0.7", default-features = false, features = ["tls-rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }
+# WebTransport video transport for internet mode (ADR-0011). ring provider to
+# match the rustls the HTTPS server already pins.
+wtransport = { version = "0.6", default-features = false, features = ["self-signed", "ring", "quinn"] }
+# Embed the compiled web client into the executable (§16, §17).
+rust-embed = { version = "8", features = ["debug-embed"] }
+# Direct play URL + QR code on the host dashboard (§25 "direct URL/QR code").
+qrcode = "0.14"
+# LAN interface enumeration / adapter filtering (§8.1).
+if-addrs = "0.13"
+mime_guess = "2"
+# Keyless game cover art from Steam's public store API + CDN (`crate::gameart`).
+# rustls only — no OpenSSL, shares the process's ring provider.
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+    "json",
+    "gzip",
+] }
+rustls-acme = "0.15.4"
+rustls-pemfile = "2.2.0"
+futures = "0.3.34"
+
+# ---------------------------------------------------------------------------
+# Windows-only media + platform stack. Nothing below is fetched or built on a
+# non-Windows host, so `cargo test -p inphase-protocol` still works on Linux.
+# ---------------------------------------------------------------------------
+[target.'cfg(windows)'.dependencies]
+# Safe Rust bindings to GStreamer 1.28.x (§4.1, §17). Pin the minor range; the
+# lockfile pins the patch.
+gstreamer = { version = "0.25", features = ["v1_28"] }
+gstreamer-app = "0.25"
+gstreamer-video = "0.25"
+# `v1_22` gates the WebRTCDataChannel* API the webrtcbin path uses.
+gstreamer-webrtc = { version = "0.25", features = ["v1_22"] }
+gstreamer-sdp = "0.25"
+glib = "0.22"
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_HiDpi",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Direct3D11",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Com",
+    "Win32_System_Console",
+    "Win32_System_Registry",
+    "Win32_Security",
+    "Win32_NetworkManagement_WindowsFirewall",
+    "Win32_Media",
+    "Win32_Media_Audio",
+    "Win32_Devices_FunctionDiscovery",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_PropertiesSystem",
+    "Win32_Security_Cryptography",
+    # Stable global IPv6 selection + configured DNS resolvers (GetAdaptersAddresses).
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Networking_WinSock",
+] }
+# Xbox 360 controller emulation via ViGEmBus (feature `virtual-hid`, ADR-008).
+vigem-client = { version = "0.1", optional = true }
+
+[target.'cfg(windows)'.build-dependencies]
+# Nothing yet; reserved for embedding a manifest / version resource (§26).
+
+[dev-dependencies]
+# Browser-free transport probe (examples/wt_probe.rs).
+tokio-tungstenite = "0.24"
+tokio = { workspace = true }

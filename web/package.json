@@ -1,0 +1,29 @@
+{
+  "name": "inphase-web",
+  "version": "0.1.1",
+  "private": true,
+  "license": "GPL-3.0-or-later",
+  "description": "InPhase browser player + host dashboard. Vanilla TypeScript, no runtime framework (architecture report §17).",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "node scripts/test.mjs",
+    "typecheck": "tsc --noEmit",
+    "test:browser": "playwright test"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vite": "^7.3.6",
+    "@playwright/test": "^1.63.0"
+  },
+  "dependencies": {
+    "lucide": "^1.41.0"
+  },
+  "engines": {
+    "node": ">=22.12"
+  }
+}

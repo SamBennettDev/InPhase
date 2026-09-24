@@ -1,0 +1,39 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: read
+jobs:
+  checks:
+    uses: ./.github/workflows/ci.yml
+  draft:
+    needs: checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify tag matches application version
+        run: |
+          python - <<'PY'
+          import os, tomllib
+          with open("Cargo.toml", "rb") as f:
+              version = tomllib.load(f)["workspace"]["package"]["version"]
+          assert os.environ["GITHUB_REF_NAME"] == "v" + version, "Tag and Cargo version differ"
+          PY
+      - uses: actions/download-artifact@v4
+        with:
+          name: InPhase-windows-candidate
+          path: dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          body_path: installer/RELEASE_NOTES.md
+          fail_on_unmatched_files: true
+          files: |
+            dist/InPhaseSetup.exe
+            dist/InPhaseSetup.exe.sha256
+            dist/PACKAGE-CHECK.txt
+            dist/InPhase/MANIFEST.csv
+            dist/InPhase/OPEN-SOURCE-COMPONENTS.txt

@@ -1,0 +1,61 @@
+InPhase
+Copyright (C) 2026 Sam Bennett <sambennettdev@gmail.com>
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version. See the LICENSE file for the full text.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+--------------------------------------------------------------------------------
+Prior releases
+--------------------------------------------------------------------------------
+
+Early versions of this project were briefly published under the Mozilla Public
+License 2.0. Those MPL-2.0 grants remain in effect for the specific versions
+that were released under them. Everything from the relicensing commit onward is
+GPL-3.0-or-later.
+
+--------------------------------------------------------------------------------
+Game cover art
+--------------------------------------------------------------------------------
+
+The play-page library grid may display game cover images fetched from Valve's
+public Steam store endpoints (`store.steampowered.com/api`,
+`*.steamstatic.com`) — the same unauthenticated endpoints the Steam website
+uses. Images are © their respective rights holders. This lookup is on by
+default and can be disabled with `[library] online_art = false`.
+
+--------------------------------------------------------------------------------
+Third-party components
+--------------------------------------------------------------------------------
+
+InPhase dynamically links and (in packaged builds) bundles third-party software
+under its own license terms, notably:
+
+  * GStreamer 1.28.x and related libraries .......... LGPL-2.1-or-later
+  * OpenSSL 3 ...................................... Apache-2.0
+  * libopus ....................................... BSD-3-Clause
+  * libnice ....................................... LGPL-2.1 / MPL-1.1
+  * libsrtp and other media libraries ............. BSD-family
+  * ~390 Rust crates .............................. mostly MIT / Apache-2.0
+
+Packaged candidates include a binary license inventory and upstream references
+(`MANIFEST.csv`, `OPEN-SOURCE-COMPONENTS.txt`, `licenses/`). Review this inventory,
+exact notices and matching corresponding source before publishing binaries; see
+docs/RELEASING.md. The inventory alone is not a license-compatibility proof.
+
+--------------------------------------------------------------------------------
+Codec patents
+--------------------------------------------------------------------------------
+
+H.264/AVC and H.265/HEVC are covered by patent pools. Building this software for
+your own use is one thing; DISTRIBUTING binaries that encode or decode those
+formats may carry patent-licensing obligations that this software license does
+not and cannot grant — and HEVC's licensing terms are more onerous than
+H.264's. Seek your own advice before publishing release binaries. The host
+**prefers HEVC** where the browser advertises an HEVC receive codec and falls
+back to H.264 automatically; `media.allow_hevc = false` forces H.264 only.

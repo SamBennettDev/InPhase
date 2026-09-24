@@ -1,0 +1,32 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { WtVideoClient, isCspDialFailure } from "./wt.js";
+
+test("CSP-blocked worker dials are treated as a main-thread fallback", () => {
+  assert.equal(
+    isCspDialFailure(
+      "WebTransport handshake failed: WebTransportError: Refused to connect to 'https://host:4433/wt-video' because it violates the document's Content Security Policy",
+    ),
+    true,
+  );
+  assert.equal(isCspDialFailure("Connecting to url violates connect-src 'self'"), true);
+  assert.equal(isCspDialFailure("Opening handshake failed"), false);
+});
+
+test("sendInput is a no-op when the core is not connected", async () => {
+  const client = new WtVideoClient();
+  assert.equal(await client.sendInput(new Uint8Array([1, 2, 3])), false);
+});
+
+test("stats accessors do not throw before dial", async () => {
+  const client = new WtVideoClient();
+  assert.equal(client.rttMs(), 0);
+  assert.equal(client.inboundKbps(), 0);
+  assert.equal(client.staleMs(), 0);
+  assert.equal(client.datagramCount, 0);
+  assert.equal(client.clockOffsetUs(), null);
+  assert.equal(client.syncErrorMs(), null);
+  assert.equal(client.active, false);
+  assert.equal(client.inputReady(), false);
+  await client.send({ type: "keyframe_request" });
+});

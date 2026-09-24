@@ -1,0 +1,33 @@
+/target
+**/*.rs.bk
+Cargo.lock.orig
+
+# web client build output (regenerated; a placeholder index.html is written by build.rs)
+/web/dist/
+/web/dist-cloud/
+/web/node_modules/
+/web/.vite/
+
+# local env / editor
+.env
+.env.local
+.vscode/
+.idea/
+*.pdb
+
+# scratch
+/scratch/
+*.log
+
+# self-host deploy (deploy/) — secrets + build output + tunnel creds
+/deploy/.env
+/deploy/player/
+/deploy/cloudflared/*.json
+node_modules/
+
+# Browser test output
+web/test-results/
+web/playwright-report/
+
+# Streaming harness run output (per-run JSON, screenshots)
+tests/streaming/out/
