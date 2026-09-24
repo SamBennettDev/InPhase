@@ -36,9 +36,13 @@ Use **Ctrl+Shift+Q** to leave a stream. The host emergency stop is
 | --- | --- |
 | Host | Windows 10 build 19041 or newer, or Windows 11; x64; an active desktop session and display |
 | Graphics | A supported hardware encoder and current GPU driver. NVIDIA, AMD, Intel and Media Foundation plugins are bundled; availability depends on hardware and drivers. |
-| Player | A current browser with secure-context cryptography and compatible video decoding. Chrome/Edge are the primary development targets; other browsers may use the WebRTC path. |
+| Player | A current browser with WebTransport and WebCodecs: Chrome, Edge, Firefox, or Safari on macOS and iOS. H.264 decodes everywhere; HEVC where the device decodes it in hardware. |
 | Network | A reachable PC on the same trusted LAN. Ethernet on the host is a useful starting point. |
 | Controller | Optional. Virtual gamepad input requires a separately installed compatible ViGEmBus driver and the documented input opt-in. This installer does not supply the driver. |
+
+iPhone Safari renders web pages at 60 Hz by default. For 120 fps, turn off
+**Settings → Apps → Safari → Advanced → Feature Flags → Prefer Page Rendering
+Updates near 60fps**.
 
 InPhase does not wake a sleeping PC, stream the Windows sign-in/secure desktop,
 or guarantee input compatibility with every game or anti-cheat system.
@@ -127,8 +131,8 @@ replaces an installed build on a real gaming PC.
 | `docs/architecture`, `docs/adr` | Architecture and design decisions |
 | `tests` | Hardware, latency and integration procedures |
 
-Video uses WebTransport/WebCodecs where negotiated, with a WebRTC path for
-compatible clients. Read the [architecture overview](docs/architecture/overview.md)
+Video travels as QUIC datagrams over WebTransport and is decoded with
+WebCodecs; there is no WebRTC video path. Read the [architecture overview](docs/architecture/overview.md)
 and [release checklist](docs/RELEASING.md) before changing transport or shipping.
 
 ## License

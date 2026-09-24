@@ -658,7 +658,7 @@ mod connect_src_tests {
 
     #[test]
     fn sslip_host_and_wildcard() {
-        let host = "2605-a601-800b-2100-0-0-0-100.sslip.io";
+        let host = "2001-db8-1234-5678-0-0-0-100.sslip.io";
         let src = connect_src_directive(Some(host), Some(4433));
         assert!(src.contains(&format!("https://{host}:4433")), "{src}");
         assert!(src.contains("https://*:4433"), "{src}");
@@ -667,7 +667,7 @@ mod connect_src_tests {
 
     #[test]
     fn hash_pinned_wt_needs_unsafe_keyword() {
-        let src = connect_src_directive(Some("2605-a601-800b-2100-0-0-0-100.sslip.io"), Some(4433));
+        let src = connect_src_directive(Some("2001-db8-1234-5678-0-0-0-100.sslip.io"), Some(4433));
         assert!(
             src.contains("'unsafe-webtransport-hashes'"),
             "Chrome blocks serverCertificateHashes without this keyword: {src}"
@@ -679,9 +679,9 @@ mod connect_src_tests {
 
     #[test]
     fn ipv6_literal_is_bracketed() {
-        let src = connect_src_directive(Some("2605:a601:800b:2100:0:0:0:100"), Some(4433));
+        let src = connect_src_directive(Some("2001:db8:1234:5678:0:0:0:100"), Some(4433));
         assert!(
-            src.contains("https://[2605:a601:800b:2100:0:0:0:100]:4433"),
+            src.contains("https://[2001:db8:1234:5678:0:0:0:100]:4433"),
             "{src}"
         );
         assert!(src.contains("https://*:4433"), "{src}");
@@ -764,12 +764,12 @@ mod connect_src_tests {
         assert_eq!(host_from_header("pc.local:8080"), "pc.local");
         assert_eq!(host_from_header("192.168.1.5:80"), "192.168.1.5");
         assert_eq!(
-            host_from_header("2605:a601:800b:2100:0:0:0:100"),
-            "2605:a601:800b:2100:0:0:0:100"
+            host_from_header("2001:db8:1234:5678:0:0:0:100"),
+            "2001:db8:1234:5678:0:0:0:100"
         );
         assert_eq!(
-            host_from_header("[2605:a601:800b:2100:0:0:0:100]:8080"),
-            "[2605:a601:800b:2100:0:0:0:100]"
+            host_from_header("[2001:db8:1234:5678:0:0:0:100]:8080"),
+            "[2001:db8:1234:5678:0:0:0:100]"
         );
     }
 }

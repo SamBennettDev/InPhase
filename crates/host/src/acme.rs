@@ -4,7 +4,7 @@
 //! contract. The zero-prompt path is a publicly-trusted certificate, and
 //! Let's Encrypt issues those only for domain names, never for bare IPs.
 //! The bridge: sslip.io — a magic DNS domain where any hostname encoding an
-//! IP (`2605-a601-800b-2100-0-0-0-100.sslip.io` → `2605:a601:800b:2100::100`)
+//! IP (`2001-db8-1234-5678-0-0-0-100.sslip.io` → `2001:db8:1234:5678::100`)
 //! resolves to that IP, no registration, no DNS config. That name is a
 //! normal domain to Let's Encrypt, so the host can hold a real certificate
 //! with HTTP-01/TLS-ALPN-01 validation and auto-renewal.
@@ -57,7 +57,7 @@ impl ResolvesServerCert for DualResolver {
     }
 }
 
-/// `2605:a601:800b:2100::100` → `2605-a601-800b-2100-0-0-0-100.sslip.io`.
+/// `2001:db8:1234:5678::100` → `2001-db8-1234-5678-0-0-0-100.sslip.io`.
 /// sslip.io treats each dash-separated group as hex; the fully-expanded form
 /// with explicit zero groups parses unambiguously.
 pub fn sslip_hostname(ipv6: &str) -> Option<String> {
@@ -175,13 +175,13 @@ mod tests {
     #[test]
     fn sslip_name_encodes_the_ipv6() {
         assert_eq!(
-            sslip_hostname("2605:a601:800b:2100::100").as_deref(),
-            Some("2605-a601-800b-2100-0-0-0-100.sslip.io")
+            sslip_hostname("2001:db8:1234:5678::100").as_deref(),
+            Some("2001-db8-1234-5678-0-0-0-100.sslip.io")
         );
         // SocketAddr strings and brackets from the portmap status parse too.
         assert_eq!(
-            sslip_hostname("[2605:a601:800b:2100::100]:4433").as_deref(),
-            Some("2605-a601-800b-2100-0-0-0-100.sslip.io")
+            sslip_hostname("[2001:db8:1234:5678::100]:4433").as_deref(),
+            Some("2001-db8-1234-5678-0-0-0-100.sslip.io")
         );
         assert!(sslip_hostname("not an address").is_none());
     }

@@ -74,7 +74,7 @@ struct SessionFile {
 
 /// Upper bound on stored session tokens. `session_ttl_secs = 0` means "paired
 /// forever on this device", so nothing expires them - without a cap the store
-/// grows without limit (Cin-PC had accumulated 180+ over a week, a ~10 KB file
+/// grows without limit (the test PC had accumulated 180+ over a week, a ~10 KB file
 /// rewritten on every pair). Evicting the oldest keeps the forever-promise for
 /// devices actually in use while bounding the file.
 const MAX_SESSIONS: usize = 256;

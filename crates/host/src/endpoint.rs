@@ -136,23 +136,23 @@ mod tests {
         c.tls.domain = None;
         let p = EndpointPlan::detect(
             &c,
-            "cin-pc".into(),
-            Some("2605:a601:800b:2100::100".parse().unwrap()),
+            "gaming-pc".into(),
+            Some("2001:db8:1234:5678::100".parse().unwrap()),
         );
         // The mDNS name is canonical: the IPv6 prefix rotates, the name does
         // not (review §8). The literal remains a certificate identity.
-        assert_eq!(p.canonical_origin(), "https://cin-pc.local");
+        assert_eq!(p.canonical_origin(), "https://gaming-pc.local");
         assert_eq!(
             p.advertised_origin(""),
-            "https://2605-a601-800b-2100-0-0-0-100.sslip.io"
+            "https://2001-db8-1234-5678-0-0-0-100.sslip.io"
         );
         assert_eq!(
             p.advertised_origin("custom.sslip.io"),
             "https://custom.sslip.io"
         );
         let ids = p.certificate_identities(&[]);
-        assert!(ids.contains(&"2605:a601:800b:2100::100".to_string()));
-        assert!(ids.contains(&"cin-pc.local".to_string()));
+        assert!(ids.contains(&"2001:db8:1234:5678::100".to_string()));
+        assert!(ids.contains(&"gaming-pc.local".to_string()));
     }
 
     #[test]
@@ -160,7 +160,7 @@ mod tests {
         let mut c = cfg();
         c.tls.domain = Some("stream.example.com".into());
         c.tls.port = 8443;
-        let p = EndpointPlan::detect(&c, "cin-pc".into(), None);
+        let p = EndpointPlan::detect(&c, "gaming-pc".into(), None);
         assert_eq!(p.canonical_origin(), "https://stream.example.com:8443");
         assert_eq!(
             p.advertised_origin("ignored.sslip.io"),
@@ -174,17 +174,17 @@ mod tests {
     #[test]
     fn generation_is_stable_while_the_selection_holds() {
         let c = cfg();
-        let v6: std::net::Ipv6Addr = "2605:a601:800b:2100::100".parse().unwrap();
-        let a = EndpointPlan::detect(&c, "cin-pc".into(), Some(v6));
-        let b = EndpointPlan::detect(&c, "cin-pc".into(), Some(v6));
+        let v6: std::net::Ipv6Addr = "2001:db8:1234:5678::100".parse().unwrap();
+        let a = EndpointPlan::detect(&c, "gaming-pc".into(), Some(v6));
+        let b = EndpointPlan::detect(&c, "gaming-pc".into(), Some(v6));
         assert_eq!(
             a.generation, b.generation,
             "same selection, same generation"
         );
         let c2 = EndpointPlan::detect(
             &c,
-            "cin-pc".into(),
-            Some("2605:a601:800b:2100::200".parse().unwrap()),
+            "gaming-pc".into(),
+            Some("2001:db8:1234:5678::200".parse().unwrap()),
         );
         assert_ne!(
             a.generation, c2.generation,

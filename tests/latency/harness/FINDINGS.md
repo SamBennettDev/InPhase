@@ -1,6 +1,6 @@
 # InPhase performance measurement — 2026-09-01
 
-Host: Cin-PC, RTX 3070, capture = SudoMaker virtual display 2560×1440@144.
+Host: test PC, RTX 3070, capture = SudoMaker virtual display 2560×1440@144.
 Stream config: H.264, 2560×1440@60, 40 Mbps cap, `webrtcbin` path, preset
 `low_latency`. Client: Chrome 152. Every number below is measured per-frame
 (host stamps on the `control` channel + `requestVideoFrameCallback` on the

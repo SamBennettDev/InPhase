@@ -3,7 +3,7 @@
 //! Windows rounds every timed wait up to the system timer tick - 15.6 ms by
 //! default. The WT sender paces datagrams by sleeping "1 ms" between token
 //! refills, and each of those sleeps could last a whole tick: measured on
-//! Cin-PC (2026-09-23), a frame's paced send took 6.7 ms at the median and
+//! the test PC (2026-09-23), a frame's paced send took 6.7 ms at the median and
 //! 18.9 ms at p95, and frames queued behind it waited up to 15 ms, for a
 //! frame of ~20 datagrams that needs ~2 ms at the configured pace.
 //!

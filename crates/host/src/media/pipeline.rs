@@ -225,7 +225,7 @@ impl Pipeline {
         // timestamp falls - so every captured frame waited up to a frame
         // interval inside it, and on a truly idle screen the last change sat
         // there until something else moved. d3d11screencapturesrc already
-        // repeats the last frame at the negotiated rate: measured on Cin-PC
+        // repeats the last frame at the negotiated rate: measured on the test PC
         // (GStreamer 1.28.6, 2026-09-23) at 60.0 fps with nothing moving, the
         // rate coming from the framerate in `vcaps` below.
         pipeline.add_many([&src, &queue, &convert, &capsfilter])?;

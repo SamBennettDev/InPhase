@@ -18,4 +18,4 @@ bug-bounty commitment is currently made.
 
 Pairing, authentication, origin validation, input authorization, key storage and
 release integrity are in scope. See the [security model](docs/lan-security-model.md)
-and [audit](docs/AUDIT-2026-09-14.md).
+and [audit](docs/reviews/AUDIT-2026-09-14.md).

@@ -5,8 +5,9 @@
 #   crates/protocol — the shared, platform-neutral wire protocol (input packets,
 #                     signaling message types, protocol version constants).
 #
-# The `host` crate only builds on Windows. `protocol` builds and tests
-# everywhere and carries the golden Rust<->TypeScript test vectors (§19 Phase 3).
+# Both crates build and test everywhere; the host's capture, encode and input
+# are Windows-only and stubbed elsewhere. `protocol` carries the golden
+# Rust<->TypeScript test vectors (§19 Phase 3).
 [workspace]
 resolver = "2"
 members = ["crates/protocol", "crates/host"]

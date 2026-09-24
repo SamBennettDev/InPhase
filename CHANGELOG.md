@@ -117,7 +117,7 @@
   every 0.5-2 s ("wt reference gap ... re-keying").
 
 - Cut the host's own send latency from 8.6 ms (p50) / 28 ms (p95) to under
-  0.1 ms, measured per frame on Cin-PC with motion:
+  0.1 ms, measured per frame on the test PC with motion:
   - Raise the Windows timer resolution to 1 ms at startup, and opt the
     windowless tray process out of timer throttling (Windows 11 ignores
     `timeBeginPeriod` for invisible processes otherwise). The pacer's "1 ms"

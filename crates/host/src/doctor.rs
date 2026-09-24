@@ -455,7 +455,7 @@ fn check_wt_port(cfg: &Config) -> Check {
         Err(e) => Check::warn(
             "wt video",
             format!(
-                "UDP {} cannot be bound ({e}) — WebTransport video is enabled in config but will                  not come up; the player stays on WebRTC",
+                "UDP {} cannot be bound ({e}) — WebTransport video is enabled in config but will not come up, and the player has no other video path",
                 cfg.media.wt_port
             ),
         ),

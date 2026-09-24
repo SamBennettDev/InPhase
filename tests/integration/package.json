@@ -1,6 +1,7 @@
 {
   "name": "inphase-integration",
   "private": true,
+  "license": "GPL-3.0-or-later",
   "type": "module",
   "description": "Headless InPhase client for verifying the media + input path without a browser.",
   "dependencies": {

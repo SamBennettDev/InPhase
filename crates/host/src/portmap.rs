@@ -487,7 +487,7 @@ mod tests {
     #[test]
     fn pcp_addr_round_trips_v4_and_v6() {
         let v4: IpAddr = "203.0.113.7".parse().unwrap();
-        let v6: IpAddr = "2605:a601:800b:2100::100".parse().unwrap();
+        let v6: IpAddr = "2001:db8:1234:5678::100".parse().unwrap();
         assert_eq!(parse_client_addr(&client_addr_bytes(v4)), v4);
         assert_eq!(parse_client_addr(&client_addr_bytes(v6)), v6);
     }

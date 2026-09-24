@@ -14,7 +14,7 @@
 set -u
 
 PC="${INPHASE_PC:?set INPHASE_PC=user@the-host-pc (for the admin API tunnel)}"
-STRESS="${INPHASE_STRESS_DIR:-C:/Users/sambe/stress}"
+STRESS="${INPHASE_STRESS_DIR:?set INPHASE_STRESS_DIR=C:/Users/<you>/stress (the host PC staging dir)}"
 SCRIPT="${1:?usage: pc-session.sh <local.ps1> [timeout]}"
 TIMEOUT="${2:-120}"
 

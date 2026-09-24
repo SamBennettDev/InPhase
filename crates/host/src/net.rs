@@ -177,7 +177,7 @@ mod v6_tests {
 
     #[test]
     fn only_global_unicast_counts_as_reachable() {
-        assert!(is_global_unicast_v6(v6("2605:a601:800b:2100::100")));
+        assert!(is_global_unicast_v6(v6("2001:db8:1234:5678::100")));
         assert!(is_global_unicast_v6(v6("2001:db8::1")));
         // Not routable off-link / on the internet:
         assert!(!is_global_unicast_v6(v6("fe80::1")));
@@ -197,8 +197,8 @@ mod v6_tests {
     fn a_dhcp_style_address_beats_a_privacy_address() {
         // Real values observed on the gaming PC: `::100` is the DHCPv6 lease,
         // the long one is an RFC 8981 temporary address that rotates.
-        let stable = v6("2605:a601:800b:2100::100");
-        let temporary = v6("2605:a601:800b:2100:dd2c:b8cb:3a75:3919");
+        let stable = v6("2001:db8:1234:5678::100");
+        let temporary = v6("2001:db8:1234:5678:dd2c:b8cb:3a75:3919");
         assert!(
             iid_entropy(stable) < iid_entropy(temporary),
             "the stable address must sort first"

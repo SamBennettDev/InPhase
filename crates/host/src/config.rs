@@ -346,7 +346,7 @@ pub struct TlsConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_sans: Vec<String>,
     /// Let's Encrypt hostname for the public listener (sslip.io form, e.g.
-    /// `2605-a601-800b-2100-0-0-0-100.sslip.io`). Empty = auto-derive from the
+    /// `2001-db8-1234-5678-0-0-0-100.sslip.io`). Empty = auto-derive from the
     /// PCP-reported public IPv6 once it is known. Issuance + renewal are
     /// automatic; browsers trust the result with zero prompts.
     #[serde(default, skip_serializing_if = "String::is_empty")]
