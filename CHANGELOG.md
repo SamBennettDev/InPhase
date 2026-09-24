@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Library covers no longer flash grey every few seconds: the grid updates in
+  place instead of rebuilding every card (and re-decoding every image) each
+  time the library is polled for new art. On phones, long titles take one
+  line so each row of covers lines up.
 - Redesigned web UI. The dashboard leads with what the PC is doing (live
   resolution, frame rate, bitrate with a two-minute trace, round trip) next to
   the pairing PIN and address; the welcome banner and permanent setup steps

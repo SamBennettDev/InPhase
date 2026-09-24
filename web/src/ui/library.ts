@@ -157,6 +157,69 @@ export interface GridState {
   query: string;
 }
 
+/** The item and pick handler each card currently stands for. Cards are
+ *  reused across renders, so their click handler looks these up instead of
+ *  closing over one render's state. */
+const cardCache = new WeakMap<HTMLElement, Map<string, HTMLButtonElement>>();
+const cardState = new WeakMap<
+  HTMLElement,
+  { item: LibraryItem; onPick: (t: StreamTarget) => void }
+>();
+
+/** What a card shows, apart from selection: a card whose signature is
+ *  unchanged is kept as-is, image and all. */
+function cardSignature(item: LibraryItem, live: boolean): string {
+  return [item.id, item.name, posterFor(item), item.source ?? "", live].join("\u0000");
+}
+
+function buildCard(item: LibraryItem, live: boolean): HTMLButtonElement {
+  const hasSrc = item.kind === "game" && item.source;
+  const tpl = document.createElement("template");
+  tpl.innerHTML = `<button type="button" class="lib-card" data-id="${escapeAttr(item.id)}" aria-pressed="false" aria-label="Select ${escapeAttr(item.name)}">
+      <span class="lib-cover">
+        <img src="${escapeAttr(posterFor(item))}" alt="" loading="lazy" decoding="async" />
+        ${
+          live || hasSrc
+            ? `<span class="lib-badges">
+                ${live ? `<span class="lib-live">● Live</span>` : ""}
+                ${hasSrc ? `<span class="lib-src">${escapeHtml(sourceLabel(item.source))}</span>` : ""}
+              </span>`
+            : ""
+        }
+        <span class="lib-check" aria-hidden="true">✓</span>
+      </span>
+      <span class="lib-name" title="${escapeAttr(item.name)}">${escapeHtml(item.name)}</span>
+    </button>`;
+  const btn = tpl.content.firstElementChild as HTMLButtonElement;
+  btn.dataset["sig"] = cardSignature(item, live);
+  btn.addEventListener("click", () => {
+    const cur = cardState.get(btn);
+    if (!cur) return;
+    cur.onPick(targetFor(cur.item));
+    const host = btn.parentElement;
+    for (const b of host?.querySelectorAll(".lib-card") ?? []) {
+      b.classList.remove("sel");
+      b.setAttribute("aria-pressed", "false");
+    }
+    btn.classList.add("sel");
+    btn.setAttribute("aria-pressed", "true");
+  });
+  const img = btn.querySelector("img")!;
+  img.addEventListener(
+    "error",
+    () => {
+      img.src = generatedPoster(item.name);
+    },
+    { once: true },
+  );
+  return btn;
+}
+
+/** Render the game cards into `host`. Called on every library poll, status
+ *  change and keystroke, so it updates in place: a card whose content did not
+ *  change keeps its element and loaded image. Rebuilding them all made every
+ *  cover flash grey while it decoded again, each time the library was polled
+ *  for newly fetched art. */
 export function mountLibraryGrid(
   host: HTMLElement,
   state: GridState,
@@ -177,60 +240,43 @@ export function mountLibraryGrid(
       '<div class="library-empty"><strong>No games found</strong>InPhase looks in Steam, Epic, GOG, Xbox and other launchers on your PC. You can always stream the desktop.</div>';
     return;
   }
+
+  // Every card built for this host, visible or filtered out by the search,
+  // so clearing a search brings the same elements (and images) back.
+  let cache = cardCache.get(host);
+  if (!cache) cardCache.set(host, (cache = new Map()));
   // Cards go straight into the host: it is `display: contents` inside the
   // page's grid, next to the desktop tile.
-  host.innerHTML = `    ${visible
-      .map((item) => {
-        const t = targetFor(item);
-        const isSel = sameTarget(t, state.selected);
-        const isLive = state.active ? sameTarget(t, state.active) : false;
-        const hasSrc = item.kind === "game" && item.source;
-        return `<button type="button"
-          class="lib-card${isSel ? " sel" : ""}${item.kind === "desktop" ? " desktop" : ""}"
-          data-id="${escapeAttr(item.id)}" aria-pressed="${isSel}" aria-label="Select ${escapeAttr(item.name)}">
-          <span class="lib-cover">
-            <img src="${escapeAttr(posterFor(item))}" alt="" loading="lazy" decoding="async" />
-            ${
-              isLive || hasSrc
-                ? `<span class="lib-badges">
-                    ${isLive ? `<span class="lib-live">● Live</span>` : ""}
-                    ${hasSrc ? `<span class="lib-src">${escapeHtml(sourceLabel(item.source))}</span>` : ""}
-                  </span>`
-                : ""
-            }
-            <span class="lib-check" aria-hidden="true">✓</span>
-          </span>
-          <span class="lib-name">${escapeHtml(item.name)}</span>
-        </button>`;
-      })
-      .join("")}`;
-
-  for (const btn of host.querySelectorAll<HTMLButtonElement>(".lib-card")) {
-    btn.addEventListener("click", () => {
-      const item = state.items.find((i) => i.id === btn.dataset["id"]);
-      if (!item) return;
-      onPick(targetFor(item));
-      for (const b of host.querySelectorAll(".lib-card")) {
-        b.classList.remove("sel");
-        b.setAttribute("aria-pressed", "false");
-      }
-      btn.classList.add("sel");
-      btn.setAttribute("aria-pressed", "true");
-    });
-  }
-
-  for (const img of host.querySelectorAll<HTMLImageElement>(".lib-cover img")) {
-    img.addEventListener(
-      "error",
-      () => {
-        const name =
-          img.closest(".lib-card")?.querySelector(".lib-name")?.textContent ??
-          "";
-        img.src = generatedPoster(name);
-      },
-      { once: true },
-    );
-  }
+  const cards = visible.map((item) => {
+    const t = targetFor(item);
+    const live = state.active ? sameTarget(t, state.active) : false;
+    const sig = cardSignature(item, live);
+    let btn = cache.get(sig);
+    if (!btn) cache.set(sig, (btn = buildCard(item, live)));
+    cardState.set(btn, { item, onPick });
+    const sel = sameTarget(t, state.selected);
+    btn.classList.toggle("sel", sel);
+    btn.setAttribute("aria-pressed", String(sel));
+    return btn;
+  });
+  // Forget cards for games that left the library (or changed).
+  const keep = new Set(
+    state.items.map((i) =>
+      cardSignature(
+        i,
+        state.active ? sameTarget(targetFor(i), state.active) : false,
+      ),
+    ),
+  );
+  for (const sig of [...cache.keys()]) if (!keep.has(sig)) cache.delete(sig);
+  // Only touch the DOM when the order or set of cards changed; moving an
+  // element keeps its decoded image.
+  const current = [...host.children];
+  if (
+    current.length !== cards.length ||
+    current.some((el, i) => el !== cards[i])
+  )
+    host.replaceChildren(...cards);
 }
 
 function escapeHtml(s: string): string {

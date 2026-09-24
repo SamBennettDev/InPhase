@@ -33,7 +33,7 @@ export async function mockHost(
     "Celeste",
     "Portal 2",
     "Stardew Valley",
-    "Outer Wilds",
+    "The Elder Scrolls V: Skyrim Special Edition",
   ].map((name, id) => ({
     id: String(id),
     kind: "game",

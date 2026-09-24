@@ -160,3 +160,62 @@ test("mobile layout fits and settings dialog supports keyboard dismissal", async
     .poll(() => page.evaluate(() => document.documentElement.scrollWidth))
     .toBeLessThanOrEqual(390);
 });
+test("library refreshes keep existing cards and their images", async ({
+  page,
+}) => {
+  await mockHost(page);
+  await openPlayer(page);
+  await expect(page.locator(".lib-card")).toHaveCount(6);
+  // Tag the live elements, then force re-renders the way polling does.
+  await page.evaluate(() => {
+    document
+      .querySelectorAll<HTMLElement>(".lib-card img")
+      .forEach((img) => (img.dataset["tag"] = "kept"));
+  });
+  const search = page.getByLabel("Search games");
+  await search.fill("a");
+  await search.fill("");
+  await page
+    .getByRole("button", { name: "Select Celeste", exact: true })
+    .click();
+  await expect(page.locator(".lib-card")).toHaveCount(6);
+  await expect(page.locator('.lib-card img[data-tag="kept"]')).toHaveCount(6);
+  await expect(
+    page.getByRole("button", { name: "Select Celeste", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+});
+test("phone cards line up when titles are long", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mockHost(page);
+  // Registered after mockHost, so it wins for the library call.
+  const names = [
+    "Call of Duty: Modern Warfare III",
+    "Portal 2",
+    "Escape the Backrooms",
+    "Minecraft",
+    "Counter-Strike 2",
+    "Warhammer 40,000: Space Marine 2",
+  ];
+  await page.route("**/api/v1/library", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        items: names.map((name, id) => ({
+          id: String(id),
+          kind: "game",
+          name,
+          source: "steam",
+        })),
+        art_pending: false,
+      }),
+    }),
+  );
+  await openPlayer(page);
+  await expect(page.locator(".lib-card")).toHaveCount(6);
+  const tops = await page
+    .locator(".lib-card .lib-cover")
+    .evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().top)));
+  // Three per row: covers in a row share a top edge.
+  for (let i = 0; i < tops.length; i += 3)
+    expect(new Set(tops.slice(i, i + 3)).size).toBe(1);
+});

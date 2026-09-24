@@ -367,7 +367,9 @@ details > summary::-webkit-details-marker { display: none; }
 .library-empty .link { color: var(--cyan); font-size: inherit; margin-left: 0.3rem; }
 
 .lib-card, .desk-card {
-  display: flex; flex-direction: column; align-items: stretch; gap: 0.55rem;
+  /* Top-aligned: a title that wraps must not push its cover down out of line
+   * with the covers beside it (the base button style centres content). */
+  display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start; gap: 0.55rem;
   min-height: 0; padding: 0; background: none; border: 0; border-radius: 0;
   color: var(--fg); text-align: left; white-space: normal; font-weight: 550;
 }
@@ -685,7 +687,8 @@ dialog::backdrop { background: rgba(4, 6, 9, 0.7); }
   .library-filters { min-width: 100%; }
   .search-field { max-width: none; }
   #source-filter { min-width: 0; width: 40%; }
-  .lib-name { font-size: 0.8rem; }
+  /* Narrow cards: one line, so every row keeps the same height. */
+  .lib-name { font-size: 0.8rem; display: block; white-space: nowrap; text-overflow: ellipsis; }
   .launch-inner { gap: 0.7rem; }
   .launch-thumb { display: none; }
   .stream-summary { display: none; }
