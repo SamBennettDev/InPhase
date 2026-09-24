@@ -14,6 +14,9 @@
 // host actually received. "The bitrate never reaches the set mark" is a
 // host-side fact; the page cannot see it.
 //
+// --query appends to the play URL, e.g. `--query '&render=gl'` to force the
+// WebGL renderer (default: WebKit only) or `'&render=2d'` the 2D canvas.
+//
 // The question this answers is narrower than "did frames arrive": did the
 // stream SUSTAIN itself - no second without a decoded frame, the decode rate
 // held, the encoder reached the configured rate - so that anything short of
@@ -162,7 +165,7 @@ let result;
 let gl = null;
 try {
   // `?play` forces the player view (a loopback origin would get the dashboard).
-  await page.goto(`${ORIGIN}/?play`, { waitUntil: "domcontentloaded" });
+  await page.goto(`${ORIGIN}/?play${arg("query", "")}`, { waitUntil: "domcontentloaded" });
   // Which rasterizer the page got: "SwiftShader"/"llvmpipe" means every canvas
   // draw is on the CPU, and the run measures that rather than the stream.
   gl = await page.evaluate(() => {
@@ -268,6 +271,7 @@ try {
       decode_ms: c.wt?.decodeMs ?? null,
       e2e_ms: c.wt?.e2eMs ?? null,
       dims: c.w ? `${c.w}x${c.h}` : null,
+      render: c.wt?.renderMode ?? null,
       heard_ms: c.audio?.heardAgeMs ?? null,
       seen_ms: c.audio?.seenAgeMs ?? null,
       out_lat_ms: c.audio?.outputLatencyMs ?? null,

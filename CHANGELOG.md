@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Present video through WebGL on Safari and every iOS browser. The 2D canvas
+  route cost enough per frame that Safari's page refresh fell under load: on
+  an iPhone at 120 Hz a bare page showed ~105 of 120 fps at 1440p and 52 at
+  4K through 2D, a steady 120 at both through WebGL. The player at 1440p120
+  went from ~68 to ~112 fps on glass, and glass latency from ~29 to ~22 ms.
+  Chromium and Firefox keep the 2D canvas: WebGL showed fewer frames in
+  Firefox and froze headless Chromium on Linux for ~30 s per run. A dark or
+  failed WebGL upload falls back to 2D; `?render=gl` / `?render=2d` override
+  the choice. 4K120 on the iPhone now shows ~89 fps and is still limited.
 - Draw video no faster than the page refreshes. iPhone Safari renders pages at
   60 Hz by default; drawing all 120 decoded frames a second backed up the GPU
   until the decoder failed, which looked like a decoder limit (the hardware

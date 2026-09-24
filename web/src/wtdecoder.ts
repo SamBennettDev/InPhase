@@ -21,6 +21,7 @@ import {
   shouldCountFreeze,
 } from "./decoderpolicy.js";
 import { FrameOrderer } from "./frameorder.js";
+import { GlRenderer, preferWebGl } from "./glrender.js";
 import type { WtFrame } from "./wtvideo.js";
 
 /** Glass age (ms): now minus the frame's capture time moved onto the client
@@ -59,8 +60,30 @@ export interface WtDecoderStats {
   presentedFps: number;
   /** Decoded-frame rate over the last stats window, fps. */
   decodedFps: number;
-  /** How frames reach the canvas: a direct draw, or via an ImageBitmap. */
-  renderMode: "direct" | "bitmap";
+  /** How frames reach the canvas: WebGL upload, a 2D direct draw, or a 2D
+   *  draw via an ImageBitmap. */
+  renderMode: RenderMode;
+}
+
+export type RenderMode = "webgl" | "direct" | "bitmap";
+
+/** See WtDecoder.glDarkProbes. */
+const GL_DARK_PROBES = 10;
+
+/** Lit pixels when `src` is drawn to an 8x8 scratch canvas: zero means a
+ *  no-op draw, or a dark frame. */
+function litPixels(src: CanvasImageSource): number {
+  const c = document.createElement("canvas");
+  c.width = 8;
+  c.height = 8;
+  const cx = c.getContext("2d", { alpha: false })!;
+  cx.drawImage(src, 0, 0, 8, 8);
+  const d = cx.getImageData(0, 0, 8, 8).data;
+  let lit = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    if ((d[i] ?? 0) | (d[i + 1] ?? 0) | (d[i + 2] ?? 0)) lit++;
+  }
+  return lit;
 }
 
 /** One ImageBitmap conversion in flight; a newer frame always supersedes
@@ -94,11 +117,19 @@ export class PresentGate {
 export class WtDecoder {
   private decoder: VideoDecoder | null = null;
   private canvas: HTMLCanvasElement;
-  private ctx: CanvasRenderingContext2D;
-  /** iOS Safari draws decoded VideoFrames to a 2D canvas as a silent no-op
-   *  (black screen, decode still fine). Probed once on the first frame; the
-   *  bitmap path is the portable fallback. */
-  private renderMode: "direct" | "bitmap" = "direct";
+  /** WebGL presentation (see glrender.ts); null once fallen back to 2D. */
+  private gl: GlRenderer | null;
+  /** The 2D context; null while WebGL presents (a canvas has one kind). */
+  private ctx: CanvasRenderingContext2D | null = null;
+  /** WebGL where preferWebGl picks it; 2D otherwise, or when WebGL is
+   *  unavailable or shows nothing. iOS Safari 18
+   *  draws decoded VideoFrames to a 2D canvas as a silent no-op (black
+   *  screen, decode still fine), so the 2D route is probed once on its first
+   *  frame and the bitmap path is its portable fallback. */
+  private renderMode: RenderMode;
+  /** WebGL probes that found a dark frame; after GL_DARK_PROBES the upload
+   *  is taken as working (a dark desktop stays dark). */
+  private glDarkProbes = 0;
   /** Frames to wait before re-probing after a dark (inconclusive) probe. */
   private probeSkip = 0;
   private renderProbed = false;
@@ -186,9 +217,10 @@ export class WtDecoder {
   ) {
     this.canvas = document.createElement("canvas");
     this.canvas.className = "wt-video";
-    const ctx = this.canvas.getContext("2d", { alpha: false, desynchronized: true });
-    if (ctx === null) throw new Error("2d canvas unavailable");
-    this.ctx = ctx;
+    const gl = preferWebGl(navigator.userAgent, globalThis.location?.search ?? "");
+    this.gl = gl ? GlRenderer.create(this.canvas) : null;
+    if (this.gl === null) this.ctx = this.context2d();
+    this.renderMode = this.gl !== null ? "webgl" : "direct";
     document.addEventListener("visibilitychange", this.onVisibility);
   }
 
@@ -502,19 +534,6 @@ export class WtDecoder {
    *  pixels the direct draw did not switches the renderer. */
   private probeRenderMode(vf: VideoFrame): void {
     this.renderProbed = true;
-    const litPixels = (src: CanvasImageSource): number => {
-      const c = document.createElement("canvas");
-      c.width = 8;
-      c.height = 8;
-      const cx = c.getContext("2d", { alpha: false })!;
-      cx.drawImage(src, 0, 0, 8, 8);
-      const d = cx.getImageData(0, 0, 8, 8).data;
-      let lit = 0;
-      for (let i = 0; i < d.length; i += 4) {
-        if ((d[i] ?? 0) | (d[i + 1] ?? 0) | (d[i + 2] ?? 0)) lit++;
-      }
-      return lit;
-    };
     let direct: number;
     try {
       direct = litPixels(vf as unknown as CanvasImageSource);
@@ -541,6 +560,49 @@ export class WtDecoder {
       })
       .catch(() => {})
       .finally(() => probe.close());
+  }
+
+  private context2d(): CanvasRenderingContext2D {
+    const ctx = this.canvas.getContext("2d", { alpha: false, desynchronized: true });
+    if (ctx === null) throw new Error("2d canvas unavailable");
+    return ctx;
+  }
+
+  /** Leave WebGL for a 2D canvas. A canvas keeps its first context kind, so
+   *  a fresh element takes the old one's place in the page. */
+  private fallBackTo2d(why: string): void {
+    console.info(`wt: ${why} - using the 2D canvas renderer`);
+    const next = document.createElement("canvas");
+    next.className = this.canvas.className;
+    next.width = this.canvas.width;
+    next.height = this.canvas.height;
+    this.canvas.replaceWith(next);
+    this.canvas = next;
+    this.gl = null;
+    this.ctx = this.context2d();
+    this.renderMode = "direct";
+    this.renderProbed = false;
+    this.probeSkip = 0;
+  }
+
+  /** First WebGL frame: a dark upload is checked against a 2D draw of the
+   *  same frame, and only a 2D draw that shows pixels WebGL did not leaves
+   *  WebGL. Both dark: the frame is dark; look again a second later. */
+  private probeGl(gl: GlRenderer, vf: VideoFrame): void {
+    this.renderProbed = true;
+    if (gl.litSamples() >= 2 || ++this.glDarkProbes > GL_DARK_PROBES) return;
+    let direct = 0;
+    try {
+      direct = litPixels(vf as unknown as CanvasImageSource);
+    } catch {
+      // No 2D route either; stay on WebGL.
+    }
+    if (direct >= 2) {
+      this.fallBackTo2d("WebGL VideoFrame upload produced no pixels");
+    } else {
+      this.renderProbed = false;
+      this.probeSkip = 60;
+    }
   }
 
   private onDecodedFrame(vf: VideoFrame): void {
@@ -631,12 +693,33 @@ export class WtDecoder {
       this.canvas.width = vf.displayWidth;
       this.canvas.height = vf.displayHeight;
     }
+    const gl = this.gl;
+    if (gl !== null) {
+      if (gl.isLost) {
+        this.fallBackTo2d("WebGL context lost");
+      } else {
+        try {
+          gl.draw(vf);
+        } catch (e) {
+          this.fallBackTo2d(`WebGL VideoFrame upload failed (${String(e)})`);
+        }
+        if (this.gl !== null) {
+          if (!this.renderProbed) {
+            if (this.probeSkip > 0) this.probeSkip--;
+            else this.probeGl(gl, vf);
+          }
+          this.finishPresent(vf);
+          return;
+        }
+      }
+    }
+    const ctx = this.ctx!;
     if (!this.renderProbed) {
       if (this.probeSkip > 0) this.probeSkip--;
       else this.probeRenderMode(vf);
     }
     if (this.renderMode === "direct") {
-      this.ctx.drawImage(vf as unknown as CanvasImageSource, 0, 0, vf.displayWidth, vf.displayHeight);
+      ctx.drawImage(vf as unknown as CanvasImageSource, 0, 0, vf.displayWidth, vf.displayHeight);
       this.finishPresent(vf);
       return;
     }
@@ -659,7 +742,7 @@ export class WtDecoder {
           bmp.close(); // superseded before it could be shown
           return;
         }
-        this.ctx.drawImage(bmp, 0, 0, vf.displayWidth, vf.displayHeight);
+        ctx.drawImage(bmp, 0, 0, vf.displayWidth, vf.displayHeight);
         bmp.close();
         this.finishPresent(vf);
       },
