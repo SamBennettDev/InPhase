@@ -45,6 +45,7 @@ pub mod net;
 pub mod pairing;
 pub mod platform;
 pub mod portmap;
+pub mod proc;
 pub mod session;
 pub mod stats;
 pub mod tls;

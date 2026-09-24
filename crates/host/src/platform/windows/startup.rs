@@ -5,8 +5,6 @@
 //! it to one shell-out with no COM/unsafe surface, and the value is easy for a
 //! user to inspect or delete (`Settings > Apps > Startup`).
 
-use std::process::Command;
-
 use tracing::info;
 
 const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
@@ -22,7 +20,7 @@ fn run_command() -> Option<String> {
 pub fn set_start_at_login(enabled: bool) -> anyhow::Result<()> {
     if enabled {
         let cmd = run_command().ok_or_else(|| anyhow::anyhow!("cannot resolve the exe path"))?;
-        let status = Command::new("reg")
+        let status = crate::proc::command("reg")
             .args([
                 "add", RUN_KEY, "/v", VALUE_NAME, "/t", "REG_SZ", "/d", &cmd, "/f",
             ])
@@ -30,7 +28,7 @@ pub fn set_start_at_login(enabled: bool) -> anyhow::Result<()> {
         anyhow::ensure!(status.success(), "reg add failed ({:?})", status.code());
     } else {
         // Ignore "value not found" — deleting an absent value is a no-op.
-        let _ = Command::new("reg")
+        let _ = crate::proc::command("reg")
             .args(["delete", RUN_KEY, "/v", VALUE_NAME, "/f"])
             .output();
     }
@@ -40,7 +38,7 @@ pub fn set_start_at_login(enabled: bool) -> anyhow::Result<()> {
 
 /// Whether the Run-key value currently exists (autostart is on).
 pub fn start_at_login_enabled() -> bool {
-    Command::new("reg")
+    crate::proc::command("reg")
         .args(["query", RUN_KEY, "/v", VALUE_NAME])
         .output()
         .map(|o| o.status.success())

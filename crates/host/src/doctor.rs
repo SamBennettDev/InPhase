@@ -123,7 +123,7 @@ fn check_os() -> Check {
     {
         // Read the build number from the registry (same approach as
         // platform::windows::startup — one reg.exe shell-out, no unsafe).
-        let out = std::process::Command::new("reg")
+        let out = crate::proc::command("reg")
             .args([
                 "query",
                 r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion",
@@ -326,7 +326,7 @@ fn check_firewall() -> Check {
     #[cfg(windows)]
     {
         let rule_exists = |name: &str| {
-            std::process::Command::new("netsh")
+            crate::proc::command("netsh")
                 .args([
                     "advfirewall",
                     "firewall",

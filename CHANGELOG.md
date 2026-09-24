@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Stop flashing console windows when the host starts. The startup checks
+  (certificate trust, firewall rules, start-at-sign-in) ran certutil, netsh
+  and reg as visible consoles; every child process now starts without a
+  window.
 - New brand: monitor-and-wave mark with a cyan-to-violet wave. Updated the web
   UI logo, favicons and touch icon, installer icon, and the tray icon (cyan
   while streaming). Start-menu shortcuts and Apps & features now show the

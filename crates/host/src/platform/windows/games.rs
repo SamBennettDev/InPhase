@@ -74,7 +74,7 @@ pub fn launch_game(id: &str) -> anyhow::Result<bool> {
     } else {
         // `cmd /C start "" <target>` runs in the host's interactive session,
         // handles both `steam://` URIs and bare exe paths, and detaches at once.
-        let mut c = std::process::Command::new("cmd");
+        let mut c = crate::proc::command("cmd");
         c.args(["/C", "start", "", &target]);
         c
     };
@@ -150,7 +150,7 @@ fn process_running(exe_name: &str) -> bool {
         .and_then(|n| n.to_str())
         .unwrap_or(exe_name)
         .to_ascii_lowercase();
-    let Ok(out) = std::process::Command::new("tasklist")
+    let Ok(out) = crate::proc::command("tasklist")
         .args(["/FO", "CSV", "/NH", "/FI", &format!("IMAGENAME eq {base}")])
         .output()
     else {

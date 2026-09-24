@@ -675,7 +675,7 @@ pub fn open_dashboard(port: u16) {
 fn open_url(url: &str) {
     #[cfg(windows)]
     {
-        let _ = std::process::Command::new("cmd")
+        let _ = crate::proc::command("cmd")
             .args(["/C", "start", "", url])
             .spawn();
     }

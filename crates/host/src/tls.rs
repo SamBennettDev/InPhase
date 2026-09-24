@@ -214,15 +214,17 @@ pub mod local_ca {
         }
         #[cfg(windows)]
         {
-            use tokio::process::Command;
             use tokio::time::{timeout, Duration};
 
             async fn certutil(args: &[&str]) -> bool {
-                let fut = Command::new("certutil").args(args).output();
+                let fut = crate::proc::tokio_command("certutil").args(args).output();
                 matches!(timeout(Duration::from_secs(3), fut).await, Ok(Ok(o)) if o.status.success())
             }
             async fn try_addstore(args: &[&str], crt: &std::path::Path) -> bool {
-                let fut = Command::new("certutil").args(args).arg(crt).output();
+                let fut = crate::proc::tokio_command("certutil")
+                    .args(args)
+                    .arg(crt)
+                    .output();
                 matches!(timeout(Duration::from_secs(3), fut).await, Ok(Ok(o)) if o.status.success())
             }
 

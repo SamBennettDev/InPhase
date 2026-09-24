@@ -16,8 +16,6 @@
 //! elevated); the per-user host only re-adds a rule that is actually missing, so
 //! a normal sign-in launch neither prompts nor logs a spurious failure.
 
-use std::process::Command;
-
 use tracing::{debug, info};
 
 const APP_RULE: &str = "InPhase App";
@@ -100,7 +98,7 @@ fn add_rule(name: &str, args: &[&str], recreate: bool) -> anyhow::Result<()> {
         return Ok(());
     }
     netsh_delete(name);
-    let mut cmd = Command::new("netsh");
+    let mut cmd = crate::proc::command("netsh");
     cmd.args([
         "advfirewall",
         "firewall",
@@ -132,7 +130,7 @@ fn add_rule(name: &str, args: &[&str], recreate: bool) -> anyhow::Result<()> {
 }
 
 fn rule_exists(name: &str) -> bool {
-    Command::new("netsh")
+    crate::proc::command("netsh")
         .args([
             "advfirewall",
             "firewall",
@@ -146,7 +144,7 @@ fn rule_exists(name: &str) -> bool {
 }
 
 fn netsh_delete(name: &str) {
-    let _ = Command::new("netsh")
+    let _ = crate::proc::command("netsh")
         .args([
             "advfirewall",
             "firewall",
