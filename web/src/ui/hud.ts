@@ -71,7 +71,7 @@ export class Hud {
       </div>
       <div class="hud-controls">
         <button class="hud-btn" data-act="mute" title="Mute / unmute" hidden></button>
-        <button class="hud-btn" data-key="0x01" title="Escape">ESC</button>
+        <button class="hud-btn" data-key="0x01" title="Send Esc to the PC">ESC</button>
         <button class="hud-btn" data-act="fs" title="Fullscreen"><i data-lucide="maximize"></i></button>
         <button class="hud-btn" data-act="panel" title="Settings"><i data-lucide="settings"></i></button>
       </div>
@@ -227,6 +227,7 @@ export class Hud {
     const fpsList = FPS_CHOICES.map((f) => `<option value="${f}"></option>`).join("");
     const s = this.settings;
     p.innerHTML = `
+      <p class="hud-panel-title">Stream</p>
       <label>Resolution (w × h)
         <span class="hud-pair">
           <input data-s="w" type="number" inputmode="numeric" min="640" max="3840" step="2" value="${s.width}" list="hud-res" />
@@ -241,12 +242,12 @@ export class Hud {
       <label>Max bitrate (Mbps)
         <input data-s="br" type="number" inputmode="decimal" min="2" max="120" step="0.5" value="${(s.maxBitrateKbps / 1000).toString()}" />
       </label>
-      <p class="sub">Jitter buffer: none — frames render as they arrive.</p>
       <label>Preset<select data-s="preset">
         <option value="low_latency">Low Latency</option>
         <option value="balanced">Balanced</option>
         <option value="quality">Quality</option>
       </select></label>
+      <p class="hud-panel-title">Sound and display</p>
       <label>Volume
         <input data-s="vol" type="range" min="0" max="100" step="1" value="${Math.round(s.volume * 100)}" />
       </label>
@@ -255,7 +256,7 @@ export class Hud {
       <div class="home-audio" data-audio-mount></div>
       <div class="hud-panel-btns">
         <button data-act="apply">Apply &amp; reconnect</button>
-        <button data-act="disc" class="secondary">Disconnect</button>
+        <button data-act="disc" class="secondary danger">End stream</button>
       </div>`;
     this.mountAudio(p.querySelector<HTMLElement>("[data-audio-mount]")!);
     const el = (k: string) => p.querySelector<HTMLInputElement | HTMLSelectElement>(`[data-s="${k}"]`)!;

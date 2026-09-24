@@ -1,5 +1,24 @@
 /** InPhase logo kit (web/public/brand/). */
 
+/** What the signal line under the header shows: flat when the PC is out of
+ *  reach, a still wave when it is ready, a travelling wave while it streams. */
+export type SignalState = "down" | "idle" | "ready" | "live";
+
+/** The brand wave as a live status line (see `.signal` in app.css). */
+export function signalLine(id: string): string {
+  return `<div class="signal" id="${id}" data-state="idle" aria-hidden="true"></div>`;
+}
+
+export function setSignal(el: Element | null, state: SignalState): void {
+  if (el && el.getAttribute("data-state") !== state) el.setAttribute("data-state", state);
+}
+
+/** The narrow centred column shared by every screen before the app proper:
+ *  pairing, certificate setup, "can't reach your PC". */
+export function gate(body: string, tag: "main" | "div" = "main"): string {
+  return `<${tag} class="gate"><div class="gate-col">${brandLogo("brand-logo brand-logo--gate")}${body}</div></${tag}>`;
+}
+
 // The intrinsic ratio must match `lockup.svg`'s viewBox (564×160) exactly
 // — a mismatched width/height pair here makes the browser letterbox-squish it.
 export function brandLogo(className = "brand-logo"): string {

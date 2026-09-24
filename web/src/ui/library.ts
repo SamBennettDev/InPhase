@@ -35,66 +35,41 @@ function sourceLabel(s?: string | null): string {
 
 const DESKTOP_POSTER =
   "data:image/svg+xml," +
-  encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 450">
-    <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#243352"/><stop offset="1" stop-color="#0e1626"/>
-    </linearGradient></defs>
-    <rect width="300" height="450" fill="url(#g)"/>
-    <rect x="54" y="132" width="192" height="120" rx="9" fill="none" stroke="#5aa2ff" stroke-width="4" opacity=".9"/>
-    <rect x="66" y="146" width="168" height="92" rx="4" fill="#5aa2ff" opacity=".16"/>
-    <rect x="132" y="252" width="36" height="20" fill="#5aa2ff" opacity=".6"/>
-    <rect x="104" y="272" width="92" height="7" rx="3.5" fill="#5aa2ff" opacity=".6"/>
+  encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180">
+    <rect width="320" height="180" fill="#0e1220"/>
+    <rect x="112" y="46" width="96" height="62" rx="9" fill="none" stroke="#f4f6fb" stroke-width="6" opacity=".85"/>
+    <rect x="152" y="108" width="16" height="16" fill="#f4f6fb" opacity=".85"/>
+    <rect x="134" y="124" width="52" height="7" rx="3.5" fill="#f4f6fb" opacity=".85"/>
+    <defs><linearGradient id="w" x1="0" x2="1"><stop offset="0" stop-color="#22d3ee"/><stop offset="1" stop-color="#8b5cf6"/></linearGradient></defs>
+    <path d="M98 78c20-18 40-18 62 0s42 18 62 0" fill="none" stroke="url(#w)" stroke-width="8" stroke-linecap="round"/>
   </svg>`);
 
-/** A calm, deterministic cover for a game with no real poster on disk —
- *  a two-tone gradient keyed off the name, with the title set across it. */
+/** A deterministic cover for a game with no real poster on disk: a gradient
+ *  keyed off the name with its initials set large. The card prints the full
+ *  title under the cover, so the art does not repeat it. */
 function generatedPoster(name: string): string {
   const seed = [...name].reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 7);
   const hue = seed % 360;
-  const hue2 = (hue + 35) % 360;
-
-  // Wrap the title into up to 4 lines that fit the 300-wide art.
-  const words = name.split(/\s+/).filter(Boolean);
-  const lines: string[] = [];
-  let cur = "";
-  for (const w of words) {
-    const t = cur ? `${cur} ${w}` : w;
-    if (t.length > 11 && cur) {
-      lines.push(cur);
-      cur = w;
-    } else {
-      cur = t;
-    }
-    if (lines.length === 3) break;
-  }
-  if (cur) lines.push(cur);
-  if (lines.length > 4) lines.length = 4;
-  // Size to fit the widest line inside ~250px (bold system font ≈ 0.6em/char),
-  // then clamp so short and long titles both look deliberate.
-  const widest = Math.max(...lines.map((l) => l.length), 1);
-  const size = Math.max(
-    24,
-    Math.min(lines.length >= 3 ? 34 : 44, Math.floor(250 / (widest * 0.6))),
-  );
-  const startY = 225 - ((lines.length - 1) * size * 1.15) / 2;
-  const tspans = lines
-    .map(
-      (l, i) =>
-        `<tspan x="150" y="${(startY + i * size * 1.15).toFixed(0)}">${escapeXml(l)}</tspan>`,
-    )
-    .join("");
-
+  const hue2 = (hue + 40) % 360;
+  const words = name
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+  const initials = (
+    words.length > 1
+      ? (words[0]![0] ?? "") + (words[1]![0] ?? "")
+      : (words[0] ?? "?").slice(0, 2)
+  ).toUpperCase();
   return (
     "data:image/svg+xml," +
     encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 450">
-      <defs><linearGradient id="g" x1="0" y1="0" x2="0.7" y2="1">
-        <stop offset="0" stop-color="hsl(${hue} 40% 32%)"/>
-        <stop offset="1" stop-color="hsl(${hue2} 38% 14%)"/>
+      <defs><linearGradient id="g" x1="0" y1="0" x2="0.6" y2="1">
+        <stop offset="0" stop-color="hsl(${hue} 34% 30%)"/>
+        <stop offset="1" stop-color="hsl(${hue2} 30% 12%)"/>
       </linearGradient></defs>
       <rect width="300" height="450" fill="url(#g)"/>
-      <rect width="300" height="450" fill="#000" opacity="0.05"/>
-      <text text-anchor="middle" fill="#fff" fill-opacity="0.94"
-        font-family="system-ui,Segoe UI,Roboto,sans-serif" font-size="${size}" font-weight="750">${tspans}</text>
+      <text x="150" y="262" text-anchor="middle" fill="#fff" fill-opacity="0.9"
+        font-family="system-ui,Segoe UI,Roboto,sans-serif" font-size="112" font-weight="700" letter-spacing="-4">${escapeXml(initials)}</text>
     </svg>`)
   );
 }
@@ -199,11 +174,12 @@ export function mountLibraryGrid(
 
   if (!visible.length) {
     host.innerHTML =
-      '<div class="library-empty"><strong>Your desktop is ready.</strong><p>No games found. Open a launcher on your PC, or stream the desktop to get started.</p></div>';
+      '<div class="library-empty"><strong>No games found</strong>InPhase looks in Steam, Epic, GOG, Xbox and other launchers on your PC. You can always stream the desktop.</div>';
     return;
   }
-  host.innerHTML = `<div class="library-grid" role="group" aria-label="Choose what to stream">
-    ${visible
+  // Cards go straight into the host: it is `display: contents` inside the
+  // page's grid, next to the desktop tile.
+  host.innerHTML = `    ${visible
       .map((item) => {
         const t = targetFor(item);
         const isSel = sameTarget(t, state.selected);
@@ -223,12 +199,11 @@ export function mountLibraryGrid(
                 : ""
             }
             <span class="lib-check" aria-hidden="true">✓</span>
-            <span class="lib-name">${escapeHtml(item.name)}</span>
           </span>
+          <span class="lib-name">${escapeHtml(item.name)}</span>
         </button>`;
       })
-      .join("")}
-  </div>`;
+      .join("")}`;
 
   for (const btn of host.querySelectorAll<HTMLButtonElement>(".lib-card")) {
     btn.addEventListener("click", () => {

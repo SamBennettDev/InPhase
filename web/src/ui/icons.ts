@@ -12,10 +12,19 @@ import {
   ChevronRight,
   X,
   Wifi,
+  WifiOff,
   CircleHelp,
   LogOut,
   Link,
   Gamepad2,
+  Play,
+  Keyboard,
+  Maximize,
+  Ellipsis,
+  Power,
+  QrCode,
+  Check,
+  TriangleAlert,
 } from "lucide";
 const icons = {
   monitor: Monitor,
@@ -30,15 +39,25 @@ const icons = {
   chevron: ChevronRight,
   close: X,
   wifi: Wifi,
+  wifiOff: WifiOff,
   help: CircleHelp,
   logout: LogOut,
   link: Link,
   gamepad: Gamepad2,
+  play: Play,
+  keyboard: Keyboard,
+  maximize: Maximize,
+  more: Ellipsis,
+  power: Power,
+  qr: QrCode,
+  check: Check,
+  alert: TriangleAlert,
 };
-export function icon(name: keyof typeof icons): string {
+export type IconName = keyof typeof icons;
+export function icon(name: IconName, size = 20): string {
   return createElement(icons[name], {
-    width: 20,
-    height: 20,
+    width: size,
+    height: size,
     "stroke-width": 1.7,
     "aria-hidden": "true",
     focusable: "false",

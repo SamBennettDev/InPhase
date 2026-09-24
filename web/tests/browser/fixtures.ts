@@ -7,6 +7,10 @@ export async function mockHost(
     libraryError?: boolean;
     paired?: boolean;
     rotateError?: boolean;
+    /** A live session: busy host, a peer, and filled stats. */
+    streaming?: boolean;
+    /** Every API call fails, as when the host is not running. */
+    offline?: boolean;
   } = {},
 ) {
   const calls: string[] = [];
@@ -14,7 +18,7 @@ export async function mockHost(
     pc_name: "GAMING-PC",
     version: "0.1.1",
     build_id: "dev",
-    busy: options.busy ?? false,
+    busy: options.busy ?? options.streaming ?? false,
     available: true,
     https: true,
     tls_mode: "local-ca",
@@ -37,6 +41,7 @@ export async function mockHost(
     source: id % 2 ? "epic" : "steam",
   }));
   await page.route("**/api/v1/**", async (route) => {
+    if (options.offline) return route.abort("connectionrefused");
     const path = new URL(route.request().url()).pathname.replace(
       "/api/v1/",
       "",
@@ -62,8 +67,27 @@ export async function mockHost(
         body = {
           pin: "482916",
           pin_ttl_secs: 240,
-          peer: null,
-          stats: { host: {}, transport: {}, client: {} },
+          peer: options.streaming
+            ? { browser: "Safari on iPhone", ip: "192.168.1.42" }
+            : null,
+          uptime_secs: 5400,
+          stats: options.streaming
+            ? {
+                host: {
+                  width: 2560,
+                  height: 1440,
+                  codec: "H265",
+                  encoder_bitrate_kbps: 80000,
+                },
+                transport: {},
+                client: {
+                  presented_fps: 118.6,
+                  inbound_bitrate_kbps: 78200,
+                  rtt_ms: 3.4,
+                },
+                wt_active: true,
+              }
+            : { host: {}, transport: {}, client: {} },
         };
         break;
       case "admin/controllers":

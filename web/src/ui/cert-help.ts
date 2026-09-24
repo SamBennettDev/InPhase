@@ -63,12 +63,12 @@ export function certInstructionsHtml(
     `Open <a href="${httpsUrl}"><b>${httpsUrl}</b></a>.`,
   ];
   return `
-    <ol style="margin:.2rem 0;padding-left:1.2rem;line-height:1.65">
-      ${items.map((s) => `<li style="margin:.35rem 0">${s}</li>`).join("")}
+    <ol class="cert-steps">
+      ${items.map((s) => `<li>${s}</li>`).join("")}
     </ol>
-    <details style="margin-top:.4rem">
-      <summary class="k">Using Firefox?</summary>
-      <div class="k" style="margin-top:.3rem">
+    <details class="cert-firefox">
+      <summary>Using Firefox?</summary>
+      <div>
         Firefox keeps its own certificate store. In <b>about:config</b> set
         <b>security.enterprise_roots.enabled</b> to <b>true</b> (it then trusts
         the certificate you just installed in the OS), or import the file under

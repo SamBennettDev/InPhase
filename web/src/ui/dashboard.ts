@@ -3,7 +3,7 @@ import {
   detectPlatform,
   type Platform,
 } from "./cert-help.js";
-import { brandLogo } from "./brand.js";
+import { brandLogo, setSignal, signalLine } from "./brand.js";
 import { icon } from "./icons.js";
 import { escapeHtml as esc, safeHttpUrl } from "./html.js";
 
@@ -49,17 +49,24 @@ async function api<T>(
   path: string,
   body?: Record<string, unknown>,
 ): Promise<T> {
-  const r = await fetch("/api/v1/" + path, {
-    cache: "no-store",
-    signal: AbortSignal.timeout(7000),
-    ...(body
-      ? {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(body),
-        }
-      : {}),
-  });
+  let r: Response;
+  try {
+    r = await fetch("/api/v1/" + path, {
+      cache: "no-store",
+      signal: AbortSignal.timeout(7000),
+      ...(body
+        ? {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(body),
+          }
+        : {}),
+    });
+  } catch {
+    // A refused or timed-out request: the browser's own message ("Failed to
+    // fetch") means nothing to the person reading it.
+    throw Error("InPhase is not answering on this PC. Retrying…");
+  }
   if (!r.ok)
     throw Error(
       r.status === 403
@@ -75,28 +82,36 @@ export function renderDashboard(root: HTMLElement) {
   root.innerHTML = `
     <main class="dash app-shell">
       <header class="app-header">${brandLogo("brand-logo brand-logo--home")}<span class="header-divider"></span><span class="header-label">Host</span>
-        <span class="connection-pill" id="connection" role="status"><span class="dot"></span>Connecting</span>
-        <a class="icon-btn" href="https://github.com/SamBennettDev/InPhase#readme" target="_blank" rel="noreferrer" aria-label="Open InPhase help">${icon("help")}</a>
+        <div class="header-actions"><span class="connection-pill" id="connection" role="status"><span class="dot"></span>Connecting</span>
+        <a class="icon-btn" href="https://github.com/SamBennettDev/InPhase#readme" target="_blank" rel="noreferrer" aria-label="Open InPhase help">${icon("help")}</a></div>
       </header>
-      <div class="page-heading"><div><h1>Welcome to InPhase</h1><p class="sub">A little setup. A lot more freedom to play.</p></div><span class="quiet-tag">${icon("shield")} Only devices you pair</span></div>
+      ${signalLine("signal")}
       <p class="action-message" id="message" role="status" hidden></p>
-      <section class="host-overview" aria-label="Host status"><div class="host-symbol">${icon("monitor")}</div><div class="host-overview-copy"><p class="eyebrow">HOST STATUS</p><h2 id="state">Checking your PC…</h2><p id="state-detail">Fetching the latest host status.</p></div><div class="host-overview-meta"><span class="quiet-tag" id="access">${icon("wifi")} Checking access</span><span id="version" class="muted"></span></div></section>
-      <div class="dashboard-columns"><div class="dashboard-primary">
-        <section class="surface" aria-labelledby="pairing-heading"><div class="section-heading"><span class="section-icon">${icon("link")}</span><div><h2 id="pairing-heading">Connect another device</h2><p>Open this address on the device you want to play from.</p></div></div>
-          <div class="address-field"><span id="play-url" class="mono">Loading address…</span><button id="copy" class="icon-btn" aria-label="Copy play address" disabled>${icon("copy")}</button></div>
-          <div class="pairing-row"><div><p class="eyebrow">YOUR PAIRING PIN</p><div class="pin" id="pin">••• •••</div><span class="muted" id="pin-ttl">Available only on this PC</span></div><button id="rotate" class="secondary compact" disabled>${icon("refresh")} New PIN</button></div>
-          <div class="pairing-actions"><button id="new-device" class="compact" disabled>${icon("device")} Pair with a QR code</button><span class="muted">Pair once. Play whenever.</span></div><div id="invite" aria-live="polite"></div>
-          <details class="setup-details"><summary>${icon("shield")} First time on this device? <span>Certificate setup</span>${icon("chevron")}</summary><div id="certificate-setup"></div></details>
+      <div class="dash-grid">
+        <section class="panel dash-now" aria-labelledby="state">
+          <div class="now-state"><p class="eyebrow">This PC</p><h1 id="state">Checking your PC…</h1><p id="state-detail">Fetching the latest host status.</p>
+            <div class="now-meta"><span id="access">${icon("wifi")} Checking access</span><span id="uptime"></span></div></div>
+          <div class="metric-list" id="metrics"></div>
+          <div id="health" class="health-note" role="status"></div>
+          <button id="disconnect" class="secondary compact danger" hidden>${icon("power")} End stream</button>
         </section>
-        <section class="surface" aria-labelledby="devices-heading"><div class="section-heading"><span class="section-icon">${icon("device")}</span><div><h2 id="devices-heading">Your devices <span id="device-count" class="count-badge">0</span></h2><p>You control who can connect.</p></div></div><div id="controllers"><p class="muted">Loading paired devices…</p></div>
+        <section class="panel dash-pair" aria-labelledby="pairing-heading">
+          <div class="panel-head"><h2 id="pairing-heading">Pair a device</h2></div>
+          <div class="pin-block"><div><p class="eyebrow">Pairing PIN</p><div class="pin" id="pin">••• •••</div><span class="pin-ttl" id="pin-ttl">Available only on this PC</span></div>
+            <button id="rotate" class="secondary compact" disabled>${icon("refresh")} New PIN</button></div>
+          <div class="address-field"><span id="play-url" class="mono">Loading address…</span><button id="copy" class="icon-btn" aria-label="Copy play address" disabled>${icon("copy")}</button></div>
+          <div class="pairing-actions"><button id="new-device" class="compact" disabled>${icon("qr")} Show QR code</button><span class="muted">Or open the address on your device and enter the PIN.</span></div>
+          <div id="invite" aria-live="polite"></div>
+          <details class="setup-details"><summary>${icon("shield")} Certificate setup for a new device <span class="chev">${icon("chevron")}</span></summary><div id="certificate-setup"></div></details>
+        </section>
+        <section class="panel dash-devices" aria-labelledby="devices-heading">
+          <div class="panel-head"><h2 id="devices-heading">Devices <span id="device-count" class="count-badge">0</span></h2></div>
+          <div id="controllers"><p class="muted">Loading paired devices…</p></div>
           <details class="device-management"><summary>Manage all devices</summary><p class="muted">Unpairing removes access and ends the active stream.</p><button id="unpair" class="secondary compact danger" disabled>Unpair all devices</button></details>
         </section>
-      </div><aside class="dashboard-secondary">
-        <section class="surface"><div class="section-heading"><span class="section-icon">${icon("activity")}</span><div><h2>Stream status</h2><p id="session-detail">No active session</p></div></div><div class="metric-list" id="metrics"></div><div id="health" class="health-note" role="status"></div><button id="disconnect" class="secondary compact danger" hidden>End stream</button></section>
-        <section class="surface setup-guide"><p class="eyebrow">FROM HERE TO PLAY</p><ol><li><span>1</span><div><strong>Keep this PC awake</strong><p>InPhase stays in your system tray.</p></div></li><li><span>2</span><div><strong>Pair your browser</strong><p>Open the address above and enter your PIN.</p></div></li><li><span>3</span><div><strong>Choose a game</strong><p>Your library and desktop are ready on your device.</p></div></li></ol></section>
-      </aside></div>
-      <details class="diagnostics"><summary>${icon("activity")} Advanced diagnostics</summary><p class="muted">Live technical details. Pairing PINs are excluded.</p><pre id="raw"></pre></details>
-      <footer class="page-footer"><span>Local first. Open source. Built for your PC.</span><a href="https://github.com/SamBennettDev/InPhase" target="_blank" rel="noreferrer">InPhase on GitHub ${icon("arrow")}</a></footer>
+      </div>
+      <details class="diagnostics"><summary>${icon("activity")} Diagnostics</summary><p class="muted">Live technical details. The pairing PIN is left out.</p><pre id="raw"></pre></details>
+      <footer class="page-footer"><span id="version">InPhase</span><a href="https://github.com/SamBennettDev/InPhase" target="_blank" rel="noreferrer">Source on GitHub ${icon("arrow")}</a></footer>
     </main>`;
   const $ = <T extends HTMLElement>(s: string) => root.querySelector<T>(s)!;
   const shell = root.firstElementChild;
@@ -253,7 +268,7 @@ export function renderDashboard(root: HTMLElement) {
                 (c.last_seen_unix
                   ? "Last connected " +
                     esc(new Date(c.last_seen_unix * 1000).toLocaleDateString())
-                  : "Paired · ready to connect") +
+                  : "Paired") +
                 '</span></div><button class="link danger" data-revoke="' +
                 esc(c.id) +
                 '" aria-label="Unpair ' +
@@ -261,9 +276,7 @@ export function renderDashboard(root: HTMLElement) {
                 '">Unpair</button></div>',
             )
             .join("")
-        : '<div class="empty-devices">' +
-          icon("device") +
-          "<strong>Your next screen starts here.</strong><p>Pair a device above and it will appear in this list.</p></div>";
+        : '<div class="empty-devices"><strong>No devices yet</strong>Pair your first one:<ol><li>Open the play address on your phone, tablet or laptop.</li><li>Enter the PIN, or scan the QR code.</li></ol></div>';
       $("#controllers")
         .querySelectorAll<HTMLButtonElement>("[data-revoke]")
         .forEach((b) =>
@@ -382,39 +395,41 @@ export function renderDashboard(root: HTMLElement) {
         if (!pending.has(b)) b.disabled = false;
       }
       $("#version").textContent = "InPhase " + pub.version;
+      $("#uptime").textContent = admin.uptime_secs
+        ? "Up " + formatUptime(admin.uptime_secs)
+        : "";
       $("#pin").textContent = admin.pin;
       $("#pin-ttl").textContent =
         admin.pin_ttl_secs == null
           ? "Regenerate this PIN whenever you need to."
           : "Refreshes in " + admin.pin_ttl_secs + "s";
-      $("#connection").className = "connection-pill ok";
-      $("#connection").innerHTML = '<span class="dot"></span>Host online';
+      $("#connection").className =
+        "connection-pill " + (pub.busy ? "live" : "ok");
+      $("#connection").innerHTML =
+        '<span class="dot"></span>' + (pub.busy ? "Streaming" : "Online");
+      setSignal($("#signal"), pub.busy ? "live" : "ready");
       $("#state").textContent = pub.busy
-        ? "A game is in motion."
+        ? "Streaming"
         : pub.https && pub.available
-          ? "Ready to play."
+          ? "Ready"
           : !pub.https
-            ? "Secure setup needs attention."
-            : "Getting ready…";
+            ? "HTTPS needs attention"
+            : "Starting…";
       $("#state-detail").textContent = admin.peer
-        ? "Streaming to " + admin.peer.browser
+        ? "To " + admin.peer.browser
         : pub.https
-          ? "Your PC is waiting for a paired device."
+          ? "Waiting for a paired device to connect."
           : "Check diagnostics and restart InPhase to restore HTTPS.";
       $("#access").innerHTML =
         icon("wifi") +
         " " +
         (pub.remote_mapping != null
-          ? "Remote access enabled"
+          ? "Remote access on"
           : "Local network only");
-      $("#session-detail").textContent =
-        admin.peer?.browser ?? "No active session";
       $("#disconnect").hidden = !pub.busy;
       renderMetrics($("#metrics"), admin, pub.busy);
       $("#health").textContent = health.ok
-        ? pub.busy
-          ? "Stream health looks good."
-          : "Performance appears here when a stream starts."
+        ? ""
         : health.symptoms.map((s) => s.detail).join(" ");
       $("#health").classList.toggle("warning", !health.ok);
       const { pin: _pin, ...diagnostics } = admin;
@@ -423,8 +438,9 @@ export function renderDashboard(root: HTMLElement) {
     } catch (e) {
       if (!active()) return;
       $("#connection").className = "connection-pill warn";
-      $("#connection").innerHTML = '<span class="dot"></span>Connection lost';
-      $("#state").textContent = "Let’s reconnect your PC.";
+      $("#connection").innerHTML = '<span class="dot"></span>Offline';
+      setSignal($("#signal"), "down");
+      $("#state").textContent = "Can’t reach the host";
       $("#state-detail").textContent =
         e instanceof Error
           ? e.message
@@ -439,6 +455,17 @@ export function renderDashboard(root: HTMLElement) {
   };
   void tick();
 }
+/** Received bitrate (Mbps) per 2 s tick while a stream runs; cleared when
+ *  it ends. Drawn as the dashboard's live trace. */
+const trace: number[] = [];
+const TRACE_LEN = 90;
+
+function formatUptime(secs: number): string {
+  const h = Math.floor(secs / 3600),
+    m = Math.floor((secs % 3600) / 60);
+  return h ? `${h} h ${m} min` : `${m} min`;
+}
+
 function renderMetrics(box: HTMLElement, admin: Admin, live: boolean) {
   const h = admin.stats.host,
     t = admin.stats.transport,
@@ -451,41 +478,76 @@ function renderMetrics(box: HTMLElement, admin: Admin, live: boolean) {
   // client's ping/pong RTT and bytes-received rate; encoder target is last.
   const pick = (...vals: unknown[]) =>
     vals.find((v) => typeof v === "number" && Number.isFinite(v) && v > 0);
-  const cells = [
+  const kbps = pick(
+    c["inbound_bitrate_kbps"],
+    t["outbound_bitrate_kbps"],
+    h["encoder_bitrate_kbps"],
+  ) as number | undefined;
+  if (live && kbps) {
+    trace.push(kbps / 1000);
+    if (trace.length > TRACE_LEN) trace.shift();
+  } else if (!live) {
+    trace.length = 0;
+  }
+  const cells: [string, string][] = [
     ["Resolution", live && h["width"] ? h["width"] + " × " + h["height"] : "—"],
     ["Frame rate", live ? num(c["presented_fps"] ?? c["decoded_fps"], "fps") : "—"],
-    [
-      "Bandwidth",
-      live
-        ? num(
-            pick(
-              c["inbound_bitrate_kbps"],
-              t["outbound_bitrate_kbps"],
-              h["encoder_bitrate_kbps"],
-            ),
-            "Mbps",
-            1000,
-          )
-        : "—",
-    ],
-    ["Round-trip time", live ? num(pick(c["rtt_ms"], t["rtt_ms"]), "ms") : "—"],
-    [
-      "Video",
-      live
-        ? (h["codec"] || "Negotiating") +
-          " · " +
-          (admin.stats.wt_active ? "WebTransport" : "WebRTC")
-        : "Waiting for a player",
-    ],
+    ["Bitrate", live ? num(kbps, "Mbps", 1000) : "—"],
+    ["Round trip", live ? num(pick(c["rtt_ms"], t["rtt_ms"]), "ms") : "—"],
   ];
-  box.innerHTML = cells
-    .map(
-      ([k, v]) =>
-        '<div class="metric-row"><span>' +
-        esc(k) +
-        "</span><strong>" +
-        esc(v) +
-        "</strong></div>",
-    )
-    .join("");
+  const codec = live
+    ? String(h["codec"] || "Negotiating") +
+      (admin.stats.wt_active ? " over WebTransport" : "")
+    : "No stream";
+  box.innerHTML =
+    cells
+      .map(
+        ([k, v]) =>
+          '<div class="metric-row' +
+          (v === "—" ? " idle" : "") +
+          '"><span>' +
+          esc(k) +
+          "</span><strong>" +
+          esc(v) +
+          "</strong></div>",
+      )
+      .join("") +
+    '<div class="metric-row wide' +
+    (live ? "" : " idle") +
+    '"><span>Video</span><strong>' +
+    esc(codec) +
+    "</strong></div>" +
+    (live ? traceHtml() : "");
+}
+
+/** The bitrate trace: the brand wave's stroke, drawn from real samples. */
+function traceHtml(): string {
+  const W = 300,
+    H = 44;
+  const max = Math.max(1, ...trace) * 1.15;
+  const y = (v: number) => (H - (v / max) * (H - 4) - 2).toFixed(1);
+  // Samples fill in from the left over the window; a lone sample is a point,
+  // which draws nothing, so it is held as a level line.
+  const pts =
+    trace.length > 1
+      ? trace
+          .map((v, i) => ((i / (TRACE_LEN - 1)) * W).toFixed(1) + "," + y(v))
+          .join(" ")
+      : `0,${y(trace[0] ?? 0)} ${W},${y(trace[0] ?? 0)}`;
+  const peak = trace.length ? Math.max(...trace).toFixed(0) + " Mbps peak" : "";
+  return (
+    '<div class="metric-trace"><svg viewBox="0 0 ' +
+    W +
+    " " +
+    H +
+    '" preserveAspectRatio="none" aria-hidden="true"><defs><linearGradient id="trace-grad" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="' + W + '" y2="0"><stop offset="0" stop-color="#22d3ee"/><stop offset="1" stop-color="#8b5cf6"/></linearGradient></defs><polyline points="' +
+    pts +
+    '" fill="none" stroke="' +
+    (trace.length ? "url(#trace-grad)" : "#2f3543") +
+    '" stroke-width="1.6" vector-effect="non-scaling-stroke" stroke-linejoin="round"/></svg><div class="trace-cap"><span>' +
+    (trace.length ? "Bitrate, last " + Math.max(1, Math.round((trace.length * 2) / 60)) + " min" : "Bitrate") +
+    "</span><span>" +
+    peak +
+    "</span></div></div>"
+  );
 }

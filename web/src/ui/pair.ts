@@ -8,7 +8,7 @@
 //
 // The browser generates its Ed25519 device key and registers it with the host.
 
-import { brandLogo } from "./brand.js";
+import { gate } from "./brand.js";
 import { icon } from "./icons.js";
 
 import { getControllerIdentity, deviceLabel } from "../controller-key.js";
@@ -24,23 +24,21 @@ export function renderPairPage(root: HTMLElement) {
     history.replaceState(null, "", location.pathname + location.search);
   const qrSecret = fragment.length > 20 ? fragment : null;
 
-  root.innerHTML = `
-    <div class="center">
-      ${brandLogo()}<div class="pair-icon">${icon("link")}</div><h1>Pair your browser.</h1>
-      <p class="sub">${qrSecret ? "Pair this browser with your PC." : "Enter the code shown on your PC."}</p>
-      <div class="card">
+  root.innerHTML = gate(`
+      <h1>Pair this browser</h1>
+      <p class="sub">${qrSecret ? "Your PC sent an invitation. Confirm to add this browser to your devices." : "Enter the 9-character code shown with the QR code on your PC."}</p>
+      <div class="gate-form">
         ${
           qrSecret
             ? ""
             : `<label for="code">Pairing code</label>
-               <input id="code" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false"
-                      maxlength="11" placeholder="XXXXXXXXX" style="text-transform:uppercase;letter-spacing:.15em" />`
+               <input id="code" class="code-input code9" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false"
+                      maxlength="11" placeholder="XXXXXXXXX" />`
         }
         <button id="go">${qrSecret ? "Pair this browser" : "Pair"}</button>
         <div class="err" id="err" role="alert"></div>
-        <div class="k" id="note"></div>
-      </div>
-    </div>`;
+        <div id="note" role="status"></div>
+      </div>`);
 
   const $ = <T extends HTMLElement>(s: string) => root.querySelector<T>(s)!;
   const err = $<HTMLDivElement>("#err");
@@ -59,9 +57,10 @@ export function renderPairPage(root: HTMLElement) {
   };
   const succeed = () => {
     window.clearInterval(polling);
-    root.innerHTML = `<div class="center"><h1>InPhase</h1>
-      <p class="sub">This browser is paired.</p>
-      <div class="card"><button id="home">Open InPhase</button></div></div>`;
+    root.innerHTML = gate(`<div class="gate-state ok">${icon("check")}</div>
+      <h1>Paired</h1>
+      <p class="sub">This browser can now stream from your PC.</p>
+      <div class="gate-actions"><button id="home">Open your library</button></div>`);
     root
       .querySelector("#home")!
       .addEventListener("click", () => (location.href = "/"));

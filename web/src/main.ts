@@ -8,10 +8,9 @@
 //   * the host dashboard (§25.1) — shown when opened on the host itself, since
 //     the live metrics come from the loopback-only admin API (§16).
 
-import "./ui/style.css";
-import "./ui/polish.css";
+import "./ui/app.css";
 import { escapeHtml, safeHttpUrl } from "./ui/html.js";
-import { brandLogo } from "./ui/brand.js";
+import { gate } from "./ui/brand.js";
 
 // A restored tab renders the OLD bundle from memory cache (no revalidation),
 // which can be a wire-format mismatch with the host. Reload once; after a
@@ -65,15 +64,14 @@ async function renderCertSetup(el: HTMLElement) {
   } catch {
     /* keep the guess */
   }
-  el.innerHTML = `
-    <div class="center">
-      ${brandLogo()}<h1>Trust your gaming PC</h1>
-      <p class="sub">One-time setup for this device — install the InPhase certificate so your browser trusts this PC.</p>
-      <div class="card" style="text-align:left;max-width:34rem">
+  el.innerHTML = gate(`
+      <h1>Trust your gaming PC</h1>
+      <p class="sub">One-time setup for this device: install your PC’s certificate so this browser can connect securely.</p>
+      <div class="gate-card">
         ${certInstructionsHtml(detectPlatform(), httpsUrl)}
-        <button id="go" style="margin-top:1rem">Continue to ${escapeHtml(new URL(httpsUrl).hostname)}</button>
       </div>
-    </div>`;
+      <div class="gate-actions"><button id="go">Continue to ${escapeHtml(new URL(httpsUrl).hostname)}</button></div>`);
+  el.querySelector(".gate-col")?.classList.add("wide");
   el.querySelector("#go")!.addEventListener(
     "click",
     () => (location.href = httpsUrl),

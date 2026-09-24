@@ -390,6 +390,8 @@ try {
   result = { label: LABEL, engine: ENGINE, profile: PROFILE, passed: false, fatal: String(e), errors, console: consoleLines.slice(-60) };
   await page.screenshot({ path: join(OUT, `${LABEL}.fail.png`) }).catch(() => {});
 } finally {
+  // What was on screen at the end of the run, pass or fail.
+  await page.screenshot({ path: join(OUT, `${LABEL}.png`) }).catch(() => {});
   await admin("/api/v1/admin/disconnect", { method: "POST" }).catch(() => {});
   if (remote) {
     // Leave the remote browser running; only this run's tab goes.

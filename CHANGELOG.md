@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Redesigned web UI. The dashboard leads with what the PC is doing (live
+  resolution, frame rate, bitrate with a two-minute trace, round trip) next to
+  the pairing PIN and address; the welcome banner and permanent setup steps
+  are gone, and first-run steps appear only until a device is paired. The
+  library drops its hero: the desktop is a double-width tile with the live
+  desktop preview as its cover, generated covers show initials instead of
+  repeating the title, and the launch bar no longer covers the page. Pairing,
+  offline and certificate screens share one layout, and the browser's
+  "Failed to fetch" is replaced with plain language. One stylesheet
+  (`app.css`) replaces two; brand cyan is the single action colour. A signal
+  line under the header shows the PC's state: flat when unreachable, still
+  when ready, moving while streaming.
 - Stop flashing console windows when the host starts. The startup checks
   (certificate trust, firewall rules, start-at-sign-in) ran certutil, netsh
   and reg as visible consoles; every child process now starts without a

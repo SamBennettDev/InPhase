@@ -9,6 +9,7 @@
 //   * bottom-right  -> L / R mouse buttons.
 //   * top-right ⋯   -> menu: Keyboard · Fullscreen · Disconnect.
 
+import { icon } from "../ui/icons.js";
 import { InputEncoder, InputKind, type GamepadStateWire } from "./protocol.js";
 import { SoftKeyboard } from "./softkeyboard.js";
 import { readGamepad } from "./gamepad.js";
@@ -80,11 +81,11 @@ export class TouchController {
   private buildUi() {
     this.root.innerHTML = `
       <div class="pad"></div>
-      <button class="tbtn menu-btn" data-act="menu">⋯</button>
+      <button class="tbtn menu-btn" data-act="menu" aria-label="Menu">${icon("more")}</button>
       <div class="sheet" hidden>
-        <button class="tbtn" data-act="kb">⌨ Keyboard</button>
-        <button class="tbtn" data-act="fs">⛶ Fullscreen</button>
-        <button class="tbtn" data-act="quit">✕ Disconnect</button>
+        <button class="tbtn" data-act="kb">${icon("keyboard")} Keyboard</button>
+        <button class="tbtn" data-act="fs">${icon("maximize")} Fullscreen</button>
+        <button class="tbtn danger" data-act="quit">${icon("power")} End stream</button>
       </div>
       <div class="mouse">
         <button class="tbtn" data-mouse="0">L</button>
