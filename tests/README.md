@@ -37,3 +37,14 @@ Checklists, not code — each needs a real GPU + browser:
 `tests/latency/harness/` is a CDP + host-log harness (drives a headless Chrome
 client, aggregates the host's per-frame trace). `scripts/smoke-gstreamer.ps1`
 probes that the required GStreamer elements load.
+
+## `streaming/` — target validation (on hardware)
+
+Asks a different question from `latency/`: not *where does latency go*, but *did
+the stream hold its target* — resolution, frame rate and bitrate — consistently,
+with no drops, freezes or errors. Drives a real browser client and asserts
+against explicit tolerances (`verify.mjs`), and measures the client's own decode
+ceiling (`sweep.sh`) so a missed target can be attributed to the client rather
+than the host. See `streaming/README.md`, including the measured 4K120 decode
+ceiling for this box and a client-mode caveat that matters before quoting
+numbers.

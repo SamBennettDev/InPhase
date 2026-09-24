@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use inphase_host::config::Config;
 use inphase_host::http::HttpState;
-use inphase_host::media::wt::{WtTransportConfig, WtVideoTransport};
+use inphase_host::media::wt::{WtIdentity, WtSlot, WtTransportConfig, WtVideoTransport};
 use inphase_protocol::SignalMessage;
 
 fn state_with(wt: Option<Arc<WtVideoTransport>>) -> HttpState {
@@ -49,7 +49,14 @@ fn state_with(wt: Option<Arc<WtVideoTransport>>) -> HttpState {
         remote_access: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         remote_mapping: inphase_host::portmap::shared(),
         art: inphase_host::gameart::ArtCache::new(false),
-        wt,
+        wt: {
+            // The slot is what the HTTP state and the session manager read; a
+            // rotation would replace its contents, so tests publish through it
+            // exactly as boot does.
+            let slot = WtSlot::new();
+            slot.set(wt);
+            slot
+        },
         started_at: std::time::Instant::now(),
     }
 }
@@ -67,16 +74,7 @@ async fn wt_disabled_advertises_nothing() {
 
 #[tokio::test]
 async fn wt_enabled_advertises_dial_info_matching_the_transport() {
-    let identity = wtransport_identity();
-    let transport = Arc::new(
-        WtVideoTransport::bind(WtTransportConfig {
-            port: 0,
-            identity,
-            datagram_budget: 1300,
-            max_queued_frames: 4,
-        })
-        .unwrap(),
-    );
+    let transport = Arc::new(wt_transport(0));
     let st = state_with(Some(transport.clone()));
 
     let msg = inphase_host::http::wt_advertisement(&st).expect("wt host advertises");
@@ -112,15 +110,7 @@ async fn wt_enabled_advertises_dial_info_matching_the_transport() {
 
 #[tokio::test]
 async fn each_claimed_session_gets_a_fresh_token() {
-    let transport = Arc::new(
-        WtVideoTransport::bind(WtTransportConfig {
-            port: 0,
-            identity: wtransport_identity(),
-            datagram_budget: 1300,
-            max_queued_frames: 4,
-        })
-        .unwrap(),
-    );
+    let transport = Arc::new(wt_transport(0));
     let st = state_with(Some(transport.clone()));
 
     let first = inphase_host::http::wt_advertisement(&st).unwrap();
@@ -179,6 +169,118 @@ async fn consume_via_client(transport: &WtVideoTransport, token: &str) -> bool {
     }
 }
 
-fn wtransport_identity() -> wtransport::Identity {
-    wtransport::Identity::self_signed(["localhost", "127.0.0.1"]).unwrap()
+/// A transport with a fresh, in-window certificate — the state the host
+/// advertises from.
+fn wt_transport(port: u16) -> WtVideoTransport {
+    let id = WtIdentity::self_signed(&["localhost".into(), "127.0.0.1".into()]).unwrap();
+    WtVideoTransport::bind(WtTransportConfig {
+        port,
+        identity: id.identity,
+        cert_not_after: id.not_after,
+        datagram_budget: 1300,
+        max_queued_frames: 4,
+        congestion: Default::default(),
+    })
+    .unwrap()
+}
+
+/// Receive the next message of type `want` from the host side of a signaling
+/// link, skipping the others.
+async fn next_of(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
+    want: impl Fn(&SignalMessage) -> bool,
+) -> SignalMessage {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let text = rx.recv().await.expect("signaling link closed");
+            if let Ok(msg) = serde_json::from_str::<SignalMessage>(&text) {
+                if want(&msg) {
+                    return msg;
+                }
+            }
+        }
+    })
+    .await
+    .expect("host answered in time")
+}
+
+/// A client whose WT connection closed asks for a fresh dial over the
+/// signaling socket. That request used to be answered only on the retired
+/// WebRTC data channel, so over the socket it vanished - and a single WT close
+/// left the session frameless until the player reloaded (host: `sent=0 ...
+/// evicted=121` every second; client: "waiting for a keyframe").
+#[tokio::test]
+async fn a_redial_request_over_signaling_gets_a_fresh_dial() {
+    use base64::Engine as _;
+    use ed25519_dalek::Signer as _;
+
+    let transport = Arc::new(wt_transport(0));
+    let st = state_with(Some(transport.clone()));
+    let (to_host, from_link) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let (to_link, mut from_host) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let link = tokio::spawn(inphase_host::http::signal::drive(
+        from_link,
+        to_link,
+        st,
+        inphase_host::http::signal::PeerDesc {
+            browser: "test".into(),
+            addr_label: "test".into(),
+        },
+    ));
+
+    let SignalMessage::AuthChallenge { nonce } = next_of(&mut from_host, |m| {
+        matches!(m, SignalMessage::AuthChallenge { .. })
+    })
+    .await
+    else {
+        unreachable!()
+    };
+    let nonce = base64::engine::general_purpose::STANDARD
+        .decode(nonce)
+        .unwrap();
+    let key = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+    let controller_id: String = key
+        .verifying_key()
+        .to_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let signature = base64::engine::general_purpose::STANDARD.encode(key.sign(&nonce).to_bytes());
+    to_host
+        .send(
+            serde_json::to_string(&SignalMessage::AuthResponse {
+                controller_id,
+                signature,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+    let is_info = |m: &SignalMessage| matches!(m, SignalMessage::WtVideoInfo { .. });
+    let SignalMessage::WtVideoInfo { token: first, .. } = next_of(&mut from_host, is_info).await
+    else {
+        unreachable!()
+    };
+
+    to_host
+        .send(serde_json::to_string(&SignalMessage::WtVideoInfoRequest).unwrap())
+        .unwrap();
+    let SignalMessage::WtVideoInfo {
+        token: second,
+        port,
+        ..
+    } = next_of(&mut from_host, is_info).await
+    else {
+        unreachable!()
+    };
+    assert_ne!(first, second, "a redial gets its own one-time token");
+    assert_eq!(port, transport.port());
+    assert!(
+        consume_via_client(&transport, &second).await,
+        "the re-advertised token authenticates a real dial"
+    );
+
+    drop(to_host);
+    let _ = tokio::time::timeout(Duration::from_secs(5), link).await;
+    transport.shutdown();
 }

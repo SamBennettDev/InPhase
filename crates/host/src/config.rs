@@ -162,6 +162,11 @@ pub struct MediaConfig {
     /// UDP port for the WT endpoint (QUIC needs its own UDP
     /// listener; the TCP listeners are untouched). Firewalls need a rule for it.
     pub wt_port: u16,
+    /// QUIC congestion law on the WT connection: `realtime` (default) leaves
+    /// rate to the application's bitrate controller; `cubic` is quinn's
+    /// loss-based default, kept for A/B comparison. See
+    /// `media::wt::congestion`.
+    pub wt_congestion: crate::media::wt::WtCongestion,
 }
 
 impl Default for MediaConfig {
@@ -179,6 +184,7 @@ impl Default for MediaConfig {
             audio_frame_ms: 10,
             audio_capture_device: None,
             wt_port: 4433,
+            wt_congestion: Default::default(),
         }
     }
 }

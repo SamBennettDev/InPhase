@@ -101,6 +101,74 @@ export function loadSettings(): StreamSettings {
   return { ...DEFAULTS };
 }
 
+/** Frame rate to default to on a display refreshing at `hz`.
+ *
+ *  A frame waits for capture, for the encoder's queue and for the display's
+ *  refresh, and each of those waits is up to one frame interval: 16.7 ms at
+ *  60 fps, 8.3 ms at 120. A 120 Hz+ display that is sent 60 fps pays the
+ *  longer interval for nothing, so its default is the host's 120 fps mode. */
+export function defaultFpsForRefresh(hz: number): number {
+  return hz >= 110 ? 120 : 60;
+}
+
+/** Median refresh rate of this display, from requestAnimationFrame spacing. */
+export function measureRefreshHz(frames = 40): Promise<number> {
+  return new Promise((resolve) => {
+    const stamps: number[] = [];
+    const tick = (t: number) => {
+      stamps.push(t);
+      if (stamps.length <= frames) {
+        requestAnimationFrame(tick);
+        return;
+      }
+      const gaps = stamps.slice(1).map((t2, i) => t2 - stamps[i]!).sort((a, b) => a - b);
+      const mid = gaps[Math.floor(gaps.length / 2)] ?? 16.7;
+      resolve(mid > 0 ? 1000 / mid : 60);
+    };
+    requestAnimationFrame(tick);
+  });
+}
+
+/** Whether this browser reports hardware-grade decode (smooth AND power
+ *  efficient) of 1080p at `fps`. Software decode is the case that must be
+ *  kept at 60: measured on a Ryzen laptop (2026-09-23), a 1080p120 stream
+ *  decoded at 103 fps with 40 ms of decoder queue - capture-to-canvas 50 ms,
+ *  three times the same stream at 60 fps (16 ms). */
+async function decodesSmoothlyAt(fps: number): Promise<boolean> {
+  const mc = (navigator as Navigator & { mediaCapabilities?: MediaCapabilities }).mediaCapabilities;
+  if (!mc?.decodingInfo) return false;
+  try {
+    const r = await mc.decodingInfo({
+      type: "file",
+      video: {
+        contentType: 'video/mp4; codecs="avc1.640034"',
+        width: 1920,
+        height: 1080,
+        bitrate: 40_000_000,
+        framerate: fps,
+      },
+    });
+    return r.supported && r.smooth && r.powerEfficient;
+  } catch {
+    return false;
+  }
+}
+
+/** First visit only: default to 120 fps on a fast display whose browser
+ *  decodes 120 fps in hardware. A stored choice - including a deliberate 60 -
+ *  is never overridden. Resolves to whether the default changed. */
+export async function adoptDisplayRate(): Promise<boolean> {
+  try {
+    if (localStorage.getItem(KEY) !== null) return false;
+  } catch {
+    return false;
+  }
+  const fps = defaultFpsForRefresh(await measureRefreshHz());
+  if (fps === DEFAULTS.fps || !(await decodesSmoothlyAt(fps))) return false;
+  saveSettings({ ...DEFAULTS, fps });
+  return true;
+}
+
 export function saveSettings(s: StreamSettings): void {
   try {
     localStorage.setItem(KEY, JSON.stringify({ ...s, v: SCHEMA }));

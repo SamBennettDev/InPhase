@@ -375,7 +375,7 @@ button.link:hover:not(:disabled) {
   background: linear-gradient(110deg, #1b2535, #171e29 50%, #141920);
   border: 1px solid #75aaff15;
   border-radius: 17px;
-  margin-bottom: 34px;
+  margin: 28px 0 34px;
   overflow: hidden;
 }
 .desktop-copy h2 {
@@ -421,6 +421,23 @@ button.link:hover:not(:disabled) {
     linear-gradient(140deg, #253b59, #1b2a43 53%, #34547b);
   position: relative;
   overflow: hidden;
+}
+.monitor-wallpaper img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: none;
+  background: #000;
+}
+.monitor-wallpaper.has-shot img {
+  display: block;
+}
+.monitor-wallpaper.has-shot:before,
+.monitor-wallpaper.has-shot:after,
+.monitor-wallpaper.has-shot svg {
+  display: none;
 }
 .monitor-wallpaper:before,
 .monitor-wallpaper:after {

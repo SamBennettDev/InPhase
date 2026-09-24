@@ -56,7 +56,35 @@ interface V4Assembly {
   /** FEC parity payloads by group index (row 1 / row 2). */
   p1: Map<number, Uint8Array> | null;
   p2: Map<number, Uint8Array> | null;
+  /** The frame's total data length, from any parity trailer; sizes the final
+   *  fragment when parity has to rebuild it. null until a parity arrives. */
+  total: number | null;
 }
+
+/** Parity payloads end with the frame's total data length (u32 LE) - see
+ *  `PARITY_TRAILER_LEN` in crates/protocol/src/wtvideo.rs. */
+export const PARITY_TRAILER_LEN = 4;
+
+/** `nack.idx` for "every fragment of this frame" (`NACK_WHOLE_FRAME` in
+ *  crates/protocol/src/wtvideo.rs). */
+export const NACK_WHOLE_FRAME = 0xffff;
+
+/** When a frame's missing fragments are first asked for, and how often after.
+ *
+ *  Fixed at 150 / 180 ms these were sized for a 60-130 ms relay, and on a LAN
+ *  they were most of the repair: with a 5 ms RTT the re-send lands ~5 ms after
+ *  it is asked for, but the frame - and every frame queued behind it - froze
+ *  150 ms first. Scaled to the measured RTT, with floors that still let a
+ *  paced frame's own fragments arrive before any of them is presumed lost.
+ *  RTT unknown (0) keeps the old timings. */
+export function nackTiming(rttMs: number): { firstMs: number; gapMs: number } {
+  if (!(rttMs > 0)) return { firstMs: 150, gapMs: 180 };
+  const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+  return { firstMs: clamp(3 * rttMs + 25, 40, 150), gapMs: clamp(3 * rttMs + 30, 50, 180) };
+}
+
+/** Widest frame-number jump treated as loss rather than a new sequence. */
+const WHOLE_FRAME_NACK_SPAN = 16;
 
 export interface WtClientStats {
   codec: string | null;
@@ -116,6 +144,23 @@ function hexToBytes32(hex: string): Uint8Array<ArrayBuffer> {
 }
 
 
+/**
+ * Frames kept for the latency percentiles the host's congestion controller
+ * reads as `client_lat_p95_ms`.
+ *
+ * This was 512 (~8.5 s of video at 60 fps), which made the signal far slower
+ * than the thing it describes: one tail spike held p95 above the controller's
+ * 120 ms threshold for seconds after the route had cleared, and the delay
+ * branch cut on every tick off that stale number — 4000 -> 600 kbps in six
+ * seconds while the client decoded 60 fps at a 7 ms RTT. Two seconds is still
+ * 120 samples for a p95, and it answers the question the controller is asking:
+ * is the tail high *now*.
+ */
+const LAT_SAMPLES = 120;
+
+/** Video channels kept open for forced IDRs (see `openSpareChannel`). */
+const MAX_SPARE_CHANNELS = 4;
+
 export class WtVideoClient {
   private wt: WebTransport | null = null;
   private controlWriter: WritableStreamDefaultWriter<Uint8Array> | null = null;
@@ -126,6 +171,27 @@ export class WtVideoClient {
   private lastFrameAtMs = 0;
   /** Streams reset or dropped before the frame completed. */
   private framesAbandoned = 0;
+  /** framesAbandoned by cause: a datagram assembly that timed out, and a
+   *  stream that ended mid-frame. One total could not say which carrier was
+   *  losing frames, and the two have unrelated fixes. */
+  private v4Expired = 0;
+  /** Highest frame number seen on the datagram carrier, and the frames
+   *  already asked for whole - one request each. */
+  private v4Highest: number | null = null;
+  private wholeNacked = new Set<number>();
+  private wholeFrameNacks = 0;
+  private streamAborted = 0;
+  /** Partial assemblies dropped to bound memory, separately from the ones the
+   *  expiry scan collected: the first is self-inflicted, the second is the
+   *  route's fault, and only the split makes the difference visible. */
+  private assemblyEvicted = 0;
+  /** Partial *keyframe* assemblies evicted - only when every assembly in
+   *  flight is a keyframe. Each one is an IDR the client asked for and threw
+   *  away, so it is counted and re-requested rather than dropped silently. */
+  private keyPartialsEvicted = 0;
+  /** Frames dropped as the second copy of one already delivered on the other
+   *  carrier (the host sends a repair IDR on both, audit §3.5). */
+  private framesDuplicate = 0;
   /** Streams whose reads never completed - cancelled to free flow credit. */
   private streamsWedged = 0;
   /** Writer for client -> host datagrams (input, §13). Null when the
@@ -302,6 +368,8 @@ export class WtVideoClient {
     void this.readFrameStreams(wt, h).catch((e) =>
       this.reportClosed(h, `wt video streams: ${String(e)}`),
     );
+    this.wtRef = wt;
+    this.handlers = h;
     void this.videoChannelLoop(wt, h).catch((e) =>
       this.reportClosed(h, `wt video channel: ${String(e)}`),
     );
@@ -337,8 +405,28 @@ export class WtVideoClient {
     }, 2000);
     // Once-a-second telemetry, shaped like the WebRTC ClientTelemetry so the
     // host's congestion controller can treat both paths identically.
+    //
+    // In worker mode the cadence belongs to the PAGE: the decoder counters live
+    // on the main thread and are pushed here once a second, and `decoded_fps`
+    // is a delta of those counters over the interval between telemetry sends.
+    // Two independent 1 Hz loops let a tick reuse the previous snapshot: it
+    // reports 0 fps, the next one reports double (0 / 120 / 0 / 110 on a 60 fps
+    // stream), the host's loss and health laws read a decoder that keeps dying,
+    // and the page is fine the whole time. So the page's push IS the tick
+    // (`telemetryNow`), and there is no timer here to drift against it.
     this.winStartedMs = performance.now();
-    this.telemetryTimer = setInterval(() => this.sendTelemetry(), 1000);
+    if (!this.inWorker) {
+      this.telemetryTimer = setInterval(() => this.sendTelemetry(), 1000);
+    }
+  }
+
+  /** Compose and send one telemetry message now.
+   *
+   *  Test hook and worker-mode cadence: the worker shell calls this from its
+   *  page-stats handler, so the counters and the window they are differenced
+   *  over always describe the same interval. */
+  telemetryNow(): void {
+    this.sendTelemetry();
   }
 
   /** Open and read the video channel: a bidirectional stream WE open, mark
@@ -381,6 +469,16 @@ export class WtVideoClient {
   /** Audio stays on datagrams: a 10 ms Opus packet fits in one, and a late
    *  one is worth less than the next one. */
   private async readDatagrams(wt: WebTransport, h: WtClientHandlers): Promise<void> {
+    // The browser's incoming datagram queue has no flow control and drops
+    // what does not fit. At 1440p120 / 80 Mbps a frame is ~80 datagrams, and
+    // a Mac Chrome session lost 1-4 % of them on some seconds with QUIC
+    // reporting zero packet loss - dropped after arrival, in this queue. A
+    // deeper queue absorbs a frame's burst; the reader still drains it.
+    try {
+      (wt.datagrams as unknown as { incomingHighWaterMark: number }).incomingHighWaterMark = 4096;
+    } catch {
+      /* not settable in this browser */
+    }
     const reader = wt.datagrams.readable.getReader();
     for (;;) {
       const { value, done } = await reader.read();
@@ -408,6 +506,12 @@ export class WtVideoClient {
         this.onVideoFragment(value, h);
       }
     }
+    // The loop only ends when the datagram stream ends. Ending silently is how
+    // a whole session stalled invisibly: the host logged `sent=0 … evicted=121`
+    // (encoding 120 fps into a void) while the UI sat on "waiting for a
+    // keyframe", and nothing on either side reported a fault. Say so instead —
+    // a dead transport must not look like a decode problem.
+    this.reportClosed(h, "wt datagram stream ended");
   }
 
   // ---- v4: deadline-aware datagram video (research doc P0) ----
@@ -421,14 +525,22 @@ export class WtVideoClient {
   private keysReceived = 0;
   /** Fragments rebuilt locally from FEC parity - no NACK, no RTT. */
   private v4Repaired = 0;
-  /** Parity fragments that arrived before their frame's first data
-   *  fragment (datagrams reorder); merged on assembly-state creation. */
-  private v4Parity = new Map<number, { p1: Map<number, Uint8Array>; p2: Map<number, Uint8Array>; atMs: number }>();
   /** NACKs sent for missing fragments (diagnosis: repair rate vs IDR waits). */
   private nacksSent = 0;
   /** Frame numbers already assembled - late re-sends land here and stop. */
   private v4Done = new Set<number>();
+  /** frame_no -> capture_us of frames handed to the page, on either carrier.
+   *  v4Done cannot serve: it also tombstones frames that were *abandoned*, and
+   *  the stream copy of one of those is exactly the frame we still need. */
+  private delivered = new Map<number, number>();
   /** Whether we asked the host for the v4 carrier (and have not asked off). */
+  /** Session handle, so a keyframe request can open a fresh channel later. */
+  private wtRef: WebTransport | null = null;
+  private handlers: WtClientHandlers | null = null;
+  /** Extra video channels opened for forced IDRs, newest last. */
+  private spares: WebTransportBidirectionalStream[] = [];
+  private channelReopenMs = 0;
+
   private datagramVideoEnabled = false;
   private datagramVideoToggledAtMs = 0;
 
@@ -450,36 +562,14 @@ export class WtVideoClient {
     const key = (flags & 1) !== 0;
     const parityRow = (flags >> 1) & 3; // 0 data, 1 row1, 2 row2
     const nowMs = performance.now();
+    this.nackSkippedFrames(frameNo);
     if (this.v4Done.has(frameNo)) return; // late re-send for an assembled frame
-    if (parityRow !== 0) {
-      // Parity for a frame we are assembling - or may become later
-      // (datagrams reorder, so parity can arrive before OR after data).
-      const st = this.v4.get(frameNo);
-      if (st === undefined) {
-        let pend = this.v4Parity.get(frameNo);
-        if (pend === undefined) {
-          pend = { p1: new Map(), p2: new Map(), atMs: nowMs };
-          this.v4Parity.set(frameNo, pend);
-          if (this.v4Parity.size > 16) {
-            const oldest = [...this.v4Parity.keys()][0];
-            if (oldest !== undefined) this.v4Parity.delete(oldest);
-          }
-        }
-        (parityRow === 1 ? pend.p1 : pend.p2).set(idx, d.subarray(18));
-      } else {
-        if (st.p1 === null) st.p1 = new Map();
-        if (st.p2 === null) st.p2 = new Map();
-        (parityRow === 1 ? st.p1 : st.p2).set(idx, d.subarray(18));
-        this.tryRepair(st);
-        this.maybeDeliver(st, frameNo, h, nowMs);
-      }
-      return;
-    }
     // Expire stale assemblies: NACK rounds are the bounded fallback. The
     // expired frame goes into v4Done: the host's re-sends for it keep
     // arriving after expiry, and without the tombstone each one
     // resurrected a fresh partial frame that NACKed again - the unbounded
     // loop that ran nacks to 7183 with decode at 0 (23:59 session).
+    const nt = nackTiming(this.lastRttMs);
     for (const [no, st] of this.v4) {
       if (nowMs - st.atMs > 900) {
         this.v4.delete(no);
@@ -488,22 +578,45 @@ export class WtVideoClient {
           this.v4Done.delete(this.v4Done.values().next().value as number);
         }
         this.framesAbandoned++;
+        this.v4Expired++;
       } else if (
-        nowMs - st.atMs > 150 &&
+        nowMs - st.atMs > nt.firstMs &&
         st.nacks < 4 &&
-        nowMs - st.lastNackMs > 180
+        nowMs - st.lastNackMs > nt.gapMs
       ) {
         st.nacks++;
         st.lastNackMs = nowMs;
-        // At most 8 holes per round per frame: the 23:21 storm re-NACKed
-        // hundreds of holes per round across 8 partial frames.
+        // At most 8 datagrams per round per frame: the 23:21 storm
+        // re-NACKed hundreds of holes per round across 8 partial frames.
+        //
+        // *Which* 8 matters. This loop used to walk every missing index from
+        // 0 upward and stop at 8, so a frame with more than 8 holes never
+        // requested the higher ones in any of its four rounds - it could not
+        // assemble no matter how much the host re-sent, and the audit of a
+        // 30-fragment IDR (fragments k..29 arrived, 0..k-1 destroyed by the
+        // send buffer) is exactly that shape. And two holes inside one
+        // 8-fragment group are a wasted datagram: that group is FEC-dead
+        // until one of them is restored, so asking for the second can only
+        // help after the first lands. So: one hole per group, rotating the
+        // start group each round. A 9-hole frame spread over four groups goes
+        // from "never recoverable" to four requests whose partners row-1
+        // parity then rebuilds locally, at the same NACK volume.
+        const groupCount = Math.ceil(st.cnt / 8);
         let budget = 8;
-        for (let i = 0; i < st.cnt && budget > 0; i++) {
-          if (st.parts[i] === null) {
-            budget--;
-            this.nacksSent++;
-            void this.send({ type: "nack", frame: no, idx: i });
-          }
+        for (let g = 0; g < groupCount && budget > 0; g++) {
+          const gi = (g + st.nacks) % groupCount;
+          const lo = gi * 8;
+          const hi = Math.min(lo + 8, st.cnt);
+          const missing: number[] = [];
+          for (let i = lo; i < hi; i++) if (st.parts[i] === null) missing.push(i);
+          if (missing.length === 0) continue;
+          // Rotate *within* the group as well: a group with two holes must
+          // eventually ask for the second one, or the pair is stuck forever
+          // (row 1 can only restore one of them).
+          const idx = missing[(st.nacks + gi) % missing.length]!;
+          budget--;
+          this.nacksSent++;
+          void this.send({ type: "nack", frame: no, idx });
         }
       }
     }
@@ -523,23 +636,62 @@ export class WtVideoClient {
         lastNackMs: 0,
         p1: null,
         p2: null,
+        total: null,
       };
       this.v4.set(frameNo, st);
-      // Merge parity that arrived before the first data fragment.
-      const pend = this.v4Parity.get(frameNo);
-      if (pend !== undefined) {
-        st.p1 = pend.p1;
-        st.p2 = pend.p2;
-        this.v4Parity.delete(frameNo);
-      }
-      if (this.v4.size > 8) {
-        // Keep only the newest frames; an old partial cannot playout anyway.
-        const oldest = [...this.v4.keys()].sort((a, b) => a - b)[0];
-        if (oldest !== undefined && oldest !== frameNo) {
-          this.v4.delete(oldest);
-          this.v4Done.add(oldest); // tombstone: no resurrection, no re-NACK
+      if (this.v4.size > 24) {
+        // Keep only the newest frames: an old partial cannot play out anyway,
+        // and 900 ms of a 60 fps stream is 54 of them, so 24 covers any burst
+        // the expiry scan has not yet collected. Evict a *delta* before a
+        // keyframe when there is a choice - the keyframe is what FrameOrderer
+        // is blocked on, and dropping it discarded the one frame that would
+        // have released everything behind it (the "aband flat, held climbing,
+        // decoder idle" signature: the client threw away the frame it was
+        // waiting for, tombstoned it so a re-send could not resurrect it, and
+        // never counted it, so nothing on either side could see it happen).
+        //
+        // Never a keyframe while any delta is in flight - the newcomer
+        // included: a lost delta costs one hole the next IDR repairs, a lost
+        // IDR partial is unrecoverable (its parity and re-sends are refused
+        // once tombstoned) and was the likeliest way a 29 KB IDR "did not
+        // assemble" (audit §2.3). The old `?? order[0]` fallback could pick one.
+        const order = [...this.v4.keys()].sort((a, b) => a - b);
+        const isKey = (n: number) => this.v4.get(n)!.key;
+        let victim = order.find((n) => n !== frameNo && !isKey(n));
+        if (victim === undefined && !key) victim = frameNo;
+        if (victim === undefined) {
+          // Every assembly is a keyframe: evicting one is unavoidable. Count
+          // it and ask again, so the drop is visible and repaired rather than
+          // left for the orderer to discover a budget later.
+          victim = order.find((n) => n !== frameNo);
+          if (victim !== undefined) {
+            this.keyPartialsEvicted++;
+            this.requestKeyframe();
+          }
+        }
+        if (victim !== undefined) {
+          this.v4.delete(victim);
+          this.v4Done.add(victim); // tombstone: no resurrection, no re-NACK
+          this.assemblyEvicted++;
+          this.framesAbandoned++;
+          if (victim === frameNo) return;
         }
       }
+    }
+    if (parityRow !== 0) {
+      // Parity creates the assembly just like data does: its header carries
+      // the frame's count, capture time and key flag. When parity was parked
+      // until a data fragment turned up, a frame whose data was lost entirely -
+      // every single-fragment frame that lost its one datagram - had no
+      // assembly, so it was neither rebuilt nor NACKed, only abandoned.
+      if (d.byteLength < 18 + PARITY_TRAILER_LEN) return;
+      st.total = new DataView(d.buffer, d.byteOffset + d.byteLength - 4, 4).getUint32(0, true);
+      if (st.p1 === null) st.p1 = new Map();
+      if (st.p2 === null) st.p2 = new Map();
+      (parityRow === 1 ? st.p1 : st.p2).set(idx, d.subarray(18, d.byteLength - PARITY_TRAILER_LEN));
+      this.tryRepair(st);
+      this.maybeDeliver(st, frameNo, h, nowMs);
+      return;
     }
     if (idx >= cnt || st.parts[idx] !== null) return; // duplicate/overflow fragment
     st.parts[idx] = d.subarray(18);
@@ -563,6 +715,10 @@ export class WtVideoClient {
       if (this.v4Done.size > 512) {
         this.v4Done.delete(this.v4Done.values().next().value as number);
       }
+      if (!this.firstDelivery(frameNo, st.captureUs)) {
+        this.framesDuplicate++;
+        return;
+      }
       let len = 0;
       for (const p of st.parts) len += p!.byteLength;
       const payload = new Uint8Array(len);
@@ -579,20 +735,77 @@ export class WtVideoClient {
         const ageMs = (performance.now() * 1000 - (st.captureUs + this.offsetEmaUs)) / 1000;
         if (ageMs >= 0 && ageMs < 5_000) {
           this.latBuf.push(ageMs);
-          if (this.latBuf.length > 512) this.latBuf.shift();
+          if (this.latBuf.length > LAT_SAMPLES) this.latBuf.shift();
         }
       }
       h.onFrame({ frame_no: frameNo, capture_us: st.captureUs, key: st.key, payload });
     }
   }
 
+  /** Record a frame as handed to the page; false if it already was, on
+   *  either carrier. Keyed on capture time too, so a frame number reused by a
+   *  restarted host is not mistaken for a copy. */
+  private firstDelivery(frameNo: number, captureUs: number): boolean {
+    if (this.delivered.get(frameNo) === captureUs) return false;
+    this.delivered.set(frameNo, captureUs);
+    if (this.delivered.size > 512) {
+      this.delivered.delete(this.delivered.keys().next().value as number);
+    }
+    return true;
+  }
+
+  /**
+   * A datagram for frame F when the last one seen was F-3 means F-2 and F-1
+   * sent nothing that arrived - not a fragment, not their parity. A small
+   * frame is one fragment plus parity, which QUIC packs into ONE packet, so a
+   * single lost packet erases it without trace: no assembly, so no per-
+   * fragment NACK and no FEC, and the orderer's 300 ms give-up and an IDR were
+   * the only repair (~400 ms freeze every few seconds at 1 % loss). Ask the
+   * host for the whole frame straight away; its re-send creates the assembly,
+   * and the ordinary NACK/FEC path covers anything still missing.
+   *
+   * Keyframes ride the stream carrier, so their numbers show up here as gaps
+   * too; the host re-sends nothing for them, which costs one small control
+   * message per IDR.
+   */
+  private nackSkippedFrames(frameNo: number): void {
+    const last = this.v4Highest;
+    const ahead = last === null ? 1 : (frameNo - last) >>> 0;
+    if (last !== null && ahead >= 0x80000000) return; // older than the newest: reorder or re-send
+    this.v4Highest = frameNo;
+    if (last === null || ahead <= 1 || ahead > WHOLE_FRAME_NACK_SPAN) return;
+    for (let k = 1; k < ahead; k++) {
+      const m = (last + k) >>> 0;
+      if (this.v4.has(m) || this.v4Done.has(m) || this.delivered.has(m) || this.wholeNacked.has(m)) continue;
+      this.wholeNacked.add(m);
+      if (this.wholeNacked.size > 256) {
+        this.wholeNacked.delete(this.wholeNacked.values().next().value as number);
+      }
+      this.wholeFrameNacks++;
+      this.nacksSent++;
+      void this.send({ type: "nack", frame: m, idx: NACK_WHOLE_FRAME });
+    }
+  }
+
+  /** True length of the frame's final fragment, or null if not derivable:
+   *  the total from a parity trailer, less the non-final fragments (each one
+   *  datagram budget - read off any that is present). */
+  private finalLength(st: V4Assembly): number | null {
+    if (st.total === null) return null;
+    if (st.cnt === 1) return st.total;
+    const full = st.parts.find((p, i) => p !== null && i < st.cnt - 1);
+    if (full === undefined || full === null) return null;
+    const len = st.total - (st.cnt - 1) * full.byteLength;
+    return len > 0 && len <= full.byteLength ? len : null;
+  }
+
   /** Local fragment rebuild from FEC parity (zero round-trips): row 1
    *  recovers one hole per 8-fragment group; rows 1+2 recover a second loss
    *  when the two fall on different even/odd offsets. Restored fragments
    *  are budget-sized by construction (every non-final fragment is exactly
-   *  the datagram budget), so the XOR is aligned. The frame's final
-   *  fragment is never restored this way - its true length is not derivable
-   *  - and falls to the NACK path instead. */
+   *  the datagram budget), so the XOR is aligned. The frame's final fragment
+   *  is shorter than the parity width; the parity trailer's total length says
+   *  where it ends ({@link finalLength}). */
   private tryRepair(st: V4Assembly): void {
     const groups = Math.ceil(st.cnt / 8);
     const xor = (acc: Uint8Array, p: Uint8Array, skip: (i: number) => boolean, range: [number, number]) => {
@@ -614,10 +827,12 @@ export class WtVideoClient {
       const p2 = st.p2?.get(g);
       if (missing.length === 1) {
         const m = missing[0]!;
-        if (p1 === undefined || m === st.cnt - 1) continue;
+        if (p1 === undefined) continue;
+        const finalLen = m === st.cnt - 1 ? this.finalLength(st) : null;
+        if (m === st.cnt - 1 && finalLen === null) continue;
         const acc = new Uint8Array(p1);
         xor(acc, p1, (i) => i === m, [lo, hi]);
-        st.parts[m] = acc;
+        st.parts[m] = finalLen === null ? acc : acc.subarray(0, finalLen);
         st.got++;
         this.v4Repaired++;
       } else if (p1 !== undefined && p2 !== undefined) {
@@ -697,6 +912,19 @@ export class WtVideoClient {
           return;
         }
         this.parseFailures = 0;
+        // The datagram copy of this frame may have assembled first; the page
+        // must see one IDR, not two (a second anchors the orderer backwards).
+        if (!this.firstDelivery(frame.frame_no, frame.capture_us)) {
+          this.framesDuplicate++;
+          continue;
+        }
+        // And the other way round: stop assembling (and NACKing) a datagram
+        // copy of a frame the stream already delivered.
+        this.v4.delete(frame.frame_no);
+        this.v4Done.add(frame.frame_no);
+        if (this.v4Done.size > 512) {
+          this.v4Done.delete(this.v4Done.values().next().value as number);
+        }
         this.framesReceived++;
         // Keys ride the reliable stream in v4 mode; count them where they
         // actually arrive (the v4 path counts its own), or the wire log's
@@ -710,7 +938,7 @@ export class WtVideoClient {
           const ageMs = (performance.now() * 1000 - (frame.capture_us + this.offsetEmaUs)) / 1000;
           if (ageMs >= 0 && ageMs < 5_000) {
             this.latBuf.push(ageMs);
-            if (this.latBuf.length > 512) this.latBuf.shift();
+            if (this.latBuf.length > LAT_SAMPLES) this.latBuf.shift();
           }
         }
         h.onFrame(frame);
@@ -720,6 +948,7 @@ export class WtVideoClient {
         // on its way, and a reset that lands mid-frame costs one frame, not
         // the connection.
         this.framesAbandoned++;
+        this.streamAborted++;
         void reader.cancel().catch(() => {});
         return;
       }
@@ -857,6 +1086,14 @@ export class WtVideoClient {
     this.onWire?.({
       framesReceived: this.framesReceived,
       framesAbandoned: this.framesAbandoned,
+      v4Expired: this.v4Expired,
+      streamAborted: this.streamAborted,
+      v4Repaired: this.v4Repaired,
+      nacksSent: this.nacksSent,
+      wholeFrameNacks: this.wholeFrameNacks,
+      assemblyEvicted: this.assemblyEvicted,
+      keyPartialsEvicted: this.keyPartialsEvicted,
+      framesDuplicate: this.framesDuplicate,
       parseFailures: this.parseFailures,
       streamsWedged: this.streamsWedged,
       datagramsSeen: this.datagramsSeen,
@@ -1034,7 +1271,72 @@ export class WtVideoClient {
   }
 
   requestKeyframe(): void {
+    if (this.openSpareChannel()) return;
     void this.send({ type: "keyframe_request" });
+  }
+
+  /** Open an EXTRA video channel for the IDR this request is about to buy.
+   *
+   *  The host writes a forced IDR to the channel it has *cached*, and a cached
+   *  channel is one it cannot tell is still being read: a write into a reader
+   *  that stopped succeeds into the void. The host prefers the newest marker it
+   *  has been given ("freshly installed channel"), so giving it one right
+   *  before the request puts the IDR on a stream we are definitely reading -
+   *  and the datagram copy is no fallback: measured over 373 repair IDRs, the
+   *  ones under 8 KB recovered the client 100 % of the time and the ones of
+   *  30-100 KB only 15 %, because a 30-fragment burst on Wi-Fi loses something.
+   *
+   *  This deliberately does NOT cancel the channel already being read. That
+   *  channel is the host's cached fallback, and cancelling it before the new
+   *  marker lands replaces a working path with a dead one: 21 % of seconds
+   *  below 50 fps with 11-19 s stalls, against 2 % before, when an earlier
+   *  version of this fix did exactly that (2026-09-20 04:48-04:56).
+   *
+   *  Returns true when a channel was opened; its own request is sent once the
+   *  marker is out, so the caller must not send a second one. */
+  private openSpareChannel(): boolean {
+    const now = performance.now();
+    const wt = this.wtRef;
+    const h = this.handlers;
+    if (wt === null || h === null || now - this.channelReopenMs < 1000) return false;
+    this.channelReopenMs = now;
+    void (async () => {
+      let asked = false;
+      try {
+        const vch = await wt.createBidirectionalStream();
+        const marker = new TextEncoder().encode(JSON.stringify({ type: "video_channel" }));
+        const framed = new Uint8Array(2 + marker.length);
+        framed[0] = marker.length >> 8;
+        framed[1] = marker.length & 0xff;
+        framed.set(marker, 2);
+        const writer = vch.writable.getWriter();
+        await writer.write(framed);
+        writer.releaseLock();
+        // Let the marker land before asking: the IDR is answered in the next
+        // few milliseconds, and if it is produced before the host has the new
+        // sink it rides the cached stream instead - the whole point is lost.
+        await new Promise((r) => setTimeout(r, 30));
+        asked = true;
+        void this.send({ type: "keyframe_request" });
+        this.spares.push(vch);
+        // Keep the spare alive and read: the IDR that answers this request
+        // arrives on it. Bound the pile - a session that needs this fix uses
+        // one channel per repair, and they are dead weight once the host has
+        // cached a newer one.
+        while (this.spares.length > MAX_SPARE_CHANNELS) {
+          const old = this.spares.shift();
+          void (old as WebTransportBidirectionalStream).readable.cancel().catch(() => {});
+        }
+        await this.readOneFrame(vch.readable as ReadableStream<Uint8Array>, h);
+      } catch {
+        // The spare died before it asked: fall back to the plain request rather
+        // than leave the picture waiting on a channel that never opened. If it
+        // died later the request is already out and a second one would only be
+        // refused by the host's one-per-second throttle.
+        if (!asked) void this.send({ type: "keyframe_request" });
+      }
+    })();
+    return true;
   }
 
   /** Host↔client clock offset (µs, capture-clock aligned) once synced. */

@@ -30,7 +30,7 @@ use inphase_protocol::{SessionConfig, SignalMessage};
 
 use crate::config::Config;
 use crate::input::InputSession;
-use crate::media::wt::WtVideoTransport;
+
 use crate::media::MediaSession;
 use crate::stats::StatsCollector;
 
@@ -143,8 +143,10 @@ pub struct SessionManager {
     /// session so a client can pick the loopback source without a host restart.
     audio_device: Mutex<Option<String>>,
     /// WebTransport video transport (ADR-0011), if the host enabled it. Attached
-    /// to every claimed session until shut down.
-    wt: Mutex<Option<Arc<WtVideoTransport>>>,
+    /// to every claimed session. A slot, not a plain `Arc`: the certificate
+    /// behind it is rotated on a timer (`app::spawn_wt_rotation`), so a claim
+    /// must read the transport that is current *now*.
+    wt: Mutex<crate::media::wt::WtSlot>,
 }
 
 impl SessionManager {
@@ -160,13 +162,14 @@ impl SessionManager {
                 ticket: 0,
             }),
             audio_device,
-            wt: Mutex::new(None),
+            wt: Mutex::new(crate::media::wt::WtSlot::new()),
         }
     }
 
-    /// Install the WebTransport video transport (ADR-0011). Called once at
-    /// boot when `media.wt_enabled`; replacing it mid-session is not supported.
-    pub fn set_wt_transport(&self, wt: Option<Arc<WtVideoTransport>>) {
+    /// Install the WebTransport video-transport slot (ADR-0011). Called once at
+    /// boot when `media.wt_enabled`; the slot's *contents* change on certificate
+    /// rotation, so the manager never caches the transport itself.
+    pub fn set_wt_slot(&self, wt: crate::media::wt::WtSlot) {
         *self.wt.lock() = wt;
     }
 
@@ -257,7 +260,11 @@ impl SessionManager {
         let mut session_cfg = (*self.cfg).clone();
         session_cfg.media.audio_capture_device = self.audio_device.lock().clone();
         let mut media = MediaSession::new(Arc::new(session_cfg), self.stats.clone());
-        media.set_wt_transport(self.wt.lock().clone());
+        // Read the slot in its own statement: the guard must not reach the
+        // session's lifetime (a parking_lot guard held across an await is not
+        // `Send`, and the claim future is awaited inside a spawned handler).
+        let wt = self.wt.lock().get();
+        media.set_wt_transport(wt);
         let input = InputSession::new(self.cfg.input.clone());
         g.player = Some(PlayerSession {
             peer,
@@ -289,6 +296,13 @@ impl SessionManager {
         }
         drop(g);
         self.transition(SessionState::Stopping);
+    }
+
+    /// Whether `ticket`'s link still owns a live player session. A link that
+    /// a newer player displaced must not act for the session any more.
+    pub fn owns(&self, ticket: SessionTicket) -> bool {
+        let g = self.inner.lock();
+        g.ticket == ticket.0 && g.player.is_some()
     }
 
     /// Run `f` against the active player, if any.

@@ -1,0 +1,10 @@
+{
+  "name": "inphase-tests",
+  "private": true,
+  "type": "module",
+  "description": "Shared dependencies for the on-hardware harnesses under tests/. cdp-probe.mjs resolves `ws` from here; the cross-browser streaming harness (streaming/xbrowser.mjs) uses `playwright`, pinned to the browser builds installed in ~/.cache/ms-playwright.",
+  "dependencies": {
+    "ws": "^8.18.0",
+    "playwright": "1.63.0"
+  }
+}

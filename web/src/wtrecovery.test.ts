@@ -80,3 +80,40 @@ test("recovery: first presented frame after a never-decoded stall is not a reset
   c.advance(3500);
   assert.equal(r.observe(0), "reset", "a real freeze after first frame still recovers");
 });
+
+/**
+ * Audit §2.5: a freeze that is waiting on a requested IDR must not be "fixed"
+ * by resetting the decoder - that flushed the IDR in flight and started the
+ * whole request cycle again.
+ */
+test("recovery: an outstanding keyframe request holds off the reset until its deadline", () => {
+  const c = fakeClock();
+  const r = new WtRecovery({ now: c.now, keyframeDeadlineMs: 2000 });
+  r.observe(5);
+  c.advance(3000);
+  const askedAt = c.now();
+  c.advance(500); // 3.5 s frozen, request 0.5 s old
+  assert.equal(r.observe(5, { keyframeRequestedAtMs: askedAt }), "none", "the IDR is in flight");
+  c.advance(1000);
+  assert.equal(r.observe(5, { keyframeRequestedAtMs: askedAt }), "none", "still inside the deadline");
+  c.advance(600); // request 2.1 s old: it is not coming
+  assert.equal(r.observe(5, { keyframeRequestedAtMs: askedAt }), "reset");
+  c.advance(6000); // 11.1 s frozen
+  assert.equal(
+    r.observe(5, { keyframeRequestedAtMs: c.now() - 100 }),
+    "redial",
+    "a fresh request never holds off the redial rung",
+  );
+});
+
+test("recovery: a hidden tab suspends the ladder and restarts the stall clock", () => {
+  const c = fakeClock();
+  const r = new WtRecovery({ now: c.now });
+  r.observe(5);
+  c.advance(12_000);
+  assert.equal(r.observe(5, { hidden: true }), "none", "no presents while hidden is not a freeze");
+  c.advance(250);
+  assert.equal(r.observe(5), "none", "back in view: a fresh clock, not 12 s of stall");
+  c.advance(3500);
+  assert.equal(r.observe(5), "reset", "a real freeze in view still recovers");
+});

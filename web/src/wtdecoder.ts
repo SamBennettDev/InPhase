@@ -12,7 +12,13 @@
 // * there is no WebRTC video underneath (ADR-0011 final); this canvas is
 //   the only glass, and the watchdog in play.ts resets/redials on stalls.
 
-import { DecoderRestartPolicy, decoderIsBehind, KeyframeThrottle } from "./decoderpolicy.js";
+import {
+  DecoderRestartPolicy,
+  behindIsSustained,
+  decoderIsBehind,
+  KeyframeThrottle,
+  shouldCountFreeze,
+} from "./decoderpolicy.js";
 import { FrameOrderer } from "./frameorder.js";
 import type { WtFrame } from "./wtvideo.js";
 
@@ -52,6 +58,8 @@ export interface WtDecoderStats {
   presentedFps: number;
   /** Decoded-frame rate over the last stats window, fps. */
   decodedFps: number;
+  /** How frames reach the canvas: a direct draw, or via an ImageBitmap. */
+  renderMode: "direct" | "bitmap";
 }
 
 /** One ImageBitmap conversion in flight; a newer frame always supersedes
@@ -90,6 +98,8 @@ export class WtDecoder {
    *  (black screen, decode still fine). Probed once on the first frame; the
    *  bitmap path is the portable fallback. */
   private renderMode: "direct" | "bitmap" = "direct";
+  /** Frames to wait before re-probing after a dark (inconclusive) probe. */
+  private probeSkip = 0;
   private renderProbed = false;
   /** Sequence of the ImageBitmap conversion in flight (0 = none). */
   /** Newest-wins gate for the (at most one) bitmap conversion in flight. */
@@ -101,15 +111,33 @@ export class WtDecoder {
   /** Puts independently-arriving streams back into decode order. */
   private readonly order = new FrameOrderer();
   private submitTimes = new Map<number, number>();
+  /** Consecutive submissions made while the decode queue was over the limit:
+   *  a repair release is transient, a decoder that has fallen behind is not. */
+  private behindStreak = 0;
   /** Highest frame_no submitted to the decoder. Datagrams complete out of
    *  order on any real network; decoding is strictly sequential, so frames
    *  past a gap poison the reference chain and must never reach the codec. */
   /** Frames held until their predecessors arrive - see onFrame. */
   /** The next frame number that can be decoded, or null before the first
    *  keyframe anchors the sequence. */
-  /** Keyframe-request throttle: at most one per 500 ms — the encoder needs
-   *  no more, and a dropped-frame flood of requests helps nobody. */
-  private readonly keyThrottle = new KeyframeThrottle(500);
+  /** Keyframe-request throttle, paced to the worker's and host's 1000 ms
+   *  gates (see KEYFRAME_REQUEST_INTERVAL_MS): an ask either gate refuses is
+   *  a repair the client believes is coming and is not. */
+  private readonly keyThrottle = new KeyframeThrottle();
+  /** performance.now() of the newest keyframe request no keyframe has
+   *  answered yet, or null. The watchdog reads it so its reset does not
+   *  flush the IDR that request is buying (audit §2.5). */
+  private keyRequestedAtMs: number | null = null;
+  /** The page went hidden since the last present: that gap is not a freeze. */
+  private hiddenSincePresent = false;
+  private readonly onVisibility = (): void => {
+    if (document.hidden) this.hiddenSincePresent = true;
+  };
+  /** WebCodecs acceleration preference; `prefer-software` once hardware has
+   *  failed, for the rest of the session. */
+  private hwAccel: NonNullable<VideoDecoderConfig["hardwareAcceleration"]> = "no-preference";
+  /** isConfigSupported said no to the software config: never try it again. */
+  private softwareRefused = false;
   /** How many more times a failing decoder is worth rebuilding. */
   private readonly restarts = new DecoderRestartPolicy();
   /** Set once rebuilding has been abandoned: stop touching the codec. */
@@ -151,12 +179,16 @@ export class WtDecoder {
     private readonly clockOffsetUs: () => number | null = () => null,
     /** The decode path is unusable and will not recover; tell the user. */
     private readonly onFatal?: (why: string) => void,
+    /** This device's decoder cannot sustain the mode: `available` says a
+     *  smaller one exists, `apply` switches to it (see nextStepDown). */
+    private readonly stepDown?: { available: () => boolean; apply: (why: string) => void },
   ) {
     this.canvas = document.createElement("canvas");
     this.canvas.className = "wt-video";
     const ctx = this.canvas.getContext("2d", { alpha: false, desynchronized: true });
     if (ctx === null) throw new Error("2d canvas unavailable");
     this.ctx = ctx;
+    document.addEventListener("visibilitychange", this.onVisibility);
   }
 
   get root(): HTMLCanvasElement {
@@ -180,7 +212,7 @@ export class WtDecoder {
     height: number;
     fps: number;
     description?: Uint8Array | null;
-  }): void {
+  }, newStream = true): void {
     if (this.dead) return;
     this.lastCfg = cfg;
     this.canvas.width = cfg.width;
@@ -192,20 +224,21 @@ export class WtDecoder {
     // carries Annex-B, so rewrite to `hev1` (in-band parameter sets) when no
     // description accompanies the config.
     // §6.1: skip internal reorder queues (`latencyMode: "realtime"` is the
-    // newer spelling of the same directive) and bias the browser toward GPU
-    // decode (1-3 ms hardware HEVC vs 5-15 ms software). `latencyMode` cast
-    // past the shipped TS lib, which predates it.
-    type WtDecoderConfig = VideoDecoderConfig & { latencyMode?: "realtime" };
-    const config: WtDecoderConfig = {
-      codec:
-        cfg.codec.startsWith("hvc1") && !cfg.description
-          ? (("hev1" + cfg.codec.slice(4)) as VideoDecoderConfig["codec"])
-          : cfg.codec,
-      optimizeForLatency: true,
-      latencyMode: "realtime",
-      hardwareAcceleration: "prefer-hardware",
-      ...(cfg.description ? { description: cfg.description } : {}),
-    };
+    // newer spelling of the same directive). `latencyMode` cast past the
+    // shipped TS lib, which predates it.
+    //
+    // `hardwareAcceleration` is deliberately NOT `prefer-hardware`. That reads
+    // like a hint to bias toward the GPU, but WebCodecs treats it as a
+    // requirement: when Chrome cannot satisfy it the decoder does NOT throw
+    // from `configure()` — it fires the async `error` callback and closes,
+    // so the failure looks like a stream that never arrives. Measured here:
+    // `configure()` returns cleanly, then within 600 ms the decoder reports
+    // "Unsupported configuration" and `state === "closed"`, for H.264 as much
+    // as H.265, because this box has no hardware decoder to satisfy it. The
+    // default (`no-preference`) still picks hardware whenever it exists, so
+    // nothing is lost by not demanding it - until that hardware fails, and
+    // then `prefer-software` for the rest of the session (see onError).
+    const config = this.decoderConfig(cfg);
     if (this.decoder === null) {
       this.decoder = new VideoDecoder({
         output: (vf) => this.onDecodedFrame(vf),
@@ -215,12 +248,29 @@ export class WtDecoder {
           // of times inside 100 ms, wedging the main thread so the page took
           // no input at all. Rebuild a bounded number of times, then say so.
           if (this.dead) return;
-          if (this.restarts.onError(performance.now()) === "give-up") {
+          const verdict = this.restarts.onError(
+            performance.now(),
+            this.hwAccel !== "prefer-software" && !this.softwareRefused,
+            this.stepDown?.available() ?? false,
+          );
+          if (verdict === "step-down") {
+            // Stop here: the session is about to be replaced at a smaller
+            // mode, and rebuilding this decoder would only fail again.
+            this.dead = true;
+            console.warn(`wt decoder overloaded - stepping the stream down (${e.message})`);
+            this.stepDown?.apply(e.message);
+            return;
+          }
+          if (verdict === "fallback-software") {
+            this.fallBackToSoftware(e.message);
+            return;
+          }
+          if (verdict === "give-up") {
             this.dead = true;
             console.error(`wt decoder gave up after repeated errors: ${e.message}`);
             this.onFatal?.(
               "The video decoder failed repeatedly on this stream — " +
-                `this browser reports H.265 support but cannot decode it (${e.message}).`,
+                `this browser cannot decode it (${e.message}).`,
             );
             return;
           }
@@ -231,16 +281,20 @@ export class WtDecoder {
           this.referenceGap();
           if (this.decoder && this.decoder.state === "closed" && this.lastCfg) {
             this.decoder = null;
-            this.configure(this.lastCfg);
+            this.configure(this.lastCfg, false);
           }
         },
       });
     }
     if (this.decoder.state !== "unconfigured") this.decoder.reset();
     // A fresh config needs a fresh anchor: drop the hold buffer and wait
-    // for the next keyframe before decoding anything.
-    this.order.reset();
-    this.keyThrottle.reset();
+    // for the next keyframe before decoding anything. A new stream, too: its
+    // numbering and PTS owe nothing to the frames decoded before (a rebuild
+    // of the same stream keeps them - `newStream` false).
+    this.order.reset(newStream);
+    // Only a new stream may ask at once. A rebuild re-asking past the throttle
+    // was one IDR request per decode error (audit §3.1).
+    if (newStream) this.keyThrottle.reset();
     this.decoder.configure(config);
     // A (re)configured decoder needs a keyframe it will never otherwise see:
     // the host runs an effectively-infinite GOP and forces IDRs only on
@@ -249,6 +303,77 @@ export class WtDecoder {
     // reconfigured AFTER the startup IDR had already passed, and the decoder
     // then waited forever - loss 0%, every fragment arriving, decode 0.
     this.requestKeyframe();
+  }
+
+  /** The WebCodecs config for a host video_config, on the current
+   *  acceleration preference. */
+  private decoderConfig(cfg: {
+    codec: string;
+    description?: Uint8Array | null;
+  }): VideoDecoderConfig & { latencyMode?: "realtime" } {
+    return {
+      codec:
+        cfg.codec.startsWith("hvc1") && !cfg.description
+          ? (("hev1" + cfg.codec.slice(4)) as VideoDecoderConfig["codec"])
+          : cfg.codec,
+      optimizeForLatency: true,
+      latencyMode: "realtime",
+      hardwareAcceleration: this.hwAccel,
+      ...(cfg.description ? { description: cfg.description } : {}),
+    };
+  }
+
+  /**
+   * Re-create the codec on the software decoder, once per session.
+   *
+   * Chromium with VA-API (AMD Renoir) failed the host's H.264 in hardware and
+   * every rebuild then answered "Unsupported configuration": five rebuilds in
+   * ~15 ms and the session was declared undecodable, by a browser that plays
+   * the same stream fine in software. The preference outlives this config -
+   * a later video_config on the same session stays on software.
+   */
+  private fallBackToSoftware(why: string): void {
+    const cfg = this.lastCfg;
+    if (cfg === null) return;
+    // Set before the probe resolves: a second error in the meantime must not
+    // start a second fallback.
+    this.hwAccel = "prefer-software";
+    // The error callback normally arrives with the codec already closed.
+    if (this.decoder !== null && this.decoder.state !== "closed") this.decoder.close();
+    this.decoder = null;
+    void VideoDecoder.isConfigSupported(this.decoderConfig(cfg))
+      .then((r) => r.supported === true, () => false)
+      .then((ok) => {
+        if (this.dead || this.stopped) return;
+        if (ok) {
+          console.warn(`wt: hardware decoder failed - falling back to software decode (${why})`);
+        } else {
+          // Nothing to fall back to: the ordinary rebuild budget decides.
+          this.hwAccel = "no-preference";
+          this.softwareRefused = true;
+          console.warn(`wt decoder error: ${why} (no software decoder for this config)`);
+        }
+        if (this.decoder === null && this.lastCfg !== null) {
+          this.configure(this.lastCfg, false);
+        }
+      });
+  }
+
+  /**
+   * Flush the codec and leave it ready for the next keyframe.
+   *
+   * WebCodecs' `reset()` returns the decoder to "unconfigured", not to an
+   * empty configured state, and nothing configured it again: the backlog path
+   * then decoded its keyframe into an unconfigured codec ("Cannot call
+   * 'decode' on an unconfigured codec"), and from then on `onFrame` dropped
+   * every arrival because the state was not "configured". Live 2026-09-23: 12 s
+   * of frames arriving at 60 fps with none decoded, through two watchdog
+   * resets that did the same thing, until the WT redial built a new decoder.
+   */
+  private resetCodec(): void {
+    if (this.decoder === null || this.decoder.state === "closed") return;
+    this.decoder.reset();
+    if (this.lastCfg) this.decoder.configure(this.decoderConfig(this.lastCfg));
   }
 
   /** Throttled IDR request to the host (media session forces one). */
@@ -267,9 +392,34 @@ export class WtDecoder {
   /** Ask the host for an IDR, at most once per throttle window. Returns
    *  whether the request was actually sent. */
   private requestKeyframe(): boolean {
-    if (!this.keyThrottle.allow(performance.now())) return false;
+    const now = performance.now();
+    if (!this.keyThrottle.allow(now)) return false;
+    this.keyRequestedAtMs = now;
+    this.order.keyframeRequested();
     this.onNeedKeyframe();
     return true;
+  }
+
+  /** The route's RTT: shortens the orderer's repair wait on a fast route. */
+  setRttMs(rttMs: number): void {
+    this.order.setRttMs(rttMs);
+  }
+
+  /** Capture -> present age of the video, ms (null until measured): what
+   *  audio is scheduled against for lip sync. */
+  presentAgeMs(): number | null {
+    return this.presentEmaMs > 0 ? this.presentEmaMs : null;
+  }
+
+  /** When the newest unanswered keyframe request went out, or null. */
+  awaitingKeyframeSince(): number | null {
+    return this.keyRequestedAtMs;
+  }
+
+  /** Presented frames so far - the watchdog's cheap progress counter (stats()
+   *  also rolls the fps window, so it must not run at the watchdog's rate). */
+  get presentedCount(): number {
+    return this.framesPresented;
   }
 
   onFrame(f: WtFrame): void {
@@ -281,7 +431,9 @@ export class WtDecoder {
     if (this.order.needsResync) {
       this.lastGapSeq = f.frame_no;
       this.referenceGap();
-    } else if (this.order.needsKeyframe) {
+    } else if (this.order.keyframeDue) {
+      // The orderer spaces re-requests by held video (so each has time to
+      // land), the throttle by wall time (so no gate behind it refuses one).
       this.requestKeyframe();
     }
   }
@@ -293,6 +445,11 @@ export class WtDecoder {
     // transport keeps delivering. Drop to the next keyframe instead; on a live
     // stream a fresh anchor beats several seconds of late video.
     if (decoderIsBehind(this.decoder.decodeQueueSize)) {
+      this.behindStreak++;
+    } else {
+      this.behindStreak = 0;
+    }
+    if (behindIsSustained(this.behindStreak)) {
       // A keyframe is the exit from a stuck queue, never a candidate for the
       // backpressure drop: resetting the codec and feeding the anchor
       // recovers immediately, while dropping it leaves the queue holding
@@ -300,8 +457,9 @@ export class WtDecoder {
       // exactly 1 fps because every recovery IDR was discarded here and the
       // queue only drained as WebKit errored stale chunks one per second.
       if (f.key) {
-        this.decoder.reset();
+        this.resetCodec();
         this.submitTimes.clear();
+        this.behindStreak = 0;
       } else {
         this.framesDropped++;
         this.behindEvents++;
@@ -321,6 +479,7 @@ export class WtDecoder {
     });
     try {
       this.decoder.decode(chunk);
+      if (f.key) this.keyRequestedAtMs = null;
     } catch (e) {
       // A rejected chunk means the decoder needs a fresh IDR (ordering race
       // after a reconfigure, codec mismatch, …) — full recovery, not just a
@@ -330,31 +489,57 @@ export class WtDecoder {
     }
   }
 
-  /** One-time: draw a corner of the frame to a scratch canvas and look at
-   *  the pixels. A no-op draw (iOS Safari) leaves them zeroed - switch to
-   *  the ImageBitmap renderer. */
+  /** One-time: draw the frame small to a scratch canvas and count lit
+   *  pixels. A no-op direct draw (iOS Safari 18) leaves them zeroed.
+   *
+   *  A dark frame looks the same, and choosing the ImageBitmap renderer is
+   *  not free: it allocates a full-size RGBA bitmap per frame (~14.7 MB at
+   *  1440p, ~1.8 GB/s at 120 fps), which iOS Safari 27 could not sustain -
+   *  the page was killed ~25 s into every 1440p120 session (2026-09-24), while
+   *  a direct draw works there. So a dark direct draw is checked against the
+   *  bitmap route on a clone of the same frame, and only a bitmap that shows
+   *  pixels the direct draw did not switches the renderer. */
   private probeRenderMode(vf: VideoFrame): void {
     this.renderProbed = true;
-    try {
+    const litPixels = (src: CanvasImageSource): number => {
       const c = document.createElement("canvas");
       c.width = 8;
       c.height = 8;
       const cx = c.getContext("2d", { alpha: false })!;
-      cx.drawImage(vf as unknown as CanvasImageSource, 0, 0, 8, 8);
+      cx.drawImage(src, 0, 0, 8, 8);
       const d = cx.getImageData(0, 0, 8, 8).data;
       let lit = 0;
       for (let i = 0; i < d.length; i += 4) {
-        const r = d[i] ?? 0, g = d[i + 1] ?? 0, b = d[i + 2] ?? 0;
-        if (r | g | b) lit++;
+        if ((d[i] ?? 0) | (d[i + 1] ?? 0) | (d[i + 2] ?? 0)) lit++;
       }
-      if (lit < 2) {
-        this.renderMode = "bitmap";
-        console.info("wt: direct VideoFrame draw produced no pixels - using ImageBitmap renderer");
-      }
-    } catch (e) {
+      return lit;
+    };
+    let direct: number;
+    try {
+      direct = litPixels(vf as unknown as CanvasImageSource);
+    } catch {
       this.renderMode = "bitmap";
       console.info("wt: direct VideoFrame draw unavailable - using ImageBitmap renderer");
+      return;
     }
+    if (direct >= 2) return;
+    const probe = vf.clone();
+    void createImageBitmap(probe)
+      .then((bmp) => {
+        const viaBitmap = litPixels(bmp);
+        bmp.close();
+        if (viaBitmap >= 2) {
+          this.renderMode = "bitmap";
+          console.info("wt: direct VideoFrame draw produced no pixels - using ImageBitmap renderer");
+        } else {
+          // Dark on both routes: the frame is dark, not the draw broken.
+          // Look again a second or so later.
+          this.renderProbed = false;
+          this.probeSkip = 60;
+        }
+      })
+      .catch(() => {})
+      .finally(() => probe.close());
   }
 
   private onDecodedFrame(vf: VideoFrame): void {
@@ -367,7 +552,7 @@ export class WtDecoder {
     }
     this.framesDecoded++;
     // The codec produced a frame, so whatever failed before was transient.
-    this.restarts.onProgress();
+    this.restarts.onProgress(performance.now());
 
     // True glass age: vf.timestamp is the host capture_us; shift it onto the
     // client clock with the pong-synced offset (offset = host − client, so
@@ -412,7 +597,10 @@ export class WtDecoder {
       this.canvas.width = vf.displayWidth;
       this.canvas.height = vf.displayHeight;
     }
-    if (!this.renderProbed) this.probeRenderMode(vf);
+    if (!this.renderProbed) {
+      if (this.probeSkip > 0) this.probeSkip--;
+      else this.probeRenderMode(vf);
+    }
     if (this.renderMode === "direct") {
       this.ctx.drawImage(vf as unknown as CanvasImageSource, 0, 0, vf.displayWidth, vf.displayHeight);
       this.finishPresent(vf);
@@ -460,10 +648,12 @@ export class WtDecoder {
    *  Canvas draw completion is still not proof pixels appeared. */
   private finishPresent(vf: VideoFrame): void {
     const nowMs = performance.now();
+    const hidden = this.hiddenSincePresent || document.hidden;
+    this.hiddenSincePresent = false;
     if (this.lastPresentMs > 0) {
       const gap = nowMs - this.lastPresentMs;
-      // >6 frame intervals at 60 fps, floor 250 ms: a stall, not pacing.
-      if (gap > 250) {
+      // A stall, not pacing - and not a background tab (audit §2.6).
+      if (shouldCountFreeze(gap, hidden)) {
         this.freezeCount++;
         this.totalFreezeMs += Math.round(gap);
       }
@@ -495,12 +685,15 @@ export class WtDecoder {
     this.order.reset();
     this.announced = true; // already rendering — don't re-run first-frame wiring
     if (this.decoder !== null && this.decoder.state !== "closed") {
-      this.decoder.reset();
+      this.resetCodec();
     } else if (this.lastCfg) {
       this.decoder = null;
-      this.configure(this.lastCfg);
+      this.configure(this.lastCfg, false);
     }
-    this.onNeedKeyframe();
+    // Through the throttle like every other ask: the watchdog firing right
+    // after a request would otherwise double it, and the host refuses the
+    // second (audit §3.1).
+    this.requestKeyframe();
   }
 
   stats(): WtDecoderStats {
@@ -529,6 +722,7 @@ export class WtDecoder {
       totalFreezeMs: this.totalFreezeMs,
       e2eMs: Math.round((this.presentEmaMs > 0 ? this.presentEmaMs : this.glassEmaMs) * 10) / 10,
       decodedFps: Math.round(this.decodedFps),
+      renderMode: this.renderMode,
       presentedFps: Math.round(this.presentedFps),
       lastAgeMs: this.lastAgeMs,
       ageSamples: this.ageSamples,
@@ -547,6 +741,7 @@ export class WtDecoder {
 
   stop(): void {
     this.stopped = true;
+    document.removeEventListener("visibilitychange", this.onVisibility);
     // A decode error may already have closed the codec — closing again throws.
     if (this.decoder && this.decoder.state !== "closed") this.decoder.close();
     this.decoder = null;

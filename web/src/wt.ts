@@ -29,6 +29,10 @@ function pageReload(): void {
   }
 }
 
+export function isCspDialFailure(msg: string): boolean {
+  return /content security policy|connect-src/i.test(msg);
+}
+
 export class WtVideoClient {
   private core: WtCore | null = null;
   private worker: Worker | null = null;
@@ -100,8 +104,12 @@ export class WtVideoClient {
         return;
       } catch (e) {
         this.killWorker();
-        if (!String(e).includes("unsupported")) throw e;
-        console.info("wt: WebTransport unavailable in workers - running on the main thread");
+        const msg = String(e);
+        // Chrome reports hash-pinned WT as `connect-src 'self'` even when that
+        // directive was never sent. Keep video on the main thread rather than
+        // letting the watchdog redial the worker forever.
+        if (!msg.includes("unsupported") && !isCspDialFailure(msg)) throw e;
+        console.info("wt: worker dial blocked, running on the main thread", e);
       }
     }
     this.dialed = true;
@@ -217,7 +225,14 @@ export class WtVideoClient {
   }
 
   requestKeyframe(): void {
-    void this.send({ type: "keyframe_request" });
+    // Route through the core, not as a bare control line: the core opens a
+    // spare video channel first so the IDR this buys rides a stream the host
+    // knows is live (see `WtVideoClient::requestKeyframe`). Posting
+    // `{type:"keyframe_request"}` straight to the worker skipped that and left
+    // the IDR on whatever channel the host last cached - the path that loses a
+    // 30 KB IDR four times out of five.
+    if (this.worker !== null) this.worker.postMessage({ t: "keyframe" });
+    else this.core?.requestKeyframe();
   }
 
   async sendInput(bytes: Uint8Array): Promise<boolean> {

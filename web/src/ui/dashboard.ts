@@ -444,14 +444,31 @@ function renderMetrics(box: HTMLElement, admin: Admin, live: boolean) {
     t = admin.stats.transport,
     c = admin.stats.client ?? {};
   const num = (v: unknown, unit: string, divisor = 1) =>
-    typeof v === "number" && Number.isFinite(v)
+    typeof v === "number" && Number.isFinite(v) && v > 0
       ? (v / divisor).toFixed(1) + " " + unit
       : "—";
+  // WT never filled transport getStats (those fields stayed 0). Prefer the
+  // client's ping/pong RTT and bytes-received rate; encoder target is last.
+  const pick = (...vals: unknown[]) =>
+    vals.find((v) => typeof v === "number" && Number.isFinite(v) && v > 0);
   const cells = [
     ["Resolution", live && h["width"] ? h["width"] + " × " + h["height"] : "—"],
     ["Frame rate", live ? num(c["presented_fps"] ?? c["decoded_fps"], "fps") : "—"],
-    ["Bandwidth", live ? num(t["outbound_bitrate_kbps"], "Mbps", 1000) : "—"],
-    ["Round-trip time", live ? num(t["rtt_ms"], "ms") : "—"],
+    [
+      "Bandwidth",
+      live
+        ? num(
+            pick(
+              c["inbound_bitrate_kbps"],
+              t["outbound_bitrate_kbps"],
+              h["encoder_bitrate_kbps"],
+            ),
+            "Mbps",
+            1000,
+          )
+        : "—",
+    ],
+    ["Round-trip time", live ? num(pick(c["rtt_ms"], t["rtt_ms"]), "ms") : "—"],
     [
       "Video",
       live

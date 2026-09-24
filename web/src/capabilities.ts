@@ -17,6 +17,37 @@ export function detectFeatures(): ClientFeatures {
   };
 }
 
+/**
+ * Why this browser cannot play at all, or null when it can.
+ *
+ * WebTransport is the only video path - there is no WebRTC video to fall back
+ * to (ADR-0011 final). Without it the session paired, signalled, claimed the
+ * host, then logged "no video path" and sat on a blank stage forever with no
+ * error (Playwright WebKit on Linux has no `WebTransport`). Checked before
+ * connecting, so an unusable browser never takes the host session.
+ *
+ * The API only exists in a secure context, so on a plain-http origin the fix
+ * is the address, not the browser - say so rather than blame the browser.
+ */
+export function webTransportBlocker(env: {
+  webTransport: boolean;
+  secureContext: boolean;
+}): string | null {
+  if (env.webTransport) return null;
+  if (!env.secureContext) {
+    return "InPhase video needs a secure (https) connection. Open the secure play address shown on your PC.";
+  }
+  return "This browser doesn't support WebTransport, which InPhase needs for video. Use a current Chrome, Edge, Firefox or Safari.";
+}
+
+/** {@link webTransportBlocker} for the running page. */
+export function playBlocker(): string | null {
+  return webTransportBlocker({
+    webTransport: typeof (globalThis as { WebTransport?: unknown }).WebTransport === "function",
+    secureContext: (globalThis as { isSecureContext?: boolean }).isSecureContext === true,
+  });
+}
+
 /** One playback endpoint on the host that InPhase can loopback-capture (§11). */
 export interface HostAudioEndpoint {
   id: string;
@@ -118,8 +149,13 @@ export function usableVideoCodecs(
   const out: RtpCodecCapability[] = [];
   for (const h of hints) {
     if (!h.supported) continue;
-    // H.265 only (user directive): the advertised list has one entry.
-    const mime = "video/H265";
+    // One entry per codec that actually decoded, in the order the caller probed
+    // them — so a caller passing [h265, h264] still expresses "prefer HEVC".
+    // Hardcoding H.265 here advertised HEVC alone, and on a browser with no
+    // HEVC (Chrome on Linux has none at all) the list came back *empty*: the
+    // client refused to start, telling the user H.264 was unsupported, while
+    // H.264 decoded fine at 4K. H.264 is the interoperability floor (ADR-0005).
+    const mime = h.codec === "h265" ? "video/H265" : "video/H264";
     if (seen.has(mime)) continue;
     seen.add(mime);
     out.push({ mime_type: mime, clock_rate: 90_000 });
@@ -195,7 +231,6 @@ export async function decodeHints(
         }
       }
     }
-    // Quality hints only - never authority over `supported`.
     let smooth = false;
     let powerEfficient = false;
     if (supported && codecString && mc?.decodingInfo) {
@@ -212,8 +247,16 @@ export async function decodeHints(
         });
         smooth = info.smooth;
         powerEfficient = info.powerEfficient;
+        // This probe, not `isConfigSupported`, decides. The two disagree about
+        // HEVC and `isConfigSupported` is the one that lies: measured on
+        // Chrome/Linux, HEVC answers `true` there and then throws
+        // "Unsupported configuration" at `configure()`, while this answers
+        // `false` because the browser really does ship no HEVC decoder.
+        // Trusting the optimistic answer made HEVC look safe, so the host sent
+        // it and the stream died with nothing left to fall back to (§30).
+        if (!info.supported) supported = false;
       } catch {
-        /* hints are optional */
+        // Probe unavailable: keep the WebCodecs answer rather than guessing.
       }
     }
     out.push({ ...m, supported, smooth, power_efficient: powerEfficient });

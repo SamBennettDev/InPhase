@@ -133,10 +133,18 @@ pub fn spawn_autostart(
             tracing::info!(%configured, "acme enabled for the configured hostname");
             return;
         }
-        let mut iv = tokio::time::interval(Duration::from_secs(30));
-        iv.tick().await; // immediate first tick fires with nothing mapped yet
+        // Every second for the first two minutes, then every 30 s. The router
+        // mapping lands ~6 s after boot, and until the ACME resolver is in the
+        // slot the public listener serves the local-CA leaf - which a device
+        // that only trusts the public chain refuses. A flat 30 s poll (whose
+        // first tick was skipped) left every restart with a ~30 s window of
+        // ERR_CERT_AUTHORITY_INVALID on the sslip.io URL (2026-09-24, Mac).
+        // The check reads an in-memory value; polling it is free.
+        let mut polls = 0u32;
         loop {
-            iv.tick().await;
+            let wait = if polls < 120 { 1 } else { 30 };
+            polls = polls.saturating_add(1);
+            tokio::time::sleep(Duration::from_secs(wait)).await;
             if slot.get().is_some() {
                 return;
             }

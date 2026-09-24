@@ -28,3 +28,6 @@ node_modules/
 # Browser test output
 web/test-results/
 web/playwright-report/
+
+# Streaming harness run output (per-run JSON, screenshots)
+tests/streaming/out/

@@ -128,37 +128,147 @@ if (SETTINGS) {
 await S("Page.navigate", { url: PLAY });
 await sleep(2500);
 
+// Pairing is driven through the real UI, not by POSTing /api/v1/pair directly.
+// The host requires an Ed25519 `controller_pubkey` on the pair request and
+// rejects the request outright (`controller_key_required`) without one; that key
+// is what authenticates every later signalling connect. The client owns its own
+// device identity (see web/src/controller-key.ts), so clicking the button is not
+// just more faithful — it is the only way the pair actually produces a usable
+// browser. See crates/host/tests/remote_access.rs.
 if (PIN) {
-  const pair = await S("Runtime.evaluate", {
-    expression: `fetch('/api/v1/pair',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({pin:'${PIN}'})}).then(r=>r.status)`,
-    awaitPromise: true,
-  });
-  log("pair status:", pair.result?.value);
+  let paired = false;
+  for (let attempt = 0; attempt < 40 && !paired; attempt++) {
+    const submitted = await S("Runtime.evaluate", {
+      expression: `(() => {
+        const pin = document.querySelector('#pin');
+        const go = document.querySelector('#go');
+        if (!pin || !go) return JSON.stringify({ state: 'no-form' });
+        if (pin.value !== ${JSON.stringify(PIN)}) {
+          pin.value = ${JSON.stringify(PIN)};
+          pin.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        go.click();
+        return JSON.stringify({ state: 'submitted' });
+      })()`,
+    }).catch(() => null);
+
+    const s = JSON.parse(submitted?.result?.value || "{}");
+    if (s.state === "no-form") {
+      // Either not on the pair view yet, or already paired (view swapped out).
+      const probe = await S("Runtime.evaluate", {
+        expression: `(() => {
+          const pin = document.querySelector('#pin');
+          return JSON.stringify({ hasForm: !!pin });
+        })()`,
+      }).catch(() => null);
+      const p = JSON.parse(probe?.result?.value || "{}");
+      if (!p.hasForm) { paired = true; break; }
+      await sleep(1000);
+      continue;
+    }
+
+    await sleep(1500);
+    const after = await S("Runtime.evaluate", {
+      expression: `(() => {
+        const err = document.querySelector('#err');
+        return JSON.stringify({ hasForm: !!document.querySelector('#pin'), err: err ? err.textContent : '' });
+      })()`,
+    }).catch(() => null);
+    const a = JSON.parse(after?.result?.value || "{}");
+    if (!a.hasForm) { paired = true; log("paired (controller key enrolled)"); break; }
+    if (a.err) log("pair:", a.err);
+    await sleep(1000);
+  }
+  if (!paired) log("WARNING: pairing did not complete — the run will have no frames");
 }
 await sleep(500);
 await S("Page.navigate", { url: PLAY });
 await S("Page.bringToFront", {}).catch(() => {});
+
+// Pairing only gets the browser to the home screen. The stream starts when the
+// user presses Connect, so the harness has to press it too: without this the
+// probe pairs, idles on the home screen and reports zero frames for the whole
+// run, which looks exactly like a broken stream.
+for (let i = 0; i < 45; i++) {
+  const r = await S("Runtime.evaluate", {
+    expression: `(() => {
+      const b = document.querySelector('#connect');
+      if (!b) return JSON.stringify({ state: 'absent' });
+      if (b.disabled) return JSON.stringify({ state: 'disabled', label: b.textContent.trim() });
+      b.click();
+      return JSON.stringify({ state: 'clicked' });
+    })()`,
+  }).catch(() => null);
+  const s = JSON.parse(r?.result?.value || "{}");
+  if (s.state === "clicked") { log("pressed Connect"); break; }
+  if (s.state === "disabled" && i % 5 === 0) log("connect disabled:", s.label);
+  if (i === 44) log("WARNING: never pressed Connect — no stream will start");
+  await sleep(1000);
+}
+
 log(`streaming for ${DURATION}s …`);
 
 const startWin = windows.length;
 const telem = [];
+// The negotiated video dimensions matter as much as the requested ones: the
+// host clamps what the client asks for, so a run that "passed" at 4K may in
+// fact have been streamed at something smaller.
+const dims = [];
 const deadline = Date.now() + DURATION * 1000;
 let lastReport = 0;
+// The WebTransport path is the primary transport (ADR-0011) and does NOT
+// publish the WebRTC telemetry globals above - it renders to a canvas, not a
+// <video>, and keeps its own counters on `__inphaseWt`/`__inphaseWtWire`.
+// Measuring only the WebRTC surface reported a fully working WT stream as zero
+// frames, which is worse than no harness: it looked like a broken pipeline.
+let prevWt = null;
 while (Date.now() < deadline) {
   await sleep(2000);
   const ev = await S("Runtime.evaluate", {
-    expression: `(()=>{const p=window.__inphaseFrameStats;const t=window.__inphaseTelemetry;const v=document.querySelector('video');return JSON.stringify({stats:p||null,telem:t||null,vw:v?.videoWidth||0,vh:v?.videoHeight||0,ct:v?.currentTime||0})})()`,
+    expression: `(()=>{const p=window.__inphaseFrameStats;const t=window.__inphaseTelemetry;
+      const w=window.__inphaseWt;const wire=window.__inphaseWtWire;
+      const v=document.querySelector('video');const c=document.querySelector('canvas.wt-video');
+      return JSON.stringify({stats:p||null,telem:t||null,
+        wt:w?{...w}:null,wtWire:wire?{...wire}:null,
+        vw:v?.videoWidth||c?.width||0,vh:v?.videoHeight||c?.height||0,ct:v?.currentTime||0})})()`,
   }).catch(() => null);
   try {
     const p = JSON.parse(ev?.result?.value || "{}");
     if (p.telem) telem.push({ _wall: Date.now(), ...p.telem });
+    if (p.wt && p.wtWire) {
+      const now = Date.now();
+      const dt = prevWt ? (now - prevWt.t) / 1000 : 0;
+      const rate = (a, b) => (dt > 0 ? +((b - a) / dt).toFixed(1) : null);
+      telem.push({
+        _wall: now,
+        decoded_fps: prevWt ? rate(prevWt.decoded, p.wt.framesDecoded) : null,
+        presented_fps: prevWt ? rate(prevWt.presented, p.wt.framesPresented) : null,
+        decode_time_ms_p50: p.wt.decodeMs,
+        freeze_count: p.wt.freezeCount,
+        total_freeze_ms: p.wt.totalFreezeMs,
+        packets_lost: p.wt.framesDropped,
+        rtt_ms: null,
+        inbound_bitrate_kbps: null,
+        jitter_buffer_target_ms: null,
+        jitter_buffer_delay_ms: null,
+        e2e_ms: p.wt.e2eMs,
+        frames_received: p.wtWire.framesReceived,
+        frames_abandoned: p.wtWire.framesAbandoned,
+        streams_wedged: p.wtWire.streamsWedged,
+      });
+      prevWt = { t: now, decoded: p.wt.framesDecoded, presented: p.wt.framesPresented };
+    }
+    if (p.vw) dims.push({ vw: p.vw, vh: p.vh });
   } catch {}
   const now = Date.now();
   if (now - lastReport > 20000) {
     lastReport = now;
     const s = windows.at(-1);
     if (s) log(`  n=${windows.length} last: c2g=${s.captureToGlassMs?.p50 ?? "-"}ms jbuf=${s.jbufMs?.p50}ms int.p95=${s.intervalMs?.p95}ms jitter=${s.jitterMs}ms skipped=${s.skippedFrames}`);
-    else if (ev) log(`  waiting for frames… ${ev.result?.value}`);
+    else if (telem.length) {
+      const t = telem.at(-1);
+      log(`  wt: rx=${t.frames_received} dec=${t.decoded_fps}fps pres=${t.presented_fps}fps decode=${t.decode_time_ms_p50}ms e2e=${t.e2e_ms}ms drop=${t.packets_lost} dims=${dims.at(-1)?.vw ?? "?"}x${dims.at(-1)?.vh ?? "?"}`);
+    } else if (ev) log(`  waiting for frames… ${ev.result?.value}`);
   }
 }
 
@@ -184,9 +294,24 @@ const summary = {
   browser: version.Browser,
   duration_s: DURATION,
   stat_windows: collected.length,
-  frames_seen: collected.reduce((a, w) => a + (w.n || 0), 0),
+  // Frames the client actually received. The WebRTC path counts them per stat
+  // window; the WT path reports a cumulative counter, so the frames seen during
+  // this run are the span between the first and last sample.
+  frames_seen: collected.length
+    ? collected.reduce((a, w) => a + (w.n || 0), 0)
+    : (() => {
+        const rx = telem.map((t) => t.frames_received).filter((x) => typeof x === "number");
+        return rx.length >= 2 ? rx.at(-1) - rx[0] : 0;
+      })(),
   skipped_frames_total: collected.reduce((a, w) => a + (w.skippedFrames || 0), 0),
   display_hz: agg("displayHz")?.p50 ?? null,
+  // Negotiated stream geometry (last non-zero sample wins; it must not change
+  // mid-stream, and a change is itself a fault worth reporting).
+  stream_width: dims.at(-1)?.vw ?? null,
+  stream_height: dims.at(-1)?.vh ?? null,
+  stream_dim_changes: dims.length > 1
+    ? dims.filter((d) => d.vw !== dims[0].vw || d.vh !== dims[0].vh).length
+    : 0,
   host_stamps: collected.some((w) => w.hostStamps),
   // frame pacing
   interval_p50_ms: agg("intervalMs.p50"),

@@ -49,7 +49,9 @@ fn state(remote_enabled: bool) -> HttpState {
         remote_mapping: inphase_host::portmap::shared(),
         art: inphase_host::gameart::ArtCache::new(false),
         started_at: Instant::now(),
-        wt: None,
+        // No WT video transport in these tests: an empty slot, as on a host
+        // that never bound one.
+        wt: inphase_host::media::wt::WtSlot::new(),
     }
 }
 

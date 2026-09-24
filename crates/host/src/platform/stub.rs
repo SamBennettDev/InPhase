@@ -31,6 +31,10 @@ pub fn poster_path_for_game_id(_id: &str) -> Option<std::path::PathBuf> {
     None
 }
 
+pub fn desktop_preview_image() -> anyhow::Result<Vec<u8>> {
+    anyhow::bail!("desktop preview is Windows-only")
+}
+
 pub fn launch_game(_id: &str) -> anyhow::Result<bool> {
     Ok(false)
 }
@@ -48,6 +52,8 @@ pub fn ensure_firewall_rule(
 }
 
 pub fn ignore_stray_ctrl_c() {}
+
+pub fn raise_timer_resolution() {}
 
 pub fn set_start_at_login(_enabled: bool) -> anyhow::Result<()> {
     Ok(())

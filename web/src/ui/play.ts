@@ -14,7 +14,7 @@ import {
 } from "../signaling.js";
 import { WtVideoClient, type WtVideoInfo } from "../wt.js";
 import { WtDecoder } from "../wtdecoder.js";
-import { WtRecovery } from "../wtrecovery.js";
+import { WtRecovery, type RecoveryContext } from "../wtrecovery.js";
 import { InputManager } from "../input/manager.js";
 import { TouchController } from "../input/touch.js";
 import { WtAudio } from "../wtaudio.js";
@@ -36,6 +36,7 @@ import {
 } from "../controller-key.js";
 import { checkBuildId } from "../buildid.js";
 import {
+  adoptDisplayRate,
   loadSettings,
   saveSettings,
   type StreamSettings,
@@ -55,7 +56,9 @@ import {
   fetchHostCapabilities,
   setHostAudioDevice,
   mediaCapabilities,
+  playBlocker,
 } from "../capabilities.js";
+import { nextStepDown, sameDecoderConfig } from "../decoderpolicy.js";
 
 const isTouch =
   matchMedia("(pointer: coarse)").matches || "ontouchstart" in window;
@@ -72,6 +75,13 @@ function stripAutoPlayParam(): void {
   url.searchParams.delete("play");
   history.replaceState(null, "", url.toString());
 }
+
+
+/** Set once the page starts unloading: sockets it closes are not failures. */
+let pageUnloading = false;
+window.addEventListener("pagehide", () => {
+  pageUnloading = true;
+});
 
 export async function renderPlay(root: HTMLElement) {
   root.innerHTML = `<div class="center">${brandLogo()}<p class="sub">Checking pairing…</p></div>`;
@@ -113,9 +123,8 @@ function showHome(root: HTMLElement) {
         <span class="connection-pill" id="host-status" role="status"><span class="dot"></span>Checking PC</span>
         <button class="icon-btn" id="cfgbtn" aria-label="Stream settings" title="Stream settings">${icon("settings")}</button>
       </header>
-      <div class="page-heading"><div><p class="eyebrow">YOUR SPACE TO PLAY</p><h1>Library</h1><p class="sub">Your games. Your desktop. Right where you left them.</p></div><span class="quiet-tag">${icon("shield")} Paired device</span></div>
       <section class="desktop-hero" aria-label="Gaming PC">
-        <div class="desktop-visual" aria-hidden="true"><div class="monitor-frame"><div class="monitor-wallpaper">${icon("monitor")}</div></div><div class="monitor-stand"></div></div>
+        <div class="desktop-visual" aria-hidden="true"><div class="monitor-frame"><div class="monitor-wallpaper" id="desktop-preview">${icon("monitor")}<img id="desktop-preview-img" alt="" /></div></div><div class="monitor-stand"></div></div>
         <div class="desktop-copy"><h2>Make yourself at home.</h2><p>Stream your whole desktop, open any launcher, and play your way.</p><button class="secondary compact" id="select-desktop">${icon("monitor")} Select desktop ${icon("chevron")}</button></div>
       </section>
       <section aria-labelledby="games-heading"><div class="library-toolbar"><div class="section-title"><h2 id="games-heading">Your games</h2><span id="game-count" class="count-badge">0</span></div>
@@ -138,11 +147,13 @@ function showHome(root: HTMLElement) {
   let available = false,
     stopped = false,
     poll = 0,
-    libraryPoll = 0;
+    libraryPoll = 0,
+    previewPoll = 0;
   const stop = () => {
     stopped = true;
     clearTimeout(poll);
     clearTimeout(libraryPoll);
+    clearInterval(previewPoll);
   };
   const updateSelection = () => {
     settings = loadSettings();
@@ -158,6 +169,11 @@ function showHome(root: HTMLElement) {
       settings.streamTarget.type === "desktop",
     );
   };
+  // A 120 Hz+ display defaults to 120 fps on first visit (half the per-frame
+  // waits); the summary refreshes once the measurement lands.
+  void adoptDisplayRate().then((changed) => {
+    if (changed && !stopped) updateSelection();
+  });
   const pick = (target: StreamTarget) => {
     saveSettings({ ...loadSettings(), streamTarget: target });
     updateSelection();
@@ -223,6 +239,20 @@ function showHome(root: HTMLElement) {
       libraryPoll = window.setTimeout(() => void loadLibrary(tries + 1), 3000);
   };
   void loadLibrary();
+  const wallpaper = $("#desktop-preview");
+  const preview = $<HTMLImageElement>("#desktop-preview-img");
+  const loadPreview = () => {
+    if (stopped || !root.contains(connect)) return;
+    const probe = new Image();
+    probe.onload = () => {
+      if (stopped || !root.contains(connect)) return;
+      preview.src = probe.src;
+      wallpaper.classList.add("has-shot");
+    };
+    probe.src = `/api/v1/desktop-preview?t=${Date.now()}`;
+  };
+  loadPreview();
+  previewPoll = window.setInterval(loadPreview, 2500);
   $("#cfgbtn").addEventListener("click", () => {
     const panel = $("#panel");
     if (!panel.dataset["built"]) {
@@ -595,6 +625,10 @@ export class Session {
   private wtClient: WtVideoClient | null = null;
   /** §15: the single recovery state machine owns the reset/redial ladder. */
   private wtRecovery = new WtRecovery();
+  /** The recovery watchdog's own clock. It rode hudTick, whose only steady
+   *  driver is the 2 s pong, so a 3 s reset fired 3-5 s into a stall and the
+   *  8 s silent-connection check was just as coarse (audit §2.5). */
+  private wtWatchdogTimer = 0;
   /** §13: when the WT path is live it takes input datagrams; the WebRTC
    *  data channel only serves while WT is down. Exactly one path per packet. */
   private wtInput: ((b: Uint8Array) => Promise<boolean>) | null = null;
@@ -619,6 +653,7 @@ export class Session {
 
   /** Where "go home" / teardown returns to. Defaults to `renderPlay`. */
   private readonly onExit?: () => void;
+  private notice: string | null = null;
 
   constructor(
     private readonly root: HTMLElement,
@@ -626,10 +661,13 @@ export class Session {
     opts: {
       immersive?: boolean;
       onExit?: () => void;
+      /** Shown once the video is back (e.g. why the mode was stepped down). */
+      notice?: string;
     } = {},
   ) {
     this.immersive = opts.immersive ?? false;
     this.onExit = opts.onExit;
+    this.notice = opts.notice ?? null;
     saveSettings(settings);
     // Sound from the first frame: creating/resuming the AudioContext here
     // lands inside the Connect click's user gesture - iOS Safari suspends
@@ -764,27 +802,26 @@ export class Session {
   };
 
   private async negotiate() {
+    // Before signalling, so an unusable browser never claims the host session.
+    const blocker = playBlocker();
+    if (blocker !== null) {
+      this.fail(blocker);
+      return;
+    }
     const features = detectFeatures();
-    // H.265 is the only codec (user directive): one probe, one advertisement.
-    const hints = await decodeHints([
-      {
-        codec: "h265",
-        width: this.settings.width,
-        height: this.settings.height,
-        framerate: this.settings.fps,
-      },
-    ]);
-    const videoCodecs = usableVideoCodecs(
-      [
-        {
-          codec: "h265",
-          width: this.settings.width,
-          height: this.settings.height,
-          framerate: this.settings.fps,
-        },
-      ],
-      hints,
-    );
+    // Probe both codecs at the requested mode. HEVC is preferred when the
+    // browser can decode it, but H.264 is the interoperability floor
+    // (ADR-0005): advertising HEVC alone stranded every browser without it —
+    // Chrome on Linux has no HEVC at all, so the list came back empty and the
+    // client refused to start a stream its decoder could handle.
+    const modes = (["h265", "h264"] as const).map((codec) => ({
+      codec,
+      width: this.settings.width,
+      height: this.settings.height,
+      framerate: this.settings.fps,
+    }));
+    const hints = await decodeHints(modes);
+    const videoCodecs = usableVideoCodecs(modes, hints);
     if (videoCodecs.length === 0) {
       // The host picks between them; the client's job is to report honestly
       // what it can decode. Only a browser that can decode neither is refused,
@@ -815,8 +852,10 @@ export class Session {
         height: this.settings.height,
         fps: this.settings.fps,
         preset: this.settings.preset,
-        // H.265 only (user directive) - the host refuses anything else.
-        codec_preference: "h265",
+        // Ask for the best codec this browser can actually decode. Hardcoding
+        // HEVC here only produces a stream that dies at `configure()` on a
+        // browser whose HEVC probe answered `true` and then failed (§30).
+        codec_preference: hints[0]?.supported ? "h265" : "h264",
         max_bitrate_kbps: this.settings.maxBitrateKbps,
         stream_target:
           this.settings.streamTarget.type === "desktop"
@@ -849,20 +888,16 @@ export class Session {
         break;
       case "error":
         if (m.code === "unauthorized") {
-          // The host does not know this browser's device key, so retrying can
-          // never succeed. Drop the session cookie on the way to the pairing
-          // screen: while it is still valid `renderPlay` treats the browser as
-          // paired and skips pairing, which puts it right back here.
+          // iOS Home Screen apps share Safari's session cookie and keep their
+          // own device key. Logging out here also unpaired Safari. Do not
+          // clear the cookie; send this app to PIN pairing.
           stripAutoPlayParam();
           this.teardownInternals();
           this.status.remove();
           document
             .querySelectorAll(".overlay, .status-line")
             .forEach((el) => el.remove());
-          void (async () => {
-            await fetch("/api/v1/logout", { method: "POST" }).catch(() => {});
-            showPair(this.root);
-          })();
+          showPair(this.root);
           return;
         }
         this.fail(m.message);
@@ -891,8 +926,13 @@ export class Session {
       this.wtTeardown();
     }
     if (!("WebTransport" in globalThis)) {
-      console.info("wt: browser lacks WebTransport - no video path");
+      // negotiate() refuses this browser up front; this is the backstop. There
+      // is no other video path, so a silent return is a blank stage forever.
+      this.fail(playBlocker() ?? "This browser doesn't support WebTransport.");
       return;
+    }
+    if (this.wtWatchdogTimer === 0) {
+      this.wtWatchdogTimer = window.setInterval(() => this.wtWatchdog(), 250);
     }
     this.wtInfo = info;
     const client = new WtVideoClient();
@@ -917,7 +957,8 @@ export class Session {
         // missing entirely, and the page rubber-banded under touches).
         this.onConnected();
         this.stage.append(decoder.root);
-        this.toast("WebTransport video path active");
+        this.toast(this.notice ?? "WebTransport video path active");
+        this.notice = null;
         this.hudTick();
       },
       () => client.requestKeyframe(),
@@ -926,8 +967,30 @@ export class Session {
       // The decoder has given up rebuilding. Say so - the alternative was an
       // endless error/configure loop that froze the tab with no explanation.
       (why) => this.fail(why),
+      // The decoder worked, then could not keep up: a smaller mode, frame
+      // rate first (nextStepDown). Saved, so this device starts there next
+      // time; the settings dialog can raise it again.
+      {
+        available: () => nextStepDown(this.settings) !== null,
+        apply: () => {
+          const from = this.settings;
+          const to = nextStepDown(from);
+          if (to === null) return;
+          const note =
+            `This device couldn't keep up with ${from.height}p at ${from.fps} fps - ` +
+            `switched to ${to.height}p at ${to.fps} fps.`;
+          console.warn(`wt: ${note}`);
+          this.reconnect({ ...from, ...to }, note);
+        },
+      },
     );
     this.wtSyncError = () => client.syncErrorMs();
+    // Lip sync: audio aims at the age the video is shown at, on the same
+    // host clock (WtAudio.syncedStartUs).
+    this.wtAudio?.setSync(
+      () => client.clockOffsetUs(),
+      () => decoder.presentAgeMs(),
+    );
     this.wtClose = () => client.close();
     const wtInput = (b: Uint8Array) => client.sendInput(b);
     this.wtInput = wtInput;
@@ -957,14 +1020,10 @@ export class Session {
               // flushes the decoder right after the startup IDR passed - the
               // session then decoded nothing forever. Only a REAL change
               // (codec/description/size) reconfigures; duplicates just ack.
-              const last = decoder.currentConfig();
-              const same =
-                last !== null &&
-                last.codec === cfg.codec &&
-                last.width === cfg.width &&
-                last.height === cfg.height &&
-                (last.description ?? null) === (cfg.description ?? null);
-              decoder.configure(cfg);
+              // (The check used to be computed and then ignored: configure()
+              // ran regardless - orderer reset, codec flushed, IDR forced.)
+              const same = sameDecoderConfig(decoder.currentConfig(), cfg);
+              if (!same) decoder.configure(cfg);
               void client.send({ type: "config_ack", epoch: cfg.epoch });
               if (same)
                 console.info(
@@ -992,7 +1051,10 @@ export class Session {
             this.hudTick();
           }
         },
-        onRtt: () => this.hudTick(),
+        onRtt: (rtt) => {
+          decoder.setRttMs(rtt);
+          this.hudTick();
+        },
         onRouteWarning: (detail) => {
           // §"respect user inputs": the resolution stays; the user is told.
           console.warn("wt route warning:", detail);
@@ -1204,6 +1266,74 @@ export class Session {
     }
   }
 
+  /** The recovery ladder, on its own 250 ms clock (and from hudTick). Reads
+   *  cheap counters only: `stats()` rolls the fps window and must stay on the
+   *  1 s cadence. */
+  private wtWatchdog() {
+    if (this.closed) return;
+    // Watchdog: a network stall can break the decode reference chain (or starve
+    // the reassembler) while the transport stays healthy — the host keeps
+    // pinging fine while presentedFps sits at 0 forever. Recover in stages:
+    // reset the decoder and demand an IDR after 3 s frozen; redial the whole
+    // WT path after 10 s (the fresh session re-gates on a keyframe anyway).
+    // Arm on a live WT path, not only after a first successful decode: the
+    // 18:34 shape was a session that NEVER decoded (a mid-startup reconfigure
+    // swallowed the IDR) - rendering was false forever, so the ladder never
+    // armed and the glass sat black until the user closed it. A never-decoded
+    // session IS a freeze from t=0; reset+IDR at 3 s and redial at 10 s apply.
+    const dec = this.wtDecoder;
+    // A hidden tab stops presenting on purpose, and a freeze that is waiting
+    // on a requested IDR is already being repaired: resetting the decoder
+    // then flushes that IDR (audit §2.5, §2.6).
+    const ctx: RecoveryContext = {
+      hidden: document.hidden,
+      keyframeRequestedAtMs: dec?.awaitingKeyframeSince() ?? null,
+    };
+    // Safari never fires onClosed when a WT connection dies silently - the
+    // read promises hang and the glass freezes with no recovery path. Watch
+    // the connection's own pulse: no pong AND no datagram for 8 s means it
+    // is dead regardless of what the transport claims; force the redial.
+    if (this.wtActive && this.wtClient && this.wtClient.staleMs() > 8000) {
+      console.warn("wt connection silent >8s - forcing teardown + redial");
+      this.toast("WebTransport lost — reconnecting");
+      this.wtTeardown();
+    } else if (this.wtActive && dec) {
+      const action = this.wtRecovery.observe(dec.presentedCount, ctx);
+      if (action === "reset") {
+        console.warn(
+          "wt watchdog: glass frozen — resetting decoder, requesting IDR",
+        );
+        dec.reset();
+      } else if (action === "redial") {
+        console.warn(
+          "wt watchdog: still frozen after reset — redialing WT path",
+        );
+        this.wtClose?.();
+      }
+    } else if (dec && !this.wtActive) {
+      // Dialed but never presented. (03:55 Chrome: the wedged stream ate the
+      // startup IDR and every later forced IDR lacked in-band SPS/PPS, so
+      // decode() ate chunks and produced nothing.) wtActive flips true only
+      // on first presentation, so the branch above never armed and this is
+      // the only ladder a never-decoded session gets: observe(0) resets +
+      // demands an IDR at 3 s, redials at 10 s.
+      const action = this.wtRecovery.observe(0, ctx);
+      if (action === "reset") {
+        console.warn(
+          "wt watchdog: no decode — resetting decoder, requesting IDR",
+        );
+        dec.reset();
+      } else if (action === "redial") {
+        console.warn(
+          "wt watchdog: still not decoding after reset — redialing WT path",
+        );
+        this.wtClose?.();
+      }
+    } else {
+      this.wtRecovery.reset();
+    }
+  }
+
   private hudTickInner() {
     // A dial that never completes (host restarted mid-handshake, filtered
     // UDP path) leaves a WebTransport object in `connecting` forever with no
@@ -1225,59 +1355,7 @@ export class Session {
     const measuredE2e = this.probe?.measuredE2eMs() ?? 0;
 
     const wtStats = this.wtActive ? this.wtDecoder?.stats() : null;
-    // Watchdog: a network stall can break the decode reference chain (or starve
-    // the reassembler) while the transport stays healthy — the host keeps
-    // pinging fine while presentedFps sits at 0 forever. Recover in stages:
-    // reset the decoder and demand an IDR after 3 s frozen; redial the whole
-    // WT path after 10 s (the fresh session re-gates on a keyframe anyway).
-    // Arm on a live WT path, not only after a first successful decode: the
-    // 18:34 shape was a session that NEVER decoded (a mid-startup reconfigure
-    // swallowed the IDR) - rendering was false forever, so the ladder never
-    // armed and the glass sat black until the user closed it. A never-decoded
-    // session IS a freeze from t=0; reset+IDR at 3 s and redial at 10 s apply.
-    // Safari never fires onClosed when a WT connection dies silently - the
-    // read promises hang and the glass freezes with no recovery path. Watch
-    // the connection's own pulse: no pong AND no datagram for 8 s means it
-    // is dead regardless of what the transport claims; force the redial.
-    if (this.wtActive && this.wtClient && this.wtClient.staleMs() > 8000) {
-      console.warn("wt connection silent >8s - forcing teardown + redial");
-      this.toast("WebTransport lost — reconnecting");
-      this.wtTeardown();
-    } else if (wtStats) {
-      const action = this.wtRecovery.observe(wtStats.framesPresented);
-      if (action === "reset") {
-        console.warn(
-          "wt watchdog: glass frozen — resetting decoder, requesting IDR",
-        );
-        this.wtDecoder?.reset();
-      } else if (action === "redial") {
-        console.warn(
-          "wt watchdog: still frozen after reset — redialing WT path",
-        );
-        this.wtClose?.();
-      }
-    } else if (this.wtDecoder && !this.wtActive) {
-      // Dialed but never presented. (03:55 Chrome: the wedged stream ate the
-      // startup IDR and every later forced IDR lacked in-band SPS/PPS, so
-      // decode() ate chunks and produced nothing.) wtActive flips true only
-      // on first presentation, so the wtStats branch above never armed and
-      // this is the only ladder a never-decoded session gets: observe(0)
-      // resets + demands an IDR at 3 s, redials at 10 s.
-      const action = this.wtRecovery.observe(0);
-      if (action === "reset") {
-        console.warn(
-          "wt watchdog: no decode — resetting decoder, requesting IDR",
-        );
-        this.wtDecoder.reset();
-      } else if (action === "redial") {
-        console.warn(
-          "wt watchdog: still not decoding after reset — redialing WT path",
-        );
-        this.wtClose?.();
-      }
-    } else {
-      this.wtRecovery.reset();
-    }
+    this.wtWatchdog();
     const syncErr = this.wtSyncError?.() ?? null;
     const inputPath =
       this.wtInput === null
@@ -1316,24 +1394,42 @@ export class Session {
     });
   }
 
-  private reconnect(s: StreamSettings) {
+  private reconnect(s: StreamSettings, note?: string) {
     this.settings = s;
     saveSettings(s);
     this.teardownInternals();
     this.status = div("status-line");
-    this.status.textContent = "Reconnecting…";
+    this.status.textContent = note ?? "Reconnecting…";
     document.body.append(this.status);
     // fresh session object keeps this simple
     new Session(this.root, s, {
       immersive: this.immersive,
       onExit: this.onExit,
+      notice: note,
     });
   }
 
   /** Signalling socket closed on its own (host gone, network drop) — not our
    *  own teardown. */
   private onDrop() {
-    if (this.closed) return;
+    // A socket closed by the page itself going away (reload, navigation) is
+    // not a failure; reporting one flashed "not paired" over every reload of a
+    // page that was still connecting.
+    if (this.closed || pageUnloading) return;
+    // Touch / PWA used to bounce home with no message. A Home Screen app
+    // whose device key was not in the ACL died on the challenge in <100 ms
+    // and looked like Stream desktop "just failed".
+    if (!this.glassMounted) {
+      // Before the first picture the likeliest cause is still an unpaired
+      // device key (a Home Screen app dies on the challenge in <100 ms), but a
+      // host restart or a network drop mid-connect ends the same way, and
+      // telling those users to re-pair sent them the wrong way.
+      this.fail(
+        "The PC closed the connection before video started. If this device isn't paired yet, " +
+          "open it in Safari or enter the PIN shown on the host; otherwise try again.",
+      );
+      return;
+    }
     if (this.immersive) this.fail("Connection lost");
     else this.goHome();
   }
@@ -1428,6 +1524,8 @@ export class Session {
     document.removeEventListener("keydown", this.applyAudioOnce);
     clearInterval(this.pingTimer);
     clearInterval(this.audioHealthPoll);
+    clearInterval(this.wtWatchdogTimer);
+    this.wtWatchdogTimer = 0;
     this.probe?.stop();
     this.wtTeardown();
     this.input?.detach();

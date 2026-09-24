@@ -148,6 +148,9 @@ fn main() -> anyhow::Result<()> {
         path = %Config::config_path().display(),
         "=== InPhase host starting ==="
     );
+    // Before any runtime exists: frame pacing sleeps in 1 ms steps, which
+    // Windows otherwise rounds up to a 15.6 ms tick.
+    inphase_host::platform::raise_timer_resolution();
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

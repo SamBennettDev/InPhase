@@ -170,6 +170,15 @@ pub enum WtClientMessage {
     },
 }
 
+/// `Nack::idx` meaning "every fragment of this frame": the client saw a later
+/// frame number but nothing of this one, so it knows neither its fragment
+/// count nor which pieces exist. That is what a single lost packet does to a
+/// small frame - QUIC packs its lone data fragment and its parity into one
+/// UDP datagram, so both vanish together and no per-fragment request can be
+/// formed. Without this the only repair was an IDR: under 1 % loss, a ~400 ms
+/// freeze every few seconds (2026-09-23).
+pub const NACK_WHOLE_FRAME: u16 = u16::MAX;
+
 /// Host → client messages on the WT control stream.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -684,10 +693,39 @@ fn fragment_tag_never_collides_with_audio() {
 /// even/odd offsets.
 pub const FRAGMENT_GROUP: usize = 8;
 
+/// Bytes appended to every parity payload: the frame's total data length,
+/// u32 little-endian.
+///
+/// Without it the client could never rebuild a frame's FINAL fragment - its
+/// true length is shorter than the group's parity width and was not
+/// derivable - and a frame that fits one datagram is nothing but a final
+/// fragment. So on light content (most frames one fragment) every lost
+/// datagram was an abandoned frame, a keyframe request and a visible freeze,
+/// with the parity for it sitting in the client unused: 1 % random loss cost
+/// ~0.7 frames/s and 13.6 s of freezes per minute (2026-09-23).
+pub const PARITY_TRAILER_LEN: usize = 4;
+
+/// Fragment count from which a delta frame also gets row-2 parity.
+///
+/// Row 1 rebuilds one lost fragment per 8-fragment group; row 2 a second one
+/// when the two losses split even/odd. Keyframes always had both. A 1440p120
+/// delta at 80 Mbps is ~80 fragments, and a Mac Chrome session lost bursts of
+/// its datagrams inside the browser (3-10 % on some seconds, zero on the
+/// network) - dense enough to put two holes in a group, which only a re-send
+/// could then repair, and the rare one that missed its window cost a re-key.
+/// Small frames keep one row: a two-hole group is unlikely there, and the
+/// extra datagram would be a large share of the frame.
+pub const TWO_ROW_MIN_FRAGMENTS: u16 = 16;
+
+/// Whether a frame gets row-2 parity as well as row 1.
+pub fn wants_two_parity_rows(key: bool, frag_cnt: u16) -> bool {
+    key || frag_cnt >= TWO_ROW_MIN_FRAGMENTS
+}
+
 /// Compute the parity payloads for one frame's fragments. `frags` are the
 /// data-fragment payloads in order. Returns one `(parity, payload)` per
 /// group: every frame gets row 1; keyframes additionally get row 2.
-pub fn fragment_parity(frags: &[Vec<u8>], key: bool) -> Vec<(u8, Vec<u8>)> {
+pub fn fragment_parity(frags: &[Vec<u8>], two_rows: bool) -> Vec<(u8, Vec<u8>)> {
     let mut out = Vec::new();
     for g in 0..frags.len().div_ceil(FRAGMENT_GROUP) {
         let lo = g * FRAGMENT_GROUP;
@@ -703,8 +741,11 @@ pub fn fragment_parity(frags: &[Vec<u8>], key: bool) -> Vec<(u8, Vec<u8>)> {
                 }
             }
         }
+        let total = (frags.iter().map(|p| p.len()).sum::<usize>() as u32).to_le_bytes();
+        row1.extend_from_slice(&total);
         out.push((1, row1));
-        if key {
+        if two_rows {
+            row2.extend_from_slice(&total);
             out.push((2, row2));
         }
     }
@@ -720,7 +761,8 @@ fn parity_rebuilds_a_single_lost_fragment() {
     assert_eq!(parity.len(), 1, "one group of 8 -> one row-1 payload");
     assert_eq!(parity[0].0, 1);
     // Rebuild fragment 3 from the parity and the other seven.
-    let mut acc = parity[0].1.clone();
+    let row = &parity[0].1;
+    let mut acc = row[..row.len() - PARITY_TRAILER_LEN].to_vec();
     for (i, p) in frags.iter().enumerate() {
         if i != 3 {
             for (j, b) in p.iter().enumerate() {
@@ -729,6 +771,45 @@ fn parity_rebuilds_a_single_lost_fragment() {
         }
     }
     assert_eq!(acc, frags[3]);
+}
+
+#[test]
+fn parity_carries_the_frame_length_so_a_final_fragment_can_be_rebuilt() {
+    // A frame that fits one datagram: its only fragment is the final one.
+    let one = vec![vec![9u8; 700]];
+    let p = fragment_parity(&one, false);
+    let row = &p[0].1;
+    assert_eq!(row.len(), 700 + PARITY_TRAILER_LEN);
+    assert_eq!(
+        &row[..700],
+        &one[0][..],
+        "row 1 of a lone fragment is a copy"
+    );
+    assert_eq!(u32::from_le_bytes(row[700..].try_into().unwrap()), 700);
+
+    // A short final fragment inside a group: parity is as wide as the group,
+    // and only the trailer says where the final fragment really ends.
+    let frags = vec![vec![1u8; 32], vec![2u8; 32], vec![3u8; 11]];
+    let p = fragment_parity(&frags, false);
+    let row = &p[0].1;
+    let total = u32::from_le_bytes(row[row.len() - 4..].try_into().unwrap()) as usize;
+    assert_eq!(total, 75);
+    let mut acc = row[..row.len() - PARITY_TRAILER_LEN].to_vec();
+    for f in &frags[..2] {
+        for (j, b) in f.iter().enumerate() {
+            acc[j] ^= b;
+        }
+    }
+    acc.truncate(total - 2 * 32);
+    assert_eq!(acc, frags[2]);
+}
+
+#[test]
+fn large_delta_frames_get_two_rows_small_ones_one() {
+    assert!(wants_two_parity_rows(true, 1), "keyframes always");
+    assert!(!wants_two_parity_rows(false, 15));
+    assert!(wants_two_parity_rows(false, TWO_ROW_MIN_FRAGMENTS));
+    assert!(wants_two_parity_rows(false, 80));
 }
 
 #[test]

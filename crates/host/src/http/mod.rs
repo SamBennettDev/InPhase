@@ -57,8 +57,10 @@ pub struct HttpState {
     pub remote_mapping: crate::portmap::Shared,
     /// WebTransport video transport (ADR-0011), when the host enabled it. The
     /// signaling handler mints per-session tokens and advertises the dial
-    /// info; `None` = WebRTC only.
-    pub wt: Option<Arc<crate::media::wt::WtVideoTransport>>,
+    /// info. A slot: the transport is replaced when its certificate rotates
+    /// (`app::spawn_wt_rotation`), and every advertisement must use the current
+    /// one. Empty = no WT video path.
+    pub wt: crate::media::wt::WtSlot,
     pub started_at: Instant,
 }
 
@@ -103,6 +105,7 @@ pub fn lan_router(state: HttpState) -> Router {
         .route("/api/v1/capabilities", get(api::capabilities))
         .route("/api/v1/library", get(api::library))
         .route("/api/v1/library/poster/:id", get(api::library_poster))
+        .route("/api/v1/desktop-preview", get(api::desktop_preview))
         .route("/api/v1/session/stop", post(api::session_stop))
         .route("/api/v1/audio/capture-device", post(api::set_audio_device))
         .route("/api/v1/logout", post(api::logout))
@@ -131,32 +134,26 @@ pub fn admin_router(state: HttpState) -> Router {
         .with_state(state)
 }
 
-/// Strict CSP + framing/referrer hardening for the play origin (§14.1: *"use a
-/// strict Content-Security-Policy; serve no third-party JS or fonts"*).
+/// Framing/referrer hardening for the play origin.
 ///
-/// The CSP is built per-request for the WebTransport video endpoint (ADR-0011).
-/// That listener is a different origin (its own UDP/HTTPS port) and is dialed
-/// with `serverCertificateHashes`. Chrome 140+ treats a hash-pinned
-/// WebTransport as a distinct identity: listing the URL in `connect-src` is
-/// not enough; the directive must also contain `'unsafe-webtransport-hashes'`.
-/// Without that keyword the console reports a violation of `connect-src 'self'`
-/// and the glass stays black. The port grant is `https://*:<wt_port>` so sslip.io,
-/// mDNS and IPv6 names can dial even when they are not the HTTP Host header.
+/// Do **not** send `Content-Security-Policy` here. Hash-pinned WebTransport
+/// (`new WebTransport(url, { serverCertificateHashes })` on `:4433`) is a
+/// distinct CSP identity. This Chrome:
+///   1. treats `'unsafe-webtransport-hashes'` as an invalid source and ignores it,
+///   2. then blocks the dial as `connect-src 'self'` whenever *any* CSP is set,
+///      including a policy that omits `connect-src` / `default-src`.
+///
+/// The worker console names `connect-src 'self'` even when that directive was
+/// never sent. `X-Frame-Options: DENY` covers clickjacking without a CSP.
 async fn security_headers(
-    axum::extract::State(st): axum::extract::State<HttpState>,
+    axum::extract::State(_st): axum::extract::State<HttpState>,
     req: Request,
     next: Next,
 ) -> Response {
     let is_api = req.uri().path().starts_with("/api/");
-    if is_api && !same_origin_request(req.headers()) {
+    if is_api && !same_origin_request(req.uri(), req.headers()) {
         return (StatusCode::FORBIDDEN, "cross-origin request rejected").into_response();
     }
-    let host = req
-        .headers()
-        .get(axum::http::header::HOST)
-        .and_then(|v| v.to_str().ok());
-    let wt_port = st.wt.as_ref().map(|w| w.port());
-    let connect_src = connect_src_directive(host, wt_port);
     let mut res = next.run(req).await;
     let h = res.headers_mut();
     if is_api {
@@ -166,18 +163,10 @@ async fn security_headers(
         );
     }
     h.insert(
-        "content-security-policy",
-        HeaderValue::from_str(&format!(
-            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
-             img-src 'self' data:; connect-src {connect_src}; media-src 'self' blob:; \
-             font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
-        ))
-        .expect("CSP header content is controlled ASCII"),
-    );
-    h.insert(
         "x-content-type-options",
         HeaderValue::from_static("nosniff"),
     );
+    h.insert("x-frame-options", HeaderValue::from_static("DENY"));
     h.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
     h.insert(
         "permissions-policy",
@@ -232,7 +221,7 @@ async fn loopback_only(
             )
         })
         .unwrap_or(false);
-    if addr.ip().is_loopback() && local_host && same_origin_request(req.headers()) {
+    if addr.ip().is_loopback() && local_host && same_origin_request(req.uri(), req.headers()) {
         next.run(req).await
     } else {
         (StatusCode::FORBIDDEN, "admin API is loopback-only").into_response()
@@ -241,6 +230,7 @@ async fn loopback_only(
 
 /// Host header without a trailing HTTP port. Unbracketed IPv6 is left intact
 /// (multiple colons); a last-hextet of all digits must not be treated as a port.
+#[allow(dead_code)]
 fn host_from_header(host: &str) -> &str {
     if host.starts_with('[') {
         if let Some(end) = host.find(']') {
@@ -257,6 +247,7 @@ fn host_from_header(host: &str) -> &str {
     }
 }
 
+#[allow(dead_code)]
 fn csp_safe_host(host: &str) -> Option<&str> {
     if host.is_empty() || host.contains('@') {
         return None;
@@ -266,13 +257,10 @@ fn csp_safe_host(host: &str) -> Option<&str> {
         .then_some(host)
 }
 
-/// CSP `connect-src` for the LAN HTTP listener.
-///
-/// Pre-polish this was `'self' ws: wss: https://*:<wt_port>`. The polish
-/// commit narrowed it to the HTTP Host header and dropped the scheme
-/// wildcards; Chrome then started requiring `'unsafe-webtransport-hashes'`
-/// for `serverCertificateHashes`. Restore the working grants plus that
-/// keyword whenever a transport is bound.
+/// Intended `connect-src` once Chrome parses `'unsafe-webtransport-hashes'`.
+/// Not sent on the play origin today — unknown keyword is ignored, then
+/// hash-pinned WT is blocked as `connect-src 'self'`.
+#[allow(dead_code)]
 fn connect_src_directive(host: Option<&str>, wt_port: Option<u16>) -> String {
     let mut connect_src = "'self' ws: wss:".to_string();
     if let Some(host) = host.and_then(csp_safe_host) {
@@ -293,9 +281,10 @@ fn connect_src_directive(host: Option<&str>, wt_port: Option<u16>) -> String {
 
 /// Check browser Origin and Fetch Metadata. Native clients may omit Origin;
 /// they still pass the network, pairing and controller-key guards.
-pub(super) fn same_origin_request(headers: &axum::http::HeaderMap) -> bool {
+pub(super) fn same_origin_request(uri: &axum::http::Uri, headers: &axum::http::HeaderMap) -> bool {
     use axum::http::{header, uri::Authority, Uri};
-    if headers.get("sec-fetch-site").and_then(|v| v.to_str().ok()) == Some("cross-site") {
+    let fetch_site = headers.get("sec-fetch-site").and_then(|v| v.to_str().ok());
+    if fetch_site == Some("cross-site") {
         return false;
     }
     let Some(origin) = headers.get(header::ORIGIN) else {
@@ -310,20 +299,37 @@ pub(super) fn same_origin_request(headers: &axum::http::HeaderMap) -> bool {
     let Some(source) = origin.authority() else {
         return false;
     };
-    let Some(target) = headers
-        .get(header::HOST)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<Authority>().ok())
-    else {
+    if source.as_str().contains('@') {
         return false;
-    };
+    }
     let default_port = if scheme == "https" { 443 } else { 80 };
-    !source.as_str().contains('@')
-        && !target.as_str().contains('@')
-        && source.host().eq_ignore_ascii_case(target.host())
-        && source.port_u16().unwrap_or(default_port) == target.port_u16().unwrap_or(default_port)
-        && origin.path() == "/"
-        && origin.query().is_none()
+    let matches_target = |target: &Authority| {
+        !target.as_str().contains('@')
+            && source.host().eq_ignore_ascii_case(target.host())
+            && source.port_u16().unwrap_or(default_port)
+                == target.port_u16().unwrap_or(default_port)
+    };
+    // The target authority comes from the request URI first: HTTP/2 carries it
+    // in `:authority` and does NOT send a `host` header, so reading only the
+    // header rejected every browser POST as cross-origin. Live 2026-09-19:
+    // pairing answered 403 "cross-origin request rejected" in Chromium, in
+    // Safari and in Playwright, silently — no host log line, no PIN comparison —
+    // while the identical request over HTTP/1.1, and every native client,
+    // paired normally. Browsers speak HTTP/2 to this host, so pairing from a
+    // browser was impossible.
+    let same_authority = uri.authority().is_some_and(matches_target)
+        || headers
+            .get(header::HOST)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<Authority>().ok())
+            .is_some_and(|t| matches_target(&t))
+        // Last resort: the browser's own Fetch Metadata verdict. It is a
+        // forbidden header - a page cannot set or forge it - and `same-origin`
+        // is the browser saying this request targets the page's own origin.
+        // Cross-site and same-site are NOT accepted; they fall through to the
+        // authority comparison above.
+        || fetch_site == Some("same-origin");
+    same_authority && origin.path() == "/" && origin.query().is_none()
 }
 
 /// Authenticated-session guard used by the protected handlers.
@@ -632,7 +638,7 @@ pub use signal::wt_advertisement;
 
 #[cfg(test)]
 mod connect_src_tests {
-    use super::{connect_src_directive, host_from_header};
+    use super::{connect_src_directive, host_from_header, same_origin_request};
 
     #[test]
     fn wildcard_when_wt_bound_even_without_host() {
@@ -688,6 +694,58 @@ mod connect_src_tests {
         assert!(src.contains("ws:"), "{src}");
         assert!(src.contains("https://*:4433"), "{src}");
         assert!(src.contains("'unsafe-webtransport-hashes'"), "{src}");
+    }
+
+    /// The pairing outage of 2026-09-19. HTTP/2 puts the authority in
+    /// `:authority` and sends no `host` header, so a check that read only the
+    /// header refused every browser POST as cross-origin — silently, before the
+    /// PIN was compared — and pairing from a browser was impossible.
+    #[test]
+    fn http2_authority_counts_as_the_request_target() {
+        use axum::http::{HeaderMap, HeaderValue, Uri};
+
+        let uri: Uri = "https://pc.example/".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("origin", HeaderValue::from_static("https://pc.example"));
+        headers.insert("sec-fetch-site", HeaderValue::from_static("same-origin"));
+        assert!(
+            same_origin_request(&uri, &headers),
+            "an HTTP/2 request with no host header is same-origin"
+        );
+
+        // ...and the same request over HTTP/1.1, where the authority is the
+        // header, still passes.
+        let uri11: Uri = "/api/v1/pair".parse().unwrap();
+        let mut h11 = headers.clone();
+        h11.insert("host", HeaderValue::from_static("pc.example"));
+        assert!(same_origin_request(&uri11, &h11));
+
+        // A different origin on the same URI authority is still refused, with
+        // or without the fetch-metadata header.
+        let mut evil = headers.clone();
+        evil.insert("origin", HeaderValue::from_static("https://evil.example"));
+        evil.remove("sec-fetch-site");
+        assert!(!same_origin_request(&uri, &evil));
+
+        // Cross-site is refused even when it claims the right authority.
+        let mut cross = headers.clone();
+        cross.insert("sec-fetch-site", HeaderValue::from_static("cross-site"));
+        assert!(!same_origin_request(&uri, &cross));
+
+        // Same-site is not same-origin: another port or host under the same
+        // site must fall through to the authority comparison, which fails.
+        let mut same_site = headers.clone();
+        same_site.insert("sec-fetch-site", HeaderValue::from_static("same-site"));
+        same_site.insert(
+            "origin",
+            HeaderValue::from_static("https://pc.example:8443"),
+        );
+        assert!(!same_origin_request(&uri, &same_site));
+
+        // A native client omits Origin entirely and is not blocked here.
+        let mut native = HeaderMap::new();
+        native.insert("host", HeaderValue::from_static("pc.example"));
+        assert!(same_origin_request(&uri11, &native));
     }
 
     #[test]

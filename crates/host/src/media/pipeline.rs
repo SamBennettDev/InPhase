@@ -6,7 +6,6 @@
 //! Video: d3d11screencapturesrc(dxgi|wgc, monitor N)
 //!          -> queue(max-buffers=3, leaky=downstream)      // drop stale frames
 //!          -> d3d11convert                                // GPU BGRA->NV12 §5.1
-//!          -> videorate                                   // repeat last frame at target fps
 //!          -> video/x-raw(memory:D3D11Memory),NV12,W x H @ fps
 //!          -> encoder + WT tap (see `media::webrtc`)
 //! Audio:   wasapi2src(loopback, low-latency)
@@ -38,20 +37,57 @@ use crate::stats::StatsCollector;
 /// are assigned here in send order; `capture_us` comes from the buffer PTS so
 /// the client can compute capture→glass like the WebRTC stats do. A missing
 /// `venc` is a silent no-op — the WebRTC path keeps working.
-fn attach_gst_tap(pipeline: &gst::Pipeline, t: &Arc<crate::media::wt::WtVideoTransport>) {
+///
+/// Returns the encoder's PTS offset in µs (output PTS minus input PTS, `i64::MIN`
+/// until the first frame): the encoder stamps its output a constant hour
+/// ahead of the running time its input was captured at, so a clock that
+/// answers in running time must add it to speak the client's `capture_us`.
+fn attach_gst_tap(
+    pipeline: &gst::Pipeline,
+    t: &Arc<crate::media::wt::WtVideoTransport>,
+    pts_offset: Arc<std::sync::atomic::AtomicI64>,
+) -> Arc<std::sync::atomic::AtomicI64> {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     let Some(enc) = pipeline.by_name("venc") else {
         debug!("wt: no `venc` in the pipeline — video tap not attached");
-        return;
+        return pts_offset;
     };
     let Some(src) = enc.static_pad("src") else {
         debug!("wt: `venc` has no src pad — video tap not attached");
-        return;
+        return pts_offset;
     };
+    // Input PTS in arrival order. Zero-latency NVENC emits one frame per input
+    // in order (no B-frames), so the front of this queue is the input of the
+    // frame leaving the encoder.
+    let inputs = Arc::new(parking_lot::Mutex::new(
+        std::collections::VecDeque::<u64>::new(),
+    ));
+    if let Some(sink) = enc.static_pad("sink") {
+        let inputs = inputs.clone();
+        sink.add_probe(gst::PadProbeType::BUFFER, move |_, info| {
+            if let Some(gst::PadProbeData::Buffer(b)) = &info.data {
+                if let Some(p) = b.pts() {
+                    let mut q = inputs.lock();
+                    q.push_back(p.useconds());
+                    while q.len() > 16 {
+                        q.pop_front();
+                    }
+                }
+            }
+            gst::PadProbeReturn::Ok
+        });
+    }
+    let offset_out = pts_offset.clone();
     let t = t.clone();
     src.add_probe(gst::PadProbeType::BUFFER, move |pad, info| {
         if let Some(gst::PadProbeData::Buffer(b)) = &info.data {
+            if let (Some(out), Some(inp)) = (b.pts(), inputs.lock().pop_front()) {
+                let off = out.useconds() as i64 - inp as i64;
+                if offset_out.swap(off, Ordering::Relaxed) == i64::MIN {
+                    info!(offset_us = off, "wt: encoder PTS offset measured");
+                }
+            }
             // Numbering belongs to the transport: a pipeline restart must not
             // reset it, or the previous pipeline's in-flight frames arrive on the
             // new session looking like the future.
@@ -81,6 +117,20 @@ fn attach_gst_tap(pipeline: &gst::Pipeline, t: &Arc<crate::media::wt::WtVideoTra
                 // All of that is gone. The payload goes out exactly as the
                 // encoder produced it.
                 let payload = map.as_slice().to_vec();
+                // The client half of this conversation is already logged
+                // ("client requested a keyframe"). Without the encoder half, a
+                // session that begs for IDRs and stays black cannot be told
+                // apart from one whose IDRs never leave the host: an encoder
+                // that quietly ignores ForceKeyUnit looks identical from every
+                // other angle - frames flow, loss is zero, the client decodes
+                // nothing.
+                if key {
+                    info!(
+                        frame_no,
+                        bytes = payload.len(),
+                        "wt: encoder produced a keyframe"
+                    );
+                }
                 // The transport never blocks the streaming thread: a full
                 // queue drops the frame (leaky bucket, see send_frame).
                 let _ = t.send_frame(crate::media::wt::OutboundFrame {
@@ -96,6 +146,7 @@ fn attach_gst_tap(pipeline: &gst::Pipeline, t: &Arc<crate::media::wt::WtVideoTra
         }
         gst::PadProbeReturn::Ok
     });
+    pts_offset
 }
 
 /// Where the two WebRTC data channels' inbound traffic is forwarded (§12.2).
@@ -168,38 +219,29 @@ impl Pipeline {
         // ---- WebRTC sink / bin bridge (§4.1, §18) ---------------------------
         let bridge = WebRtcBridge::new(cfg, session, stats.clone(), signal_tx, chans)?;
 
-        // videorate re-times to the target fps by repeating the last frame:
-        // a static desktop produces zero DXGI changed-frames, and without a
-        // buffer to encode a ForceKeyUnit request never materializes - the
-        // client's decoder sat on a black glass waiting for an IDR that could
-        // not exist (2026-09-08 Safari session).
-        //
-        // The element is in gst-plugins-base (`gstvideorate.dll`). The
-        // bundled runtime must ship that plugin — see scripts/package.ps1.
-        match gst::ElementFactory::make("videorate").name("vrate").build() {
-            Ok(videorate) => {
-                pipeline.add_many([&src, &queue, &convert, &videorate, &capsfilter])?;
-                gst::Element::link_many([&src, &queue, &convert, &videorate, &capsfilter])
-                    .context("link capture → videorate → caps")?;
-            }
-            Err(e) => {
-                warn!(
-                    error = %e,
-                    "videorate missing from the GStreamer registry \
-                     (bundle gstvideorate from gst-plugins-base) — \
-                     static desktops will not generate frames"
-                );
-                pipeline.add_many([&src, &queue, &convert, &capsfilter])?;
-                gst::Element::link_many([&src, &queue, &convert, &capsfilter])
-                    .context("link capture → caps")?;
-            }
-        }
+        // No videorate. It was added (2026-09-08) so a static desktop still
+        // produced buffers for ForceKeyUnit to land on, but it cannot emit a
+        // frame until the NEXT one arrives - it has to see where the following
+        // timestamp falls - so every captured frame waited up to a frame
+        // interval inside it, and on a truly idle screen the last change sat
+        // there until something else moved. d3d11screencapturesrc already
+        // repeats the last frame at the negotiated rate: measured on Cin-PC
+        // (GStreamer 1.28.6, 2026-09-23) at 60.0 fps with nothing moving, the
+        // rate coming from the framerate in `vcaps` below.
+        pipeline.add_many([&src, &queue, &convert, &capsfilter])?;
+        gst::Element::link_many([&src, &queue, &convert, &capsfilter])
+            .context("link capture → caps")?;
         bridge.attach_video(&pipeline, &capsfilter)?;
 
         // ---- audio branch (Phase 2, §11 — now WT-only, ADR-0011) ------------
         // opusenc emits raw Opus packets; a src-pad probe forwards each as a
         // single WT audio datagram (header tag 0x41, see transport.rs). The
         // WebRTC audio leg is gone: no rtpopuspay, no webrtcbin audio sink.
+        // The encoder's PTS offset (see attach_gst_tap), shared with the audio
+        // tap: video `capture_us` is running time + this offset, audio PTS is
+        // plain running time, and the client can only line the two up if
+        // they arrive on one clock.
+        let pts_offset = Arc::new(std::sync::atomic::AtomicI64::new(i64::MIN));
         if cfg.media.enable_audio {
             match build_audio_branch(cfg) {
                 Ok(elems) => {
@@ -214,10 +256,53 @@ impl Pipeline {
                         if let Some(opus_el) = opus_el {
                             if let Some(src_pad) = opus_el.static_pad("src") {
                                 let wt_probe = wt_a.clone();
+                                let audio_offset = pts_offset.clone();
+                                let audio_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+                                let audio_el = opus_el.downgrade();
                                 src_pad.add_probe(gst::PadProbeType::BUFFER, move |_, info| {
                                     if let Some(gst::PadProbeData::Buffer(b)) = &info.data {
-                                        let ts_us =
+                                        let raw_us =
                                             b.pts().map(|p| p.nseconds() / 1_000).unwrap_or(0);
+                                        // On the video's capture clock, so the
+                                        // client can play each packet when its
+                                        // frame is on screen (lip sync). Held
+                                        // back until the first video frame has
+                                        // measured the offset: a browser's
+                                        // AudioDecoder takes its timestamp base
+                                        // from the FIRST packet and counts on
+                                        // from it, so raw-clock packets at the
+                                        // start left every later one reported
+                                        // 1000 h early and lip sync never
+                                        // engaged (2026-09-24, Mac Chrome).
+                                        let off =
+                                            audio_offset.load(std::sync::atomic::Ordering::Relaxed);
+                                        if off == i64::MIN {
+                                            return gst::PadProbeReturn::Ok;
+                                        }
+                                        let ts_us = (raw_us as i64 + off).max(0) as u64;
+                                        // How long audio spent inside this
+                                        // pipeline (capture PTS -> Opus out),
+                                        // every ~5 s: the host's share of any
+                                        // lip-sync lag, which the client can
+                                        // only chase, never undo.
+                                        let n = audio_count
+                                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                        if n % 500 == 0 {
+                                            if let Some(el) = audio_el.upgrade() {
+                                                if let Some(now) = el
+                                                    .clock()
+                                                    .zip(el.base_time())
+                                                    .and_then(|(c, b)| c.time().checked_sub(b))
+                                                {
+                                                    tracing::debug!(
+                                                        in_pipeline_ms = (now.useconds() as i64
+                                                            - raw_us as i64)
+                                                            / 1000,
+                                                        "wt audio: capture-to-encoded latency"
+                                                    );
+                                                }
+                                            }
+                                        }
                                         if let Ok(m) = b.map_readable() {
                                             wt_probe.send_audio_datagram(m.as_slice(), ts_us);
                                         }
@@ -272,7 +357,24 @@ impl Pipeline {
         // VideoDecoder, bypassing the RTP/jitter-buffer path entirely. The
         // probe is installed pre-start like the frametrace ones above.
         if let Some(t) = &wt {
-            attach_gst_tap(&pipeline, t);
+            let pts_offset = attach_gst_tap(&pipeline, t, pts_offset.clone());
+            // Clock-sync pongs answer from the clock `capture_us` is stamped
+            // on - running time plus the encoder's PTS offset - so client-side
+            // ages include this host's capture, encode, queue and pacing. A
+            // weak ref: a torn-down pipeline answers None and the transport
+            // falls back, as it does until the offset is first measured.
+            let weak = pipeline.downgrade();
+            t.set_capture_clock(Some(Arc::new(move || {
+                let off = pts_offset.load(std::sync::atomic::Ordering::Relaxed);
+                if off == i64::MIN {
+                    return None;
+                }
+                let p = weak.upgrade()?;
+                let now = p.clock()?.time();
+                let base = p.base_time()?;
+                let running = now.checked_sub(base)?.useconds() as i64;
+                u64::try_from(running + off).ok()
+            })));
         }
 
         spawn_stats_poller(
@@ -536,7 +638,14 @@ fn spawn_stats_poller(
                                 c.decoded_fps,
                                 c.rtt_ms,
                                 fresh,
-                                c.lat_p95_ms.max(0.0),
+                                // Not coerced: a negative percentile is the
+                                // client reporting "clock not synced yet", and
+                                // `.max(0.0)` turned that into the *perfect*
+                                // signal - it passed every delay guard and the
+                                // climb gate, so the controller ramped a route
+                                // nobody had measured. The law treats < 0 as
+                                // unknown: no delay cut, no climb.
+                                c.lat_p95_ms,
                             )
                         }
                         None => (0, 0.0, 0.0, 0.0, false, 0.0),
@@ -569,9 +678,29 @@ fn spawn_stats_poller(
                             .map(|t| t.datagram_video_enabled())
                             .unwrap_or(false),
                         v4_pace_pps: wt_stats.as_ref().map(|t| t.pace_pps()).unwrap_or(0),
+                        inferred_loss_frac: wt_stats.as_ref().and_then(|t| t.inferred_loss_frac()),
                     });
                     if adapted_kbps != prev {
                         enc.set_property("bitrate", adapted_kbps);
+                        // Every input the step actually used, so a cut explains
+                        // itself instead of being reconstructed from the one
+                        // line above it - `rtp_backlog_ms` here is the value fed
+                        // to the law (send-queue stall included), not the raw RTP
+                        // queue the WT path never fills, and on this carrier
+                        // `packets_lost` is structurally 0 (the client reports
+                        // no WT loss), so the tail delay and the NACK/keyframe
+                        // counters are what actually drove the decision.
+                        let (held, nacks, keys, aband) = client
+                            .as_ref()
+                            .map(|c| {
+                                (
+                                    c.decode_held,
+                                    c.nacks_sent,
+                                    c.keys_received,
+                                    c.frames_dropped_incomplete,
+                                )
+                            })
+                            .unwrap_or((0, 0, 0, 0));
                         info!(
                             from_kbps = prev,
                             to_kbps = adapted_kbps,
@@ -579,7 +708,12 @@ fn spawn_stats_poller(
                             recv_kbps = recv_kbps as u32,
                             decoded_fps = decoded_fps as u32,
                             rtt_ms = rtt_ms as u32,
-                            rtp_backlog_ms = rtp_backlog_ms as u32,
+                            rtp_backlog_ms = backlog_ms as u32,
+                            client_p95_ms = client_lat_p95 as u32,
+                            held,
+                            nacks,
+                            keys,
+                            aband,
                             "encoder bitrate {}",
                             if adapted_kbps < prev { "DOWN" } else { "up" }
                         );

@@ -94,6 +94,16 @@ pub struct HostStatus {
 pub struct WtStatus {
     pub port: u16,
     pub cert_sha256: String,
+    /// Seconds until the pinned certificate stops being accepted by browsers.
+    /// The host rotates it well before this reaches zero (`WT_CERT_VALIDITY`);
+    /// a value that keeps falling across days means rotation is not running,
+    /// and every dial fails at the QUIC handshake once it hits zero.
+    pub cert_expires_in_secs: u64,
+    /// False only after the frame-sender task has exited, which takes the whole
+    /// video path with it: the transport still accepts dials and completes the
+    /// handshake, so clients connect and stay black. Reported because that is
+    /// otherwise invisible from both ends.
+    pub sender_alive: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -122,9 +132,11 @@ pub async fn status(State(st): State<HttpState>) -> Json<HostStatus> {
         available: matches!(state, SessionState::Idle),
         supported_modes: default_modes(),
         host_id: st.identity.host_id(),
-        wt: st.wt.as_ref().map(|t| WtStatus {
+        wt: st.wt.get().map(|t| WtStatus {
             port: t.port(),
             cert_sha256: t.cert_sha256_hex(),
+            cert_expires_in_secs: t.cert_remaining().as_secs(),
+            sender_alive: t.sender_alive(),
         }),
         https: st.https,
         tls_mode: match st.cfg.tls.mode {
@@ -505,7 +517,7 @@ pub async fn admin_disconnect(State(st): State<HttpState>) -> Response {
 /// reset mid-write. Loopback admin only, like `admin_status`. Consumed by the
 /// trace harness (JSONL) and the capture→present percentile report.
 pub async fn admin_frame_timeline(State(st): State<HttpState>) -> Response {
-    let Some(wt) = st.wt.as_ref() else {
+    let Some(wt) = st.wt.get() else {
         return (StatusCode::SERVICE_UNAVAILABLE, "wt transport down").into_response();
     };
     let frames = wt.timeline_snapshot();
@@ -766,4 +778,28 @@ pub async fn library_poster(State(st): State<HttpState>, Path(id): Path<String>)
         bytes,
     )
         .into_response()
+}
+
+/// `GET /api/v1/desktop-preview` — a small bitmap of the primary desktop for the
+/// play-page monitor bezel. Paired devices only; never cached.
+pub async fn desktop_preview(State(st): State<HttpState>, headers: HeaderMap) -> Response {
+    if require_session(&st, &headers).is_none() {
+        return (StatusCode::UNAUTHORIZED, "pair first").into_response();
+    }
+    match tokio::task::spawn_blocking(platform::desktop_preview_image).await {
+        Ok(Ok(bytes)) => (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, "image/bmp"),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Ok(Err(e)) => {
+            tracing::debug!("desktop preview: {e:#}");
+            (StatusCode::SERVICE_UNAVAILABLE, "preview unavailable").into_response()
+        }
+        Err(_) => (StatusCode::SERVICE_UNAVAILABLE, "preview unavailable").into_response(),
+    }
 }

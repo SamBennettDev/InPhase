@@ -44,6 +44,16 @@ pub struct Feedback {
     /// telemetry: worker-drain clients pace higher, so their ceiling is
     /// higher. 0 = unknown (legacy client) → `WT_PACED_CEILING_KBPS`.
     pub v4_pace_pps: u32,
+    /// Inferred datagram loss: the fraction of datagrams the host injected
+    /// that the client never saw. `None` = no window measured yet.
+    ///
+    /// The transport's other loss input is structurally zero here — QUIC
+    /// datagrams are unacknowledged, so a datagram the browser's queue
+    /// destroyed leaves no sender-side trace at all — and the host's fallback
+    /// substitutes frames it reset, scaled by a fixed bits-per-packet estimate
+    /// that understates a lost delta and overstates a lost IDR by an order of
+    /// magnitude. This is measured instead of modelled.
+    pub inferred_loss_frac: Option<f32>,
 }
 
 /// Crude AIMD bitrate controller. `kbps` is the current encoder target.
@@ -60,10 +70,19 @@ pub struct BitrateController {
     warmup: u8,
     /// Consecutive clean ticks.
     clean_streak: u8,
+    /// Consecutive ticks at >10 % measured loss. A single lossy second is a
+    /// burst, not a verdict: the 80 Mbps session produced 63 cuts in eleven
+    /// minutes and almost every one was a 50 % halving (`31446->15723`,
+    /// `35117->17558`) driven by one second of loss, each costing ~10 s to
+    /// climb back. The halving now requires the loss to persist.
+    lossy_streak: u8,
     /// The rate that most recently drew loss. Probing won't push past ~90 % of
     /// it; it relaxes slowly while the path stays clean so a genuinely improved
     /// path can still recover the full ceiling.
     soft_ceiling: Option<f32>,
+    /// Whether that ceiling came from tail delay rather than loss: a queued
+    /// route's bandwidth, which must not be re-probed at the fast loss rate.
+    ceiling_from_delay: bool,
 }
 
 impl BitrateController {
@@ -76,12 +95,21 @@ impl BitrateController {
             cooldown: 0,
             warmup: 4,
             clean_streak: 0,
+            lossy_streak: 0,
             soft_ceiling: None,
+            ceiling_from_delay: false,
         }
     }
 
     /// Advance one tick; returns the new encoder target (kbps).
     pub fn step(&mut self, fb: &Feedback) -> u32 {
+        // Ticks down on every report, not only on clean ones: the cooldown
+        // gates *cuts* as well as climbs now (see the tail-delay branch), and a
+        // branch that returns early used to freeze it, which would have made a
+        // persistently congested route un-cuttable after the first cut.
+        if self.cooldown > 0 {
+            self.cooldown -= 1;
+        }
         // --- fast local signal: the host's own send queue is backing up, so
         //     webrtcbin is pacing slower than the encoder. Cut immediately;
         //     don't wait for the client report a second later.
@@ -106,12 +134,54 @@ impl BitrateController {
         //     assemble (p95 33 -> 129 -> 293 ms, ~2 frames/s assembled at
         //     12 Mbps inbound). Rising tail delay means the encoder is
         //     outrunning the path: cut before the loss it causes.
-        if fb.client_lat_p95_ms > 120.0 {
+        // One elevation, one cut. `client_lat_p95_ms` is a percentile over the
+        // client's whole sample buffer (~8.5 s at 60 fps), so a single spike
+        // keeps it above the threshold for seconds after the tail has cleared —
+        // and this branch used to cut on every tick, seven times in seven
+        // seconds, straight to the floor. Live (2026-09-20 04:2x): each cut
+        // line read `decoded_fps=60 rtt_ms=7 client_p95_ms=135 held=0` — the
+        // client was decoding 60 fps on a healthy route while the encoder was
+        // being pushed to 600 kbps on stale evidence. The cooldown lets the
+        // window catch up before the next cut - and it applies to severe tails
+        // too. It used to be bypassed above 250 ms on the theory that a big
+        // spike is proof rather than memory, but Wi-Fi airtime contention throws
+        // 267-481 ms excursions that say nothing about the host's send rate, and
+        // each one cut 0.6x per tick, four ticks from 4000 kbps to the 600 kbps
+        // floor: `DOWN 4000->2400 lost=0 ... p95=267`, then 1440, 864, 600 in the
+        // same episode while the client decoded 59-60 fps the whole way
+        // (2026-09-20 04:38). A severe spike still cuts harder (0.6x) and holds
+        // longer (4 ticks); it just cannot empty the stream on its own.
+        //
+        // A negative percentile is the client's clock sync saying "not yet", and
+        // `pipeline.rs` used to clamp it to 0.0 - the perfect signal, which
+        // passed every guard below including the climb gate.
+        let lat_known = fb.client_lat_p95_ms >= 0.0;
+        if lat_known && fb.client_lat_p95_ms > 120.0 {
+            if self.cooldown > 0 {
+                // Over the threshold but still inside the cooldown that the
+                // last cut set: hold the rate and let the percentile window
+                // turn over. This must return here rather than fall through to
+                // the climb branch — a gated tick is not a *clean* tick. Falling
+                // through relaxed the remembered ceiling and counted towards
+                // `clean_streak`, so every second cut looked like a fresh
+                // episode and re-marked the bar at the newly lower rate:
+                // 50000 -> 5882 in fourteen cuts, with the client decoding
+                // 60 fps on a 7 ms RTT the whole way down (2026-09-20 04:2x).
+                return self.kbps;
+            }
             let factor = if fb.client_lat_p95_ms > 250.0 {
                 0.6
             } else {
                 0.7
             };
+            // Remember the rate that queued the route, the way loss does.
+            // Without this the delay branch is the one cut that forgets, and a
+            // controller that forgets ramps straight back into the same wall:
+            // 2026-09-20 03:57, a 1440p60 session on a ~6 Mbps uplink, ran
+            // 600 -> 6354 kbps and crashed back to 600 every ~17 s for the
+            // whole session - ten ramp steps up, seven cuts down, `lost=0`
+            // throughout, the tail delay (25 -> 155 ms) the only signal.
+            self.mark_delay_ceiling();
             self.decrease_to((self.kbps as f32 * factor) as u32);
             self.cooldown = if fb.client_lat_p95_ms > 250.0 { 4 } else { 2 };
             self.clean_streak = 0;
@@ -126,10 +196,15 @@ impl BitrateController {
         // floor and never lets it back up.
         let recv_pps = (fb.recv_kbps * 1000.0 / 8.0 / 1100.0).max(0.0);
         let denom = fb.lost_delta as f32 + recv_pps;
-        let loss_frac = if denom > 1.0 {
-            fb.lost_delta as f32 / denom
-        } else {
-            0.0
+        // The measured figure wins when there is one: `lost_delta` is a
+        // model (frames the host reset, scaled by a fixed bits-per-packet
+        // estimate) and on the datagram carrier the client's own loss counter
+        // is hardcoded to zero, so without this the law is blind to the one
+        // loss it can actually measure.
+        let loss_frac = match fb.inferred_loss_frac {
+            Some(measured) => measured,
+            None if denom > 1.0 => fb.lost_delta as f32 / denom,
+            None => 0.0,
         };
 
         // Distinguish real congestion from wireless erasure. Cellular paths
@@ -171,7 +246,12 @@ impl BitrateController {
         // If the decoder is keeping up, the route is delivering - whatever the
         // ratio says. That is this module's own stated principle; it just was
         // not applied to the severe branch.
-        if self.warmup == 0 && route_failing && loss_frac > 0.10 {
+        if loss_frac > 0.10 {
+            self.lossy_streak = self.lossy_streak.saturating_add(1);
+        } else {
+            self.lossy_streak = 0;
+        }
+        if self.warmup == 0 && route_failing && loss_frac > 0.10 && self.lossy_streak >= 2 {
             // Severe loss or genuine congestion — collapse toward what's
             // actually landing, at least halve.
             let delivered = (fb.recv_kbps * 0.85) as u32;
@@ -227,19 +307,79 @@ impl BitrateController {
             // to it every few seconds (webrtcbin has no send pacing, so the
             // top of the range briefly overruns the RTP queue).
             if let Some(sc) = self.soft_ceiling {
-                let relaxed = sc * 1.03;
+                // A ceiling that came from tail delay is a bandwidth estimate:
+                // creeping past it re-queues the route and freezes the picture
+                // again, so it lifts at 0.2 %/s and only while the tail is
+                // quiet enough to show the queue actually drained. Recovery
+                // from a cut is fast anyway — the rate climbs at 3 %/s up to
+                // the cap, and only probing *past* it is slow.
+                // 2 %/s, not 0.2 %/s. A delay-marked ceiling is a real
+                // estimate of where the route queued, but at 0.2 %/s it was
+                // functionally permanent: a session that had been cut to
+                // 22 Mbps needed ln(80/22)/0.002 ~ 640 s of *continuously*
+                // sub-50 ms tail to be allowed anywhere near an 80 Mbps
+                // negotiation, and any single tick above 50 ms reset the
+                // clock. That is why raising `max_kbps` did nothing - the
+                // ceiling, not the cap, was binding. The climb still stops at
+                // the bar (probe cap is 0.9 x it), and re-queuing re-marks it,
+                // so the loop is unchanged; only the approach is quicker.
+                let creep = if self.ceiling_from_delay {
+                    if fb.client_lat_p95_ms <= 50.0 {
+                        1.02
+                    } else {
+                        1.0
+                    }
+                } else {
+                    1.03
+                };
+                let relaxed = sc * creep;
                 self.soft_ceiling = if relaxed >= self.ceiling as f32 {
                     None
                 } else {
                     Some(relaxed)
                 };
+                // Forty-five consecutive clean seconds is stronger evidence
+                // than one episode from minutes ago: forget the estimate and
+                // let the rate probe the paced ceiling again. Without this the
+                // remembered bar outlives the conditions that produced it.
+                if self.clean_streak >= 45 && self.ceiling_from_delay {
+                    self.soft_ceiling = None;
+                    self.ceiling_from_delay = false;
+                }
+                // A loss ceiling is a transient event, and in practice the
+                // event was often the stream's own recovery: an IDR burst
+                // stalls decode for a second, that tick reads as a failing
+                // route, and the cut marks the bar at whatever rate the
+                // session had reached (8640 kbps on 2026-09-22 against an
+                // 80 Mbps cap). Creeping 3 %/s from there to the cap takes
+                // ~75 s of uninterrupted clean ticks, and any blip restarts
+                // it - so a single cut held the rate below the user's mark
+                // for the rest of the session. Thirty clean seconds is enough
+                // to call it over; a route that really cannot carry the rate
+                // re-marks the bar on the next probe.
+                if self.clean_streak >= 30 && !self.ceiling_from_delay {
+                    self.soft_ceiling = None;
+                }
             }
-            if self.cooldown > 0 {
-                self.cooldown -= 1;
-            } else if decoding
+            // Losing datagrams is not a reason to cut on its own - parity and
+            // NACKs deliver frames through 10-25% erasure - but it is a
+            // reason not to *raise* the rate: more rate means bigger frames,
+            // more fragments per FEC group, and loss that parity can no longer
+            // cover. The 80 Mbps session ramped through 6 -> 22 Mbps while the
+            // client was failing to assemble frames, which is the loop this
+            // closes. Measured loss only: `lost_delta` is a model.
+            // 2 %, over the transport's multi-second window: 1 % per tick sat
+            // inside the measurement's own sampling skew (+/-2 %), so noise
+            // alone vetoed most climbs, and Wi-Fi's ordinary 1-2 % erasure is
+            // what row parity and NACK exist to absorb.
+            let loss_blocks_climb = fb.inferred_loss_frac.is_some_and(|l| l >= 0.02);
+            if self.cooldown == 0
+                && decoding
                 && self.kbps < self.ceiling
                 && fb.rtp_backlog_ms < 25.0
+                && lat_known
                 && fb.client_lat_p95_ms <= 100.0
+                && !loss_blocks_climb
             {
                 // Climb only while the send queue is empty: a peer that reads
                 // slower than we write buffers the difference somewhere, and
@@ -310,13 +450,43 @@ impl BitrateController {
         self.kbps
     }
 
+    /// True when this objection is the START of an episode: the controller was
+    /// climbing (or has nothing remembered yet). Successive cuts inside one bad
+    /// stretch are the consequence of the objection already recorded, and
+    /// re-marking on each of them ratchets the ceiling down with the kbps the
+    /// cut itself produced - ten ticks of high tail delay drove 50000 -> 1412
+    /// and the ceiling with it, leaving a probe cap below the rate the route
+    /// had already been carrying, so it could never be re-tried.
+    fn first_objection_of_episode(&self) -> bool {
+        self.soft_ceiling.is_none() || self.clean_streak > 0
+    }
+
     fn mark_loss_ceiling(&mut self) {
-        // Remember the rate that just failed (unless we already have a lower one).
-        let here = self.kbps as f32;
-        self.soft_ceiling = Some(match self.soft_ceiling {
-            Some(sc) => sc.min(here),
-            None => here,
-        });
+        // Remember the rate that just failed - the rate the route *was*
+        // carrying, which is what says where its limit is.
+        if self.first_objection_of_episode() {
+            self.soft_ceiling = Some(self.kbps as f32);
+        }
+        // A cut ends the episode. Without this, a *series* of cuts off one
+        // elevation — the tail percentile is a rolling window, so it stays
+        // above the threshold for seconds after the route cleared — each
+        // re-marked the bar at the newly lower rate and ratcheted the ceiling
+        // down with it: 50000 -> 1412 across seven cuts in seven seconds, with
+        // the client decoding 60 fps on a 7 ms RTT the whole way down.
+        self.clean_streak = 0;
+        // Loss is a transient event; a ceiling remembered from it is expected to
+        // lift once the burst is over.
+        self.ceiling_from_delay = false;
+    }
+
+    /// A ceiling remembered from tail delay, not loss: this route *queues* at
+    /// this rate, so it is a bandwidth estimate rather than a transient event.
+    fn mark_delay_ceiling(&mut self) {
+        let episode_start = self.first_objection_of_episode();
+        self.mark_loss_ceiling();
+        if episode_start {
+            self.ceiling_from_delay = true;
+        }
     }
 
     fn decrease_to(&mut self, target: u32) {
@@ -333,6 +503,7 @@ mod tests {
             client_lat_p95_ms: 0.0,
             v4_datagram_carrier: false,
             v4_pace_pps: 0,
+            inferred_loss_frac: None,
             lost_delta: lost,
             recv_kbps: recv,
             decoded_fps: fps,
@@ -361,6 +532,7 @@ mod tests {
                 client_lat_p95_ms: 0.0,
                 v4_datagram_carrier: false,
                 v4_pace_pps: 0,
+                inferred_loss_frac: None,
                 lost_delta: lost,
                 recv_kbps: delivered,
                 decoded_fps: fps,
@@ -392,6 +564,7 @@ mod tests {
                 client_lat_p95_ms: 0.0,
                 v4_datagram_carrier: false,
                 v4_pace_pps: 0,
+                inferred_loss_frac: None,
                 lost_delta: 0,
                 recv_kbps: 4_000.0,
                 decoded_fps: 60.0,
@@ -421,6 +594,7 @@ mod tests {
                 client_lat_p95_ms: 0.0,
                 v4_datagram_carrier: false,
                 v4_pace_pps: 0,
+                inferred_loss_frac: None,
                 lost_delta: lost,
                 recv_kbps: recv,
                 decoded_fps: 58.0,
@@ -447,6 +621,7 @@ mod tests {
                 client_lat_p95_ms: 0.0,
                 v4_datagram_carrier: false,
                 v4_pace_pps: 0,
+                inferred_loss_frac: None,
                 lost_delta: 0,
                 recv_kbps: 6_000.0,
                 decoded_fps: 60.0,
@@ -462,6 +637,7 @@ mod tests {
                 client_lat_p95_ms: 0.0,
                 v4_datagram_carrier: false,
                 v4_pace_pps: 0,
+                inferred_loss_frac: None,
                 lost_delta: 400,
                 recv_kbps: 2_000.0,
                 decoded_fps: 4.0, // frames are not reaching the decoder
@@ -486,6 +662,7 @@ mod tests {
                 client_lat_p95_ms: 0.0,
                 v4_datagram_carrier: false,
                 v4_pace_pps: 0,
+                inferred_loss_frac: None,
                 lost_delta: 0,
                 recv_kbps: 8_200.0, // arriving fine
                 decoded_fps: 0.0,   // and decoding none of it
@@ -509,6 +686,7 @@ mod tests {
                 client_lat_p95_ms: 0.0,
                 v4_datagram_carrier: false,
                 v4_pace_pps: 0,
+                inferred_loss_frac: None,
                 have_client: false,
                 ..Default::default()
             };
@@ -565,6 +743,7 @@ mod tests {
                 client_lat_p95_ms: 0.0,
                 v4_datagram_carrier: true,
                 v4_pace_pps: 0,
+                inferred_loss_frac: None,
                 lost_delta: 0,
                 recv_kbps: c.kbps as f32 * 0.95,
                 decoded_fps: 60.0,
@@ -587,6 +766,7 @@ mod tests {
             client_lat_p95_ms: 0.0,
             v4_datagram_carrier: true,
             v4_pace_pps: 0,
+            inferred_loss_frac: None,
             lost_delta: 0,
             recv_kbps: 70_000.0,
             decoded_fps: 60.0,
@@ -610,6 +790,7 @@ mod tests {
                 client_lat_p95_ms: 0.0,
                 v4_datagram_carrier: false,
                 v4_pace_pps: 0,
+                inferred_loss_frac: None,
                 lost_delta: 0,
                 recv_kbps: 120.0, // near-static screen: tiny inbound...
                 decoded_fps: 8.0, // ...and low fps, but not because of bandwidth
@@ -655,6 +836,221 @@ mod tests {
         );
     }
 
+    /// One lossy second is a burst, not a verdict.
+    ///
+    /// The severe branch halves the rate, and with the measured loss input a
+    /// single Wi-Fi burst could trigger it: the 80 Mbps session cut 63 times in
+    /// eleven minutes, nearly all of them halvings, each costing ~10 s to climb
+    /// back. A quarter cut on the first lossy second, a halving only once it
+    /// persists.
+    #[test]
+    fn a_single_lossy_second_does_not_halve_the_rate() {
+        let mut c = BitrateController::new(30_000, 600, 80_000);
+        let spike = Feedback {
+            client_lat_p95_ms: 30.0,
+            decoded_fps: 20.0,
+            target_fps: 60,
+            have_client: true,
+            recv_kbps: 30_000.0,
+            inferred_loss_frac: Some(0.15),
+            v4_datagram_carrier: true,
+            v4_pace_pps: 11_000,
+            ..Default::default()
+        };
+        c.step(&spike);
+        assert!(
+            c.kbps > 15_000,
+            "one lossy second must not halve the rate ({})",
+            c.kbps
+        );
+        for _ in 0..6 {
+            c.step(&spike);
+        }
+        assert!(
+            c.kbps <= 15_000,
+            "sustained loss still collapses the rate ({})",
+            c.kbps
+        );
+    }
+
+    /// Measured loss stops the ramp without cutting the rate.
+    ///
+    /// Loss alone is not a verdict — parity and NACKs deliver frames through
+    /// 10-25 % erasure, and the cellular session below relies on that — but
+    /// raising the rate makes frames bigger, and a bigger frame puts more
+    /// fragments in each FEC group until one burst takes out more than parity
+    /// can rebuild. The 80 Mbps session climbed 6 -> 22 Mbps while the client
+    /// was failing to assemble frames at all, which is the loop this closes.
+    #[test]
+    fn measured_loss_holds_the_rate_without_cutting_it() {
+        let mut c = BitrateController::new(6_000, 600, 80_000);
+        let clean = Feedback {
+            client_lat_p95_ms: 20.0,
+            rtt_ms: 8.0,
+            decoded_fps: 60.0,
+            target_fps: 60,
+            have_client: true,
+            recv_kbps: 6_000.0,
+            v4_datagram_carrier: true,
+            v4_pace_pps: 11_000,
+            inferred_loss_frac: Some(0.0),
+            ..Default::default()
+        };
+        for _ in 0..6 {
+            c.step(&clean);
+        }
+        let climbed = c.kbps;
+        assert!(climbed > 6_000, "a clean route climbs ({climbed})");
+
+        let lossy = Feedback {
+            inferred_loss_frac: Some(0.03),
+            ..clean
+        };
+        for _ in 0..6 {
+            c.step(&lossy);
+        }
+        assert_eq!(c.kbps, climbed, "3% measured loss holds the rate, no cut");
+    }
+
+    /// One recovery burst must not cap the session for good. The 2026-09-22
+    /// session cut once at 8640 kbps (an IDR stall read as a failing route)
+    /// and then crept 3 %/s under the remembered bar, never approaching the
+    /// 80 Mbps the user set.
+    #[test]
+    fn one_loss_cut_does_not_hold_the_rate_below_the_set_mark() {
+        let mut c = BitrateController::new(6_000, 600, 80_000);
+        let clean = Feedback {
+            client_lat_p95_ms: 20.0,
+            rtt_ms: 8.0,
+            decoded_fps: 60.0,
+            target_fps: 60,
+            have_client: true,
+            recv_kbps: 6_000.0,
+            v4_datagram_carrier: true,
+            v4_pace_pps: 11_000,
+            inferred_loss_frac: Some(0.0),
+            ..Default::default()
+        };
+        for _ in 0..8 {
+            c.step(&clean);
+        }
+        let stall = Feedback {
+            decoded_fps: 20.0,
+            inferred_loss_frac: Some(0.2),
+            ..clean
+        };
+        c.step(&stall);
+        let cut = c.kbps;
+        for _ in 0..60 {
+            c.step(&clean);
+        }
+        assert_eq!(c.kbps, 80_000, "cut to {cut}, then 60 clean seconds");
+    }
+
+    /// Wi-Fi's ordinary erasure, repaired by parity, must not veto the climb.
+    #[test]
+    fn low_measured_loss_does_not_block_the_climb() {
+        let mut c = BitrateController::new(6_000, 600, 80_000);
+        let fb = Feedback {
+            client_lat_p95_ms: 20.0,
+            rtt_ms: 8.0,
+            decoded_fps: 60.0,
+            target_fps: 60,
+            have_client: true,
+            recv_kbps: 6_000.0,
+            v4_datagram_carrier: true,
+            v4_pace_pps: 11_000,
+            inferred_loss_frac: Some(0.012),
+            ..Default::default()
+        };
+        for _ in 0..20 {
+            c.step(&fb);
+        }
+        assert_eq!(c.kbps, 80_000);
+    }
+
+    /// The measured figure replaces the model when one exists: `lost_delta` is
+    /// frames the host reset scaled by a fixed bits-per-packet estimate.
+    #[test]
+    fn measured_loss_overrides_the_modelled_loss_input() {
+        let mut c = BitrateController::new(20_000, 600, 80_000);
+        // A model that screams (all frames lost) with a measurement that says
+        // the route is fine: the measured number must win.
+        let fb = Feedback {
+            client_lat_p95_ms: 0.0,
+            decoded_fps: 60.0,
+            target_fps: 60,
+            have_client: true,
+            recv_kbps: 20_000.0,
+            lost_delta: 10_000,
+            inferred_loss_frac: Some(0.0),
+            ..Default::default()
+        };
+        c.step(&fb);
+        assert_eq!(
+            c.kbps, 20_000,
+            "no cut from a model the measurement contradicts"
+        );
+    }
+
+    /// A Wi-Fi excursion is not a verdict on the host's send rate.
+    ///
+    /// The cooldown gated the 120-250 ms band but exempted anything above it,
+    /// so a single 267-481 ms spike - exactly what airtime contention throws -
+    /// cut 0.6x on every tick: 4000 -> 2400 -> 1440 -> 864 -> 600 kbps inside
+    /// five seconds, while the client decoded 59-60 fps throughout (live log
+    /// 2026-09-20 04:38). One spike is one cut now; a *sustained* severe tail
+    /// still ends at the floor.
+    #[test]
+    fn a_severe_tail_spike_cannot_empty_the_stream_by_itself() {
+        let mut c = BitrateController::new(4_000, 600, 4_000);
+        let severe = Feedback {
+            client_lat_p95_ms: 400.0,
+            decoded_fps: 60.0,
+            target_fps: 60,
+            have_client: true,
+            ..Default::default()
+        };
+        for _ in 0..4 {
+            c.step(&severe);
+        }
+        assert!(
+            c.kbps >= 2_400,
+            "one spike must not cascade to the floor ({})",
+            c.kbps
+        );
+        for _ in 0..40 {
+            c.step(&severe);
+        }
+        assert_eq!(
+            c.kbps, 600,
+            "a sustained severe tail still reaches the floor"
+        );
+    }
+
+    /// `lat_p95_ms` is negative until the client's clock sync settles, and the
+    /// host used to clamp that to 0.0 - the perfect signal, which passed every
+    /// delay guard and the climb gate. Rate ramps on a route nobody measured.
+    #[test]
+    fn an_unknown_tail_percentile_does_not_authorise_a_climb() {
+        let mut c = BitrateController::new(4_000, 600, 20_000);
+        let unknown = Feedback {
+            client_lat_p95_ms: -1.0,
+            decoded_fps: 60.0,
+            target_fps: 60,
+            have_client: true,
+            ..Default::default()
+        };
+        for _ in 0..20 {
+            c.step(&unknown);
+        }
+        assert_eq!(
+            c.kbps, 4_000,
+            "no climb without a measured tail ({})",
+            c.kbps
+        );
+    }
+
     #[test]
     fn rising_client_tail_delay_cuts_before_the_loss_it_causes() {
         // The 00:19 signature: the client received the full flood but
@@ -664,7 +1060,10 @@ mod tests {
         let mut c = BitrateController::new(6_000, 600, 50_000);
         simulate(&mut c, 200_000.0, 8.0, 12);
         assert_eq!(c.kbps, 50_000);
-        for _ in 0..4 {
+        // One cut per cooldown window (the tail percentile is a rolling window
+        // and must not be able to drive a cut on every single tick), so a
+        // sustained 160 ms tail takes a few seconds to reach the same place.
+        for _ in 0..8 {
             c.step(&Feedback {
                 client_lat_p95_ms: 160.0,
                 decoded_fps: 0.0,
@@ -699,6 +1098,71 @@ mod tests {
             c.kbps > 20_000,
             "recovers once the tail clears ({})",
             c.kbps
+        );
+    }
+
+    /// The 2026-09-20 03:57 sawtooth, replayed from the live log.
+    ///
+    /// A 1440p60 session over the internet on a ~6 Mbps uplink with a deep
+    /// buffer. The ramp reached ~6.3 Mbps, the client's p95 fragment age
+    /// exploded 25 -> 155 ms, decode collapsed to 0, and the delay branch cut
+    /// 0.7x a tick - seven cuts to the floor. Then it forgot, ramped
+    /// 600 -> 6354 again, and did it again every ~17 s for the whole session.
+    /// `lost_delta` was 0 throughout: nothing dropped, the path just queued.
+    ///
+    /// A route like this has a *bandwidth*, so the controller must settle below
+    /// it instead of charging back into the queue every ramp.
+    #[test]
+    fn a_queuing_route_settles_instead_of_sawtoothing() {
+        // Latency stays flat until the rate approaches capacity, then a deep
+        // buffer inflates the tail (25 ms base, 1.3x -> 125 ms).
+        fn queuing_route(c: &mut BitrateController, capacity: f32, ticks: usize) -> Vec<u32> {
+            let mut history = Vec::with_capacity(ticks);
+            let mut sent_prev = c.kbps as f32;
+            for _ in 0..ticks {
+                let delivered = sent_prev.min(capacity);
+                let q = sent_prev / capacity;
+                // The live shape: 25 ms flat, then a cliff. 4.9 Mbps was
+                // comfortable on this link and 6.3 Mbps read 155 ms.
+                let p95 = 25.0 + 4000.0 * (q - 0.85).max(0.0).powi(3);
+                let fb = Feedback {
+                    client_lat_p95_ms: p95,
+                    decoded_fps: if p95 < 100.0 { 58.0 } else { 0.0 },
+                    target_fps: 60,
+                    lost_delta: 0,
+                    recv_kbps: delivered,
+                    rtt_ms: 10.0 + (p95 - 25.0).max(0.0),
+                    have_client: true,
+                    ..Default::default()
+                };
+                sent_prev = c.step(&fb) as f32;
+                history.push(c.kbps);
+            }
+            history
+        }
+
+        let mut c = BitrateController::new(6_000, 600, 80_000);
+        let history = queuing_route(&mut c, 6_000.0, 400);
+
+        // It must find the route's ceiling and hold near it: at least 4 Mbps
+        // (worth having at 1440p) and never the floor once it has settled.
+        let settled = &history[150..];
+        let lowest = settled.iter().copied().min().unwrap();
+        assert!(
+            lowest >= 4_000,
+            "the controller collapsed to {lowest} kbps after settling: the              delay ceiling is being forgotten and re-probed"
+        );
+        // And it must stop re-climbing into the queue: a handful of probes over
+        // 250 ticks is a route being re-measured; a sawtooth is every ~15 s.
+        let cuts = settled.windows(2).filter(|w| w[1] < w[0]).count();
+        assert!(
+            cuts <= 12,
+            "{cuts} decreases in 250 settled ticks is a sawtooth, not a settled rate"
+        );
+        let highest = settled.iter().copied().max().unwrap();
+        assert!(
+            highest <= 7_500,
+            "it charged {highest} kbps back into a 6000 kbps route"
         );
     }
 
@@ -750,6 +1214,7 @@ mod tests {
             client_lat_p95_ms: 0.0,
             v4_datagram_carrier: false,
             v4_pace_pps: 0,
+            inferred_loss_frac: None,
             rtp_backlog_ms: 400.0,
             have_client: false,
             ..Default::default()
@@ -768,6 +1233,7 @@ mod tests {
             client_lat_p95_ms: 0.0,
             v4_datagram_carrier: false,
             v4_pace_pps: 0,
+            inferred_loss_frac: None,
             lost_delta: 90,
             recv_kbps: 9_000.0,
             decoded_fps: 59.0,
@@ -821,6 +1287,7 @@ mod tests {
                 client_lat_p95_ms: 0.0,
                 v4_datagram_carrier: false,
                 v4_pace_pps: 0,
+                inferred_loss_frac: None,
                 lost_delta: 0,
                 recv_kbps: 6_000.0,
                 decoded_fps: 60.0,
@@ -840,6 +1307,7 @@ mod tests {
                 client_lat_p95_ms: 0.0,
                 v4_datagram_carrier: false,
                 v4_pace_pps: 0,
+                inferred_loss_frac: None,
                 lost_delta: 0,
                 recv_kbps: 6_000.0,
                 decoded_fps: 60.0,

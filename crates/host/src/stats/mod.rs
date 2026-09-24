@@ -7,7 +7,9 @@
 //! gates check:
 //!
 //! * **host** — capture cadence, raw queue depth, encode p50/p95, encoder backend;
-//! * **WebRTC** — candidate-pair RTT/loss, outbound bitrate (from the pipeline);
+//! * **transport** — RTT and delivered bitrate. WebRTC used to fill these from
+//!   ICE candidate-pair `getStats`. Video is WebTransport now, so they come
+//!   from client telemetry (control-stream ping/pong + bytes received).
 //! * **client** — decode time, jitter buffer, presented FPS, freezes
 //!   ([`inphase_protocol::ClientTelemetry`], pushed once/sec on the control
 //!   channel, §20).
@@ -73,7 +75,11 @@ pub enum AudioHealth {
     Restarting,
 }
 
-/// WebRTC transport metrics read from the sink / `webrtcbin` (§20).
+/// Path metrics the dashboard labels Bandwidth / Round-trip time (§20).
+///
+/// Historically ICE candidate-pair stats from `webrtcbin`. The WT video path
+/// has no equivalent host-side getStats, so [`StatsCollector::ingest_client`]
+/// copies the client's ping/pong RTT and inbound bitrate here.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct TransportStats {
     pub rtt_ms: f32,
@@ -219,6 +225,16 @@ impl StatsCollector {
 
     /// Store the latest client telemetry frame (§20).
     pub fn ingest_client(&self, t: ClientTelemetry) {
+        {
+            let mut tr = self.transport.write();
+            tr.rtt_ms = t.rtt_ms;
+            // Delivered goodput, not the encoder target. The dashboard's
+            // "Bandwidth" row used to read this field from WebRTC getStats;
+            // WT never wrote it, so a live 12 Mbps session showed 0.0.
+            if t.inbound_bitrate_kbps > 0.0 {
+                tr.outbound_bitrate_kbps = t.inbound_bitrate_kbps;
+            }
+        }
         *self.client.write() = Some(t);
         *self.client_at.write() = Some(std::time::Instant::now());
     }
@@ -317,7 +333,7 @@ fn classify_bottleneck(
         "capture"
     } else if host.encode_ms_p95 > frame_budget_ms(host.target_fps) {
         "encode"
-    } else if transport.packet_loss_pct > 2.0 || transport.rtt_ms > 40.0 {
+    } else if transport.packet_loss_pct > 2.0 || transport.rtt_ms > 40.0 || client.rtt_ms > 40.0 {
         "network"
     } else if client.decode_time_ms_p95 > frame_budget_ms(host.target_fps) {
         "decode"
@@ -333,5 +349,50 @@ fn frame_budget_ms(fps: u32) -> f32 {
         16.7
     } else {
         1000.0 / fps as f32
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wt_telemetry_fills_dashboard_bandwidth_and_rtt() {
+        let c = StatsCollector::new();
+        c.ingest_client(ClientTelemetry {
+            rtt_ms: 12.5,
+            inbound_bitrate_kbps: 18_500.0,
+            decoded_fps: 60.0,
+            ..Default::default()
+        });
+        let s = c.snapshot();
+        assert!(
+            (s.transport.rtt_ms - 12.5).abs() < f32::EPSILON,
+            "rtt {}",
+            s.transport.rtt_ms
+        );
+        assert!(
+            (s.transport.outbound_bitrate_kbps - 18_500.0).abs() < 0.1,
+            "bandwidth {}",
+            s.transport.outbound_bitrate_kbps
+        );
+    }
+
+    #[test]
+    fn omitted_inbound_rate_does_not_wipe_a_previous_reading() {
+        let c = StatsCollector::new();
+        c.ingest_client(ClientTelemetry {
+            inbound_bitrate_kbps: 12_000.0,
+            rtt_ms: 8.0,
+            ..Default::default()
+        });
+        c.ingest_client(ClientTelemetry {
+            inbound_bitrate_kbps: 0.0,
+            rtt_ms: 9.0,
+            ..Default::default()
+        });
+        let s = c.snapshot();
+        assert!((s.transport.outbound_bitrate_kbps - 12_000.0).abs() < 0.1);
+        assert!((s.transport.rtt_ms - 9.0).abs() < f32::EPSILON);
     }
 }

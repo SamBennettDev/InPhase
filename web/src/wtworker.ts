@@ -79,12 +79,20 @@ ctx.onmessage = (e: MessageEvent) => {
       () => ctx.postMessage({ t: "dial-ok" }),
       (err) => ctx.postMessage({ t: "dial-err", msg: String(err) }),
     );
+  } else if (m.t === "keyframe") {
+    // The page asks for an IDR; the core decides how (it opens a spare video
+    // channel first, so the answer arrives on a reliable stream).
+    core?.requestKeyframe();
   } else if (m.t === "send") {
     void core?.send(m.msg as Record<string, unknown>);
   } else if (m.t === "input") {
     void core?.sendInput(m.bytes as Uint8Array);
   } else if (m.t === "stats") {
+    // The page's decoder counters, pushed once a second. Telemetry is composed
+    // right here so its `decoded_fps` delta and the window it is divided by
+    // describe the same interval — see `WtVideoClient::telemetryNow`.
     latestStats = m.s as WtClientStats;
+    core?.telemetryNow();
   } else if (m.t === "close") {
     core?.close();
     core = null;

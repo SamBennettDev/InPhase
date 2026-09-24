@@ -9,7 +9,9 @@ mod hotkey;
 mod monitors;
 pub mod net6;
 mod posters;
+mod preview;
 mod startup;
+mod timer;
 mod tray;
 mod tray_mask;
 
@@ -20,5 +22,7 @@ pub use games::{enumerate_installed_games, launch_game, poster_path_for_game_id}
 pub use gpus::{enumerate_gpus, primary_gpu_vendor};
 pub use hotkey::EmergencyHotkey;
 pub use monitors::enumerate_monitors;
+pub use preview::desktop_preview_image;
 pub use startup::{set_start_at_login, start_at_login_enabled};
+pub use timer::raise_timer_resolution;
 pub use tray::{Tray, TrayActions, TrayHandle, TrayModel};

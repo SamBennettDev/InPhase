@@ -94,35 +94,44 @@ impl HostRuntime {
         // WebTransport video transport for internet mode (ADR-0011). This is
         // the video path - there is no WebRTC-video fallback to degrade to
         // (§1), so a bind failure is a hard startup error with a real message.
-        let wt_transport =
-            crate::media::wt::WtVideoTransport::bind(crate::media::wt::WtTransportConfig {
-                port: self.cfg.media.wt_port,
-                identity: wtransport::Identity::self_signed([
-                    "localhost".to_string(),
-                    self.host_name.clone(),
-                ])
-                .context("WT self-signed identity")?,
-                datagram_budget: crate::media::wt::DEFAULT_DATAGRAM_BUDGET,
-                max_queued_frames: crate::media::wt::DEFAULT_MAX_QUEUED_FRAMES,
-            })
-            .with_context(|| {
-                format!(
-                    "WebTransport video transport failed to bind UDP {} - the video path is \
-                     unavailable (no WebRTC fallback exists)",
-                    self.cfg.media.wt_port
-                )
-            })?;
-        let wt = {
+        let wt_slot = crate::media::wt::WtSlot::new();
+        let wt_transport = bind_wt(&self.cfg, &self.host_name).with_context(|| {
+            format!(
+                "WebTransport video transport failed to bind UDP {} - the video path is \
+                 unavailable (no WebRTC fallback exists)",
+                self.cfg.media.wt_port
+            )
+        })?;
+        {
             let t = Arc::new(wt_transport);
-            info!(port = t.port(), cert_sha256 = %t.cert_sha256_hex(), "WebTransport video transport bound");
-            self.sessions.set_wt_transport(Some(t.clone()));
+            info!(
+                port = t.port(),
+                cert_sha256 = %t.cert_sha256_hex(),
+                cert_valid_for_secs = t.cert_remaining().as_secs(),
+                "WebTransport video transport bound"
+            );
+            wt_slot.set(Some(t.clone()));
+            self.sessions.set_wt_slot(wt_slot.clone());
+
+            // Certificates are short-lived by browser rule, and a pin the
+            // browser no longer accepts cannot be redialed out of: see
+            // `WT_CERT_VALIDITY`. Nothing else in the host replaces the
+            // identity, so without this task a host left running simply stops
+            // having a video path — page fine, signaling fine, glass black —
+            // until the process is restarted. Rotate between sessions.
+            spawn_wt_rotation(
+                self.cfg.clone(),
+                self.host_name.clone(),
+                wt_slot.clone(),
+                self.sessions.clone(),
+            );
 
             // Client events: keyframe requests drive the encoder; WT
             // telemetry feeds the same congestion controller the
             // WebRTC path uses (stats.client_snapshot -> AIMD step).
             let sessions = self.sessions.clone();
             let stats = self.stats.clone();
-            let wt_events = t.clone();
+            let wt_events = wt_slot.clone();
             let input_pkts = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
             let input_logged = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             tokio::spawn(async move {
@@ -131,17 +140,32 @@ impl HostRuntime {
                 // fragments (02:37 Chrome session: 11 requests in 10 s =
                 // 12 IDRs sent, none reassembled - each new monster flooded
                 // the assembly path the previous one was still fighting
-                // through). One IDR per 2.5 s is the recovery cadence.
+                // through). One IDR per second is the recovery cadence.
+                //
+                // That cadence is a *coalescing* bound, not a filter: a
+                // throttled request is remembered and served when the window
+                // opens. It used to be dropped outright (`continue`), and that
+                // single line was the largest term in every stall in the log -
+                // requests arriving >= 3.0 s after the previous grant were
+                // granted 395/395 times within 34 ms, but requests arriving any
+                // earlier were granted only 4.2 % of the time (median wait to
+                // the next grant 1079 ms, grant-to-grant p50 3079 ms). The
+                // client gives up on a frame after 300 ms and asks again
+                // immediately, so its requests always landed inside the window
+                // and evaporated: a hole the client could see in 300 ms stayed
+                // black until the gate expired on its own. Recovery is now the
+                // window, and the window is one encoder IDR (~15 ms).
+                const KEYFRAME_MIN_INTERVAL: std::time::Duration =
+                    std::time::Duration::from_millis(1000);
                 let mut last_keyframe =
                     std::time::Instant::now() - std::time::Duration::from_secs(10);
+                let mut keyframe_pending = false;
                 loop {
-                    match wt_events.try_next_event() {
+                    // Re-read the slot every turn: a rotation replaces the
+                    // transport under this pump.
+                    match wt_events.get().and_then(|t| t.try_next_event()) {
                         Some(crate::media::wt::WtClientEvent::KeyframeRequest) => {
-                            if last_keyframe.elapsed() < std::time::Duration::from_millis(2500) {
-                                continue;
-                            }
-                            last_keyframe = std::time::Instant::now();
-                            sessions.with_player(|p| p.media.request_keyframe());
+                            keyframe_pending = true;
                         }
                         Some(crate::media::wt::WtClientEvent::Telemetry(tel)) => {
                             // The client's wire counters split "route lost the
@@ -203,6 +227,9 @@ impl HostRuntime {
                             // as a black glass on mid-session redials
                             // (2026-09-08 Safari: redials every 14-19 s on a
                             // degraded cellular route, black until refresh).
+                            // Counts against the cadence above, so a redial's
+                            // own IDR and a client request don't both fire.
+                            last_keyframe = std::time::Instant::now();
                             sessions.with_player(|p| p.media.request_keyframe());
                         }
                         Some(crate::media::wt::WtClientEvent::Disconnected) => {
@@ -210,10 +237,17 @@ impl HostRuntime {
                         }
                         None => tokio::time::sleep(std::time::Duration::from_millis(20)).await,
                     }
+                    // Runs on every turn, including the idle one, so a request
+                    // buffered inside the window is served the moment it opens
+                    // rather than on the next client ask.
+                    if keyframe_pending && last_keyframe.elapsed() >= KEYFRAME_MIN_INTERVAL {
+                        keyframe_pending = false;
+                        last_keyframe = std::time::Instant::now();
+                        sessions.with_player(|p| p.media.request_keyframe());
+                    }
                 }
             });
-            t
-        };
+        }
 
         let play_url = match &tls {
             Some(t) => t.play_url.clone(),
@@ -241,7 +275,7 @@ impl HostRuntime {
             remote_access: remote_access.clone(),
             remote_mapping,
             art,
-            wt: Some(wt),
+            wt: wt_slot,
             started_at: Instant::now(),
         };
         if tls.is_some() {
@@ -429,6 +463,117 @@ impl HostRuntime {
         }
         http::serve(state, tls).await.context("http server")
     }
+}
+
+/// Bind the WT video transport: a fresh short-lived certificate plus the UDP
+/// endpoint that serves it.
+fn bind_wt(cfg: &Config, host_name: &str) -> anyhow::Result<crate::media::wt::WtVideoTransport> {
+    crate::media::wt::bind_with_fresh_cert(&wt_params(cfg, host_name))
+}
+
+/// What a WT (re)bind needs: the names the client dials, the port, and the
+/// queue sizes.
+fn wt_params(cfg: &Config, host_name: &str) -> crate::media::wt::WtBindParams {
+    crate::media::wt::WtBindParams {
+        sans: vec!["localhost".to_string(), host_name.to_string()],
+        port: cfg.media.wt_port,
+        datagram_budget: crate::media::wt::DEFAULT_DATAGRAM_BUDGET,
+        max_queued_frames: crate::media::wt::DEFAULT_MAX_QUEUED_FRAMES,
+        congestion: cfg.media.wt_congestion,
+    }
+}
+
+/// Replace the WT transport (and its certificate) before the browser stops
+/// accepting the pin.
+///
+/// The dial is authenticated by `serverCertificateHashes`, and that path has a
+/// hard browser-side rule: the certificate must be valid *at dial time*. A host
+/// that never rotates therefore loses its video path silently once the
+/// certificate ages out — the page loads, pairing and signaling work, and the
+/// glass stays black however often the client redials, because the refusal
+/// happens in the QUIC handshake, before any host code runs. Restarting the host
+/// was the only cure; this task is that cure, on a timer.
+///
+/// Rotation happens between sessions, never under a live player, and the
+/// successor binds before the slot changes, so a failed rotation is retried on
+/// a short cadence while the outgoing certificate is still valid for days.
+fn spawn_wt_rotation(
+    cfg: Arc<Config>,
+    host_name: String,
+    slot: crate::media::wt::WtSlot,
+    sessions: Arc<SessionManager>,
+) {
+    use crate::media::wt::{WT_CERT_ROTATE_WHEN_LEFT, WT_ROTATION_POLL};
+
+    tokio::spawn(async move {
+        let params = wt_params(&cfg, &host_name);
+        let mut wait = WT_ROTATION_POLL;
+        loop {
+            tokio::time::sleep(wait).await;
+            wait = WT_ROTATION_POLL;
+            let current = slot.get();
+            // Three reasons to bind: the certificate is running out, a previous
+            // rotation failed and left nothing in service, or the frame sender
+            // died. The last one is why this polls in seconds rather than
+            // minutes - a dead sender is a black screen that the client cannot
+            // distinguish from a firewall, and it used to need a host restart.
+            let (due, dead_sender) = match current.as_ref() {
+                Some(t) => (
+                    t.cert_remaining() <= WT_CERT_ROTATE_WHEN_LEFT || !t.sender_alive(),
+                    !t.sender_alive(),
+                ),
+                None => (true, false),
+            };
+            if !due {
+                continue;
+            }
+            // Never swap the transport out from under a live player: the
+            // successor needs the same UDP port, and the client is actively
+            // decoding on the one being retired. With nothing in service there
+            // is no one to disturb, so a live session does not hold the retry
+            // off. A dead sender is the exception: the player holding it is
+            // already watching a black screen, and the pipeline that feeds this
+            // transport is destroyed when the session ends, so the rebuild is
+            // there for the next one.
+            if current.is_some() && sessions.is_busy() && !dead_sender {
+                continue;
+            }
+            if dead_sender {
+                error!(
+                    "wt: frame sender is dead - rebuilding the video transport; \
+                     the next session on this host will have video again \
+                     (no restart needed)"
+                );
+            } else {
+                match current.as_ref().map(|t| t.cert_remaining()) {
+                    Some(left) => info!(
+                        cert_valid_for_secs = left.as_secs(),
+                        "wt: rotating the video transport certificate before it expires"
+                    ),
+                    None => warn!("wt: no video transport in service - rebinding"),
+                }
+            }
+            match crate::media::wt::rotate_transport(&slot, &params, 40).await {
+                Ok(t) => info!(
+                    port = t.port(),
+                    cert_sha256 = %t.cert_sha256_hex(),
+                    cert_valid_for_secs = t.cert_remaining().as_secs(),
+                    "wt: video transport rotated - clients dial the new pin"
+                ),
+                Err(e) => {
+                    error!(
+                        "wt: could not bind the video transport ({e:#}) - retrying in 60s; \
+                         the video path is down until this succeeds (certificate left: {})",
+                        current
+                            .as_ref()
+                            .map(|t| t.cert_remaining().as_secs().to_string())
+                            .unwrap_or_else(|| "none in service".into())
+                    );
+                    wait = std::time::Duration::from_secs(60);
+                }
+            }
+        }
+    });
 }
 
 /// Add the inbound Windows Firewall rules for the host's ports. The host calls

@@ -122,7 +122,10 @@ async fn bridge_inbound(socket: WebSocket, st: HttpState, peer: PeerDesc) {
 }
 
 fn origin_ok(_st: &HttpState, headers: &HeaderMap) -> bool {
-    super::same_origin_request(headers)
+    // A WebSocket upgrade reaches this handler as HTTP/1.1 — extended CONNECT
+    // is not advertised — so the authority is the `host` header and there is no
+    // request URI to read. The empty Uri routes the check down that path.
+    super::same_origin_request(&axum::http::Uri::default(), headers)
 }
 
 /// Run one browser↔Host signaling session over the text channels. Ends when
@@ -157,7 +160,7 @@ pub async fn drive(mut from_link: LinkRx, to_link: LinkTx, st: HttpState, peer: 
                     &to_link,
                     &SignalMessage::error(
                         SignalErrorCode::Unauthorized,
-                        "this browser is not paired with this PC",
+                        "this Home Screen app is not paired yet — enter the PIN from your PC",
                     ),
                 );
                 return;
@@ -345,6 +348,26 @@ pub async fn drive(mut from_link: LinkRx, to_link: LinkTx, st: HttpState, peer: 
             warn!("unparseable signaling message");
             continue;
         };
+        // The client's WT redial after its video connection closed. This
+        // request used to be answered only by the control pump, which reads
+        // the WebRTC data channel - gone since ADR-0011 - so over this socket
+        // it fell through `handle_message`'s catch-all and vanished. Every WT
+        // close was therefore permanent for the rest of the signaling
+        // session: the host encoded into an empty slot (`sent=0 ...
+        // evicted=121` each second), the client sat on "waiting for a
+        // keyframe", and neither side said why (2026-09-20 21:32, 21:36,
+        // 21:40, 21:41, 21:52 - 29 advertisements, zero redials, ever).
+        if matches!(msg, SignalMessage::WtVideoInfoRequest) {
+            if !st.sessions.owns(session_ticket) {
+                tracing::debug!(%addr, "wt redial request from a displaced link - ignored");
+            } else if let Some(info) = wt_advertisement(&st) {
+                info!(%addr, port = msg_port(&info), "wt video path re-advertised for a redial");
+                let _ = out_tx.send(info);
+            } else {
+                warn!(%addr, "wt redial requested but no WT transport is bound");
+            }
+            continue;
+        }
         if !handle_message(&st, &out_tx, &media_tx, msg).await {
             break;
         }
@@ -495,10 +518,25 @@ async fn handle_message(
 }
 
 /// Verify an `auth_response`: `signature` (base64) must be a valid Ed25519
-/// signature by `controller_id` (hex) over the challenge `nonce`, and
-/// `controller_id` must be an active entry in the controller ACL.
+/// signature by `controller_id` (hex) over the challenge `nonce`.
+///
+/// A valid session cookie already authenticated this socket. The device key
+/// is the durable identity. iOS Home Screen apps share Safari's cookie and
+/// keep a separate IndexedDB, so they mint a new key that was never
+/// PIN-paired — Stream desktop then failed the challenge immediately. A
+/// verified signature on a paired session enrolls that key instead of
+/// rejecting. Revoked keys stay revoked.
 fn verify_device(
     st: &HttpState,
+    controller_id: &str,
+    nonce: &[u8; 32],
+    signature: &str,
+) -> Option<crate::identity::acl::Controller> {
+    verify_and_maybe_enroll(&st.acl, controller_id, nonce, signature)
+}
+
+fn verify_and_maybe_enroll(
+    acl: &crate::identity::acl::ControllerAcl,
     controller_id: &str,
     nonce: &[u8; 32],
     signature: &str,
@@ -506,15 +544,6 @@ fn verify_device(
     // Truncate on char boundaries - a byte slice panics on multibyte
     // input (pre-auth, client-supplied JSON).
     let short: String = controller_id.chars().take(12).collect();
-    let Some(controller) = st.acl.get(controller_id) else {
-        warn!(
-            id = short,
-            id_len = controller_id.len(),
-            acl = ?st.acl.list().iter().map(|c| c.id[..12.min(c.id.len())].to_string()).collect::<Vec<_>>(),
-            "auth: controller id not in the ACL — re-pair this browser"
-        );
-        return None;
-    };
     let pk: [u8; 32] = unhex(controller_id).and_then(|v| v.try_into().ok())?;
     let vk = VerifyingKey::from_bytes(&pk).ok()?;
     let sig_bytes = b64d(signature)?;
@@ -533,7 +562,26 @@ fn verify_device(
         );
         return None;
     }
-    Some(controller)
+    let id = controller_id.to_ascii_lowercase();
+    if let Some(controller) = acl.get(&id) {
+        return Some(controller);
+    }
+    if acl
+        .list()
+        .iter()
+        .any(|c| c.id.eq_ignore_ascii_case(&id) && c.revoked)
+    {
+        warn!(id = short, "auth: revoked controller — not re-enrolling");
+        return None;
+    }
+    // Cookie proved this origin is paired; the signature proved possession
+    // of this new key. That is the Home Screen / split-storage case.
+    info!(
+        id = short,
+        "auth: enrolled a new device key from a paired session (Home Screen / split storage)"
+    );
+    acl.add(&id, "Home Screen app");
+    acl.get(&id)
 }
 
 /// Clamp a client-requested mode to what the host will actually serve.
@@ -551,7 +599,7 @@ fn clamp_mode(w: u32, h: u32, fps: u32) -> (u32, u32, u32) {
 /// Minting the one-time token is the signaling layer's job: the QUIC dial
 /// itself authenticates nothing (ADR-0011).
 pub fn wt_advertisement(st: &HttpState) -> Option<SignalMessage> {
-    let wt = st.wt.as_ref()?;
+    let wt = st.wt.get()?;
     Some(SignalMessage::WtVideoInfo {
         token: wt.issue_token(std::time::Duration::from_secs(60)),
         port: wt.port(),
@@ -601,16 +649,23 @@ fn choose_config(
         }
         decode_hints.iter().any(|h| h.codec == codec && h.supported)
     };
-    // H.265 is the only codec (user directive, 2026-09-09, restated): H.264
-    // is removed entirely. A client that cannot decode HEVC gets no video
-    // session - the decode probe is the contract.
+    // Prefer HEVC when the browser advertises it *and* reports it can decode
+    // the mode; otherwise fall back to H.264, the interoperability floor
+    // (ADR-0005). Offering HEVC alone stranded every browser without it —
+    // Chrome on Linux has no HEVC decoder at all — while H.264 decoded those
+    // same machines fine. Worse, the HEVC probe can answer `true` and then fail
+    // at `configure()` (§30), so a client that passes the gate can still be
+    // left with no picture and no fallback.
     let codec = if client_has("video/H265") && decodes(VideoCodec::H265) {
         VideoCodec::H265
+    } else if client_has("video/H264") && decodes(VideoCodec::H264) {
+        VideoCodec::H264
     } else {
         info!(
             client_has_h265 = client_has("video/H265"),
+            client_has_h264 = client_has("video/H264"),
             decode_hints = decode_hints.len(),
-            "client cannot decode H.265 - refusing the video session (H.264 removed)"
+            "client can decode neither H.265 nor H.264 - refusing the video session"
         );
         return None;
     };
@@ -724,4 +779,75 @@ fn now_unix() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::identity::acl::ControllerAcl;
+    use ed25519_dalek::{Signer, SigningKey};
+
+    fn hex32(b: &[u8; 32]) -> String {
+        b.iter().map(|x| format!("{x:02x}")).collect()
+    }
+
+    fn temp_acl() -> ControllerAcl {
+        let path = std::env::temp_dir().join(format!(
+            "inphase-acl-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        ControllerAcl::load_at(path)
+    }
+
+    fn signed(seed: u8) -> (SigningKey, String, [u8; 32], String) {
+        let sk = SigningKey::from_bytes(&[seed; 32]);
+        let id = hex32(&sk.verifying_key().to_bytes());
+        let nonce = [9u8; 32];
+        let sig = b64e(&sk.sign(&nonce).to_bytes());
+        (sk, id, nonce, sig)
+    }
+
+    #[test]
+    fn paired_session_enrolls_a_new_home_screen_key() {
+        let acl = temp_acl();
+        let (_sk, id, nonce, sig) = signed(7);
+        assert!(acl.get(&id).is_none());
+        let c = verify_and_maybe_enroll(&acl, &id, &nonce, &sig).expect("enroll");
+        assert_eq!(c.id, id);
+        assert_eq!(c.name, "Home Screen app");
+        assert!(acl.is_authorized(&id));
+    }
+
+    #[test]
+    fn known_key_is_not_renamed_on_reconnect() {
+        let acl = temp_acl();
+        let (_sk, id, nonce, sig) = signed(8);
+        acl.add(&id, "Safari on iOS");
+        let c = verify_and_maybe_enroll(&acl, &id, &nonce, &sig).unwrap();
+        assert_eq!(c.name, "Safari on iOS");
+    }
+
+    #[test]
+    fn revoked_key_is_not_silently_reenrolled() {
+        let acl = temp_acl();
+        let (_sk, id, nonce, sig) = signed(9);
+        acl.add(&id, "old phone");
+        acl.revoke(&id);
+        assert!(verify_and_maybe_enroll(&acl, &id, &nonce, &sig).is_none());
+        assert!(!acl.is_authorized(&id));
+    }
+
+    #[test]
+    fn bad_signature_is_not_enrolled() {
+        let acl = temp_acl();
+        let (_sk, id, nonce, _sig) = signed(3);
+        let other = SigningKey::from_bytes(&[4u8; 32]);
+        let sig = b64e(&other.sign(&nonce).to_bytes());
+        assert!(verify_and_maybe_enroll(&acl, &id, &nonce, &sig).is_none());
+        assert!(acl.get(&id).is_none());
+    }
 }
