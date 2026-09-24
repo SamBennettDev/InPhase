@@ -45,6 +45,35 @@ const WT_AUDIO_TAG: u8 = 0x41;
 /// persistent stream a timeout means the peer stopped reading (connection
 /// flow control backs pressure up to the write); the stream is mid-frame and
 /// unusable, so it is reset and the frame dropped.
+/// The injection pace for one frame: fast enough that its datagrams (data
+/// and parity) are all out within `FRAME_SPREAD` of the frame interval -
+/// sooner when frames are already queued - and never slower than the
+/// connection's pace.
+///
+/// A fixed pace cannot be right for every mode. 18000/s with a 32-datagram
+/// burst needs ~4 ms for an average 1440p120 frame (~110 datagrams with two
+/// parity rows) and 12-30 ms for a busy one, against an 8.3 ms interval: the
+/// 8-frame send queue filled and evicted frames every few seconds, and each
+/// eviction is a hole the client can only re-key out of (a Mac at 1440p120,
+/// 2026-09-24: 32 evictions and 34 keyframe requests in 5.5 min, with the
+/// network clean). Spreading each frame over most of its interval keeps the
+/// arrival rate as smooth as the mode allows - the reason for pacing at all -
+/// without ever letting the sender fall behind the encoder.
+pub(crate) fn frame_pace_pps(
+    base_pps: f32,
+    datagrams: u32,
+    interval_s: f32,
+    backlog: usize,
+) -> f32 {
+    let spread_s = (interval_s * FRAME_SPREAD) / (1 + backlog) as f32;
+    (datagrams as f32 / spread_s.max(1e-4)).clamp(base_pps, MAX_FRAME_PACE_PPS.max(base_pps))
+}
+
+/// Share of a frame interval a frame's datagrams are spread over.
+const FRAME_SPREAD: f32 = 0.9;
+/// Ceiling on the per-frame pace: bursts above this are no longer "spread".
+const MAX_FRAME_PACE_PPS: f32 = 100_000.0;
+
 /// Datagrams the pacer may inject back to back.
 ///
 /// The burst is bounded from both sides. Too small with a coarse timer, and
@@ -163,6 +192,11 @@ impl FrameQueue {
             }
             self.notify.notified().await;
         }
+    }
+
+    /// Frames waiting to be sent.
+    fn len(&self) -> usize {
+        self.q.lock().len()
     }
 
     /// Cumulative frames discarded to admit newer ones (never sent).
@@ -430,6 +464,10 @@ impl WtVideoTransport {
                 // frames through unthrottled; big IDRs drain over a fraction of
                 // KEY_FRESHNESS.
                 let mut pace_tokens: f32 = 64.0;
+                // Frame interval from capture timestamps (EMA), for the
+                // per-frame pace; starts at 60 fps.
+                let mut frame_interval_s: f32 = 1.0 / 60.0;
+                let mut last_capture_us: Option<u64> = None;
                 let mut pace_at = std::time::Instant::now();
                 let mut stall_window_ms = 0u32;
                 let mut key_fresh = 0u32;
@@ -565,6 +603,13 @@ impl WtVideoTransport {
                         continue;
                     }
                     let pop_us = crate::media::frametrace::now_us();
+                    if let Some(prev) = last_capture_us {
+                        let d = frame.capture_us.saturating_sub(prev) as f32 / 1e6;
+                        if d > 0.002 && d < 0.1 {
+                            frame_interval_s = 0.9 * frame_interval_s + 0.1 * d;
+                        }
+                    }
+                    last_capture_us = Some(frame.capture_us);
                     // Refresh the send-time anchor: Pong replies project the
                     // capture clock from the most recently sent frame, so no
                     // constant PTS-epoch offset can leak into client ages.
@@ -652,6 +697,18 @@ impl WtVideoTransport {
                             .pace_pps
                             .load(std::sync::atomic::Ordering::Relaxed)
                             as f32;
+                        let parity_rows =
+                            if inphase_protocol::wants_two_parity_rows(frame.key, frag_cnt) {
+                                2
+                            } else {
+                                1
+                            };
+                        let pace_pps = frame_pace_pps(
+                            pace_pps,
+                            frag_cnt as u32 + (frag_cnt as u32).div_ceil(8) * parity_rows,
+                            frame_interval_s,
+                            frame_queue_sender.len(),
+                        );
                         // ---- send order: interleave across FEC groups -----
                         // Walking a frame front to back puts a whole FEC group
                         // in consecutive datagrams, and Wi-Fi does not lose
@@ -1292,6 +1349,20 @@ fn fragment_send_order(frag_cnt: u16) -> Vec<u16> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_frame_is_paced_to_finish_well_inside_its_interval() {
+        let i120 = 1.0 / 120.0;
+        // An average 1440p120 frame: ~110 datagrams in 90 % of 8.3 ms.
+        let pps = super::frame_pace_pps(18_000.0, 110, i120, 0);
+        assert!(110.0 / pps <= i120 * 0.91, "{pps}");
+        // A small frame never goes slower than the connection's pace.
+        assert_eq!(super::frame_pace_pps(18_000.0, 10, i120, 0), 18_000.0);
+        // Frames waiting: catch up faster.
+        assert!(super::frame_pace_pps(18_000.0, 110, i120, 3) > pps);
+        // Bounded.
+        assert!(super::frame_pace_pps(18_000.0, 5_000, i120, 7) <= 100_000.0);
+    }
+
     #[test]
     fn the_pace_burst_is_a_few_milliseconds_of_pace() {
         let burst = super::pace_burst(crate::media::wt::WORKER_PACE_PPS);

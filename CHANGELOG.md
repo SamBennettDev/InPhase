@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Pace each frame to its own interval instead of at a fixed rate. At 1440p120
+  a fixed 18000/s with a 32-datagram burst needed 4 ms for an average frame and
+  up to 30 ms for a busy one, against 8.3 ms: the send queue filled and evicted
+  frames every few seconds (a Mac session: 32 evictions, 34 re-keys in 5.5 min,
+  network clean). Each frame's datagrams now go out over 90 % of the frame
+  interval - faster when frames are queued - never slower than the
+  connection's pace. Same mode, 150 s: evictions 0, re-keys 15 -> 6 (vs the
+  60 % spread first tried), freeze time 5.1 s -> 1.4 s.
+
 - Lip sync. Audio used to chain packets from a fixed 60 ms lead, so it played
   60 ms plus the output device's latency behind the picture, and every late
   burst or host/client clock drift pushed it further behind until the 250 ms
