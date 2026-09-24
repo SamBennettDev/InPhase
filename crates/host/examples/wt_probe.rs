@@ -26,7 +26,7 @@
 //! ```sh
 //! # the invite is minted over the loopback admin API (see tools/remote-e2e.sh)
 //! cargo run -p inphase-host --example wt_probe -- \
-//!     --host 100.127.176.18 --invite <secret> --secs 10 --out /tmp/received.h265
+//!     --host 100.64.0.10 --invite <secret> --secs 10 --out /tmp/received.h265
 //! ```
 //!
 //! Exit 0 on success, 1 on a failed assertion, 2 on a setup error.

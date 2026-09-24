@@ -291,7 +291,7 @@ mod peer_tests {
         assert!(is_lan_peer(ip("::1")));
         assert!(is_lan_peer(ip("fe80::1")));
         assert!(is_lan_peer(ip("fd7a:115c:a1e0::1")), "Tailscale ULA");
-        assert!(is_lan_peer(ip("100.127.176.18")), "CGNAT / Tailscale v4");
+        assert!(is_lan_peer(ip("100.64.0.10")), "CGNAT / Tailscale v4");
     }
 
     #[test]
