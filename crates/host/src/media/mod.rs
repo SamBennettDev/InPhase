@@ -69,6 +69,10 @@ pub struct MediaSession {
     cfg: Arc<Config>,
     stats: Arc<StatsCollector>,
     signal_tx: Option<MediaSignalTx>,
+    /// Ready fired before the signal sink was wired: the WT video path can
+    /// connect while the pipeline is still being built (the capture check
+    /// runs first). Delivered by [`Self::set_signal_sink`].
+    ready_pending: bool,
     input_tx: Option<InputBytesTx>,
     control_tx: Option<ControlTextTx>,
     /// WebTransport video transport (ADR-0011). `None` = not offered; the
@@ -87,6 +91,7 @@ impl MediaSession {
             cfg,
             stats,
             signal_tx: None,
+            ready_pending: false,
             input_tx: None,
             control_tx: None,
             wt: None,
@@ -100,6 +105,9 @@ impl MediaSession {
     /// Wire the channel the pipeline's WebRTC bridge pushes offer/ice/ready on.
     /// Must be called before [`Self::configure`].
     pub fn set_signal_sink(&mut self, tx: MediaSignalTx) {
+        if std::mem::take(&mut self.ready_pending) {
+            let _ = tx.send(MediaSignal::Ready);
+        }
         self.signal_tx = Some(tx);
     }
 
@@ -107,9 +115,13 @@ impl MediaSession {
     /// established (ADR-0011: WT carries the video; WebRTC ICE gates only
     /// audio). The signal layer's `mark_ready` deduplicates, so a later
     /// ICE Connected is a harmless no-op.
-    pub fn signal_ready(&self) {
-        if let Some(tx) = &self.signal_tx {
-            let _ = tx.send(MediaSignal::Ready);
+    pub fn signal_ready(&mut self) {
+        match &self.signal_tx {
+            Some(tx) => {
+                let _ = tx.send(MediaSignal::Ready);
+            }
+            // Dropping it here left input disarmed for the whole session.
+            None => self.ready_pending = true,
         }
     }
 
@@ -263,5 +275,24 @@ fn wt_codec_str(codec: inphase_protocol::VideoCodec) -> &'static str {
         // `avc1.42E01E` claimed Baseline 3.0, which does not cover 1080p60.
         inphase_protocol::VideoCodec::H264 => "avc1.640033",
         inphase_protocol::VideoCodec::H265 => "hev1.1.6.L153.B0",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ready_before_the_sink_is_wired_is_not_lost() {
+        let mut media = MediaSession::new(
+            Arc::new(Config::default()),
+            Arc::new(StatsCollector::new()),
+        );
+        // The WT video path connects while the pipeline is still being built.
+        media.signal_ready();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        media.set_signal_sink(tx);
+        assert!(matches!(rx.try_recv(), Ok(MediaSignal::Ready)));
+        assert!(rx.try_recv().is_err(), "delivered once");
     }
 }
