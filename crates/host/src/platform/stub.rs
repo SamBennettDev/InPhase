@@ -31,7 +31,7 @@ pub fn poster_path_for_game_id(_id: &str) -> Option<std::path::PathBuf> {
     None
 }
 
-pub fn desktop_preview_image() -> anyhow::Result<Vec<u8>> {
+pub fn desktop_preview_image(_after: Option<u64>) -> anyhow::Result<Option<(Vec<u8>, u64)>> {
     anyhow::bail!("desktop preview is Windows-only")
 }
 

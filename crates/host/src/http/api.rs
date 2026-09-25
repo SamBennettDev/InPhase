@@ -837,18 +837,38 @@ pub async fn library_poster(
 
 /// `GET /api/v1/desktop-preview` — a small bitmap of the primary desktop for the
 /// play-page monitor bezel. Paired devices only; never cached.
-pub async fn desktop_preview(State(st): State<HttpState>, headers: HeaderMap) -> Response {
+/// `GET /api/v1/desktop-preview[?after=<seq>]` - the live desktop tile. With
+/// `after`, waits up to ~1 s for a frame newer than `seq` and answers 204 if
+/// the desktop did not change; the frame's own number is in `x-frame-seq`.
+pub async fn desktop_preview(
+    State(st): State<HttpState>,
+    headers: HeaderMap,
+    axum::extract::RawQuery(q): axum::extract::RawQuery,
+) -> Response {
     if require_session(&st, &headers).is_none() {
         return (StatusCode::UNAUTHORIZED, "pair first").into_response();
     }
-    match tokio::task::spawn_blocking(platform::desktop_preview_image).await {
-        Ok(Ok(bytes)) => (
+    let after = q
+        .as_deref()
+        .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("after=")))
+        .and_then(|v| v.parse::<u64>().ok());
+    match tokio::task::spawn_blocking(move || platform::desktop_preview_image(after)).await {
+        Ok(Ok(Some((bytes, seq)))) => (
             StatusCode::OK,
             [
-                (header::CONTENT_TYPE, "image/bmp"),
-                (header::CACHE_CONTROL, "no-store"),
+                (header::CONTENT_TYPE, "image/jpeg".to_string()),
+                (header::CACHE_CONTROL, "no-store".to_string()),
+                (
+                    header::HeaderName::from_static("x-frame-seq"),
+                    seq.to_string(),
+                ),
             ],
             bytes,
+        )
+            .into_response(),
+        Ok(Ok(None)) => (
+            StatusCode::NO_CONTENT,
+            [(header::CACHE_CONTROL, "no-store")],
         )
             .into_response(),
         Ok(Err(e)) => {

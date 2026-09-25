@@ -106,6 +106,10 @@ export async function mockHost(
           ],
         };
         break;
+      case "desktop-preview":
+        // No desktop to capture here: the tile shows its placeholder.
+        code = 503;
+        break;
       case "health":
         body = { ok: true, symptoms: [] };
         break;
