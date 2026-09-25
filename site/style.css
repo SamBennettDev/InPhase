@@ -24,7 +24,9 @@
 }
 
 * { box-sizing: border-box; }
-html { scroll-behavior: smooth; }
+/* Decorations (the glow and wave behind the phone) may run past the content
+ * column; only the screen edge cuts them, never a section box. */
+html { scroll-behavior: smooth; overflow-x: clip; }
 body {
   margin: 0;
   background: var(--bg);
@@ -85,17 +87,21 @@ h1 { font-size: clamp(2.4rem, 5.6vw, 4.1rem); font-weight: 750; max-width: 13ch;
 .fine { margin-top: 0.9rem; font-size: 0.85rem; color: var(--muted); }
 
 /* The screenshot, in a plain phone outline; the brand wave runs behind it. */
-.hero { overflow-x: clip; overflow-y: visible; }
 .hero-shot { margin: 0; position: relative; display: flex; flex-direction: column; align-items: center; }
 .hero-shot::before {
-  content: ""; position: absolute; left: -12%; right: -12%; top: 46%; height: 26px; z-index: 0;
+  content: ""; position: absolute; left: -14%; right: -14%; top: 46%; height: 26px; z-index: 0;
   background: linear-gradient(90deg, var(--cyan), var(--violet));
-  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='96' height='26'%3E%3Cpath d='M0 13C16 2 32 2 48 13s32 11 48 0' fill='none' stroke='%23000' stroke-width='3'/%3E%3C/svg%3E") repeat-x 0 50% / 96px 26px;
-  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='96' height='26'%3E%3Cpath d='M0 13C16 2 32 2 48 13s32 11 48 0' fill='none' stroke='%23000' stroke-width='3'/%3E%3C/svg%3E") repeat-x 0 50% / 96px 26px;
+  /* The wave, faded out at both ends rather than stopping at a hard edge. */
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='96' height='26'%3E%3Cpath d='M0 13C16 2 32 2 48 13s32 11 48 0' fill='none' stroke='%23000' stroke-width='3'/%3E%3C/svg%3E") repeat-x 0 50% / 96px 26px,
+    linear-gradient(90deg, transparent, #000 22%, #000 78%, transparent) no-repeat 0 0 / 100% 100%;
+  -webkit-mask-composite: source-in;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='96' height='26'%3E%3Cpath d='M0 13C16 2 32 2 48 13s32 11 48 0' fill='none' stroke='%23000' stroke-width='3'/%3E%3C/svg%3E") repeat-x 0 50% / 96px 26px,
+    linear-gradient(90deg, transparent, #000 22%, #000 78%, transparent) no-repeat 0 0 / 100% 100%;
+  mask-composite: intersect;
   opacity: 0.55;
   animation: wave 3s linear infinite;
 }
-@keyframes wave { to { -webkit-mask-position: 96px 50%; mask-position: 96px 50%; } }
+@keyframes wave { to { -webkit-mask-position: 96px 50%, 0 0; mask-position: 96px 50%, 0 0; } }
 .phone {
   position: relative; z-index: 1;
   width: min(330px, 78vw); aspect-ratio: 690 / 1499;
