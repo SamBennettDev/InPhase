@@ -42,6 +42,9 @@ under its own license terms, notably:
   * libnice ....................................... LGPL-2.1 / MPL-1.1
   * libsrtp and other media libraries ............. BSD-family
   * ~390 Rust crates .............................. mostly MIT / Apache-2.0
+  * ViGEmBus 1.22.0 installer (optional task) ..... BSD-3-Clause
+    (c) Nefarius Software Solutions e.U.; upstream is archived. Installed only
+    when "Controller support" is ticked; its license is in licenses/ViGEmBus.
 
 Packaged candidates include a binary license inventory and upstream references
 (`MANIFEST.csv`, `OPEN-SOURCE-COMPONENTS.txt`, `licenses/`). Review this inventory,
@@ -59,3 +62,27 @@ not and cannot grant — and HEVC's licensing terms are more onerous than
 H.264's. Seek your own advice before publishing release binaries. The host
 **prefers HEVC** where the browser advertises an HEVC receive codec and falls
 back to H.264 automatically; `media.allow_hevc = false` forces H.264 only.
+
+--------------------------------------------------------------------------------
+Third-party services the host contacts
+--------------------------------------------------------------------------------
+
+  * Steam store endpoints, for missing cover art (see "Game cover art" above;
+    `[library] online_art = false` turns it off).
+  * Let's Encrypt, only when remote access obtains a public certificate. The
+    host creates an ACME account for you, which means accepting the Let's
+    Encrypt Subscriber Agreement (https://letsencrypt.org/repository/). Issued
+    certificates are published in public Certificate Transparency logs, and the
+    certificate's name encodes the PC's public IPv6 address.
+  * sslip.io, the public DNS service that name resolves through.
+
+InPhase itself runs no server and receives no data from your PC.
+
+--------------------------------------------------------------------------------
+Trademarks
+--------------------------------------------------------------------------------
+
+InPhase is an independent project and is not affiliated with or endorsed by
+Microsoft, Valve, Epic Games, NVIDIA, AMD, Intel, Apple, Google, Nefarius or any
+game publisher. Xbox, Steam, Epic Games, GOG and other names are trademarks of
+their owners and are used only to identify the products they refer to.

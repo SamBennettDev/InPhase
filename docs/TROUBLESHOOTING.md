@@ -107,6 +107,11 @@ missing, with a link to install it. The virtual controller is plugged in the fir
 time a controller is used in a stream. Keyboard and mouse input do not depend on it.
 See [ADR-0008](adr/0008-input-injection.md) for the trade-offs.
 
+Some games' anti-cheat systems or terms of service react to remote input or
+virtual controllers. InPhase never tries to hide from or bypass them; if a game
+objects, stream it with keyboard and mouse, or not at all. That choice and its
+risk are yours.
+
 ## The stream connects but the picture is black
 
 Pairing, the player UI and audio working while the picture never appears means no

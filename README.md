@@ -148,3 +148,22 @@ Bundled dependencies retain their own licenses. Candidates contain a binary
 manifest and notices. Public binary distribution also requires matching source
 and the review in [RELEASING.md](docs/RELEASING.md). Codec rights are separate
 from the source-code license; see NOTICE.
+
+## Disclaimer
+
+InPhase is provided **as is, without warranty of any kind**, and its authors are
+not liable for any damage arising from its use; see sections 15 and 16 of the
+[GPL-3.0](LICENSE). You install and run it at your own risk, on hardware and
+networks you control.
+
+- InPhase gives a paired device control of a signed-in Windows desktop. Pair only
+  devices you trust, and keep remote access off unless you understand it.
+- Some games' terms of service or anti-cheat systems prohibit or react to remote
+  input and virtual controllers. Using InPhase with a game is your decision and
+  your risk; InPhase never tries to bypass anti-cheat.
+- InPhase is an independent project, not affiliated with or endorsed by
+  Microsoft, Valve, Epic Games, NVIDIA, AMD, Intel, Apple, Google or any game
+  publisher. Product names, game titles and cover art are trademarks or
+  copyrights of their owners and are shown only to identify them.
+- Donations are gifts toward development. They do not buy support, features, a
+  warranty or any other obligation.

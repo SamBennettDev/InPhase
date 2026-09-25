@@ -65,6 +65,10 @@ Constraints:
   LAN-only pairing instead.
 - **Staging is the default** (`[acme].staging = true`) until you deliberately
   switch to production.
+- **You accept Let's Encrypt's terms.** Obtaining a certificate creates an ACME
+  account on your behalf, which accepts the Let's Encrypt Subscriber Agreement
+  (https://letsencrypt.org/repository/). Leave remote access off if you do not
+  want that.
 
 Pair with `[remote_access].enabled = true` only after proving issuance on
 staging.

@@ -161,6 +161,8 @@ h1 { font-size: clamp(2.4rem, 5.6vw, 4.1rem); font-weight: 750; max-width: 13ch;
   font-size: 0.85rem; color: var(--faint);
 }
 .foot a { color: var(--muted); }
+.foot .legal { flex-basis: 100%; margin: 0 0 0.6rem; max-width: 60rem; font-size: 0.8rem; line-height: 1.55; }
+.support .gift { margin-top: 1rem; font-size: 0.82rem; color: var(--muted); }
 
 /* ---- small screens ------------------------------------------------------- */
 
