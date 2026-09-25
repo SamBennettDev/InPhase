@@ -284,10 +284,8 @@ mod tests {
 
     #[test]
     fn ready_before_the_sink_is_wired_is_not_lost() {
-        let mut media = MediaSession::new(
-            Arc::new(Config::default()),
-            Arc::new(StatsCollector::new()),
-        );
+        let mut media =
+            MediaSession::new(Arc::new(Config::default()), Arc::new(StatsCollector::new()));
         // The WT video path connects while the pipeline is still being built.
         media.signal_ready();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
