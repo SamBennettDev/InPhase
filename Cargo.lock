@@ -1507,7 +1507,7 @@ dependencies = [
 
 [[package]]
 name = "inphase-host"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1558,7 +1558,7 @@ dependencies = [
 
 [[package]]
 name = "inphase-protocol"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",

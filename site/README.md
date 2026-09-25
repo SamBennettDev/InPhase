@@ -9,3 +9,10 @@ custom domain.
 - The donation button points at Buy Me a Coffee (`#coffee` in `index.html`).
 - `assets/og.png` is the link preview (1200x630), rendered from the iPhone
   screenshot in `assets/iphone-library.*`.
+
+## Hosting setup (one-time)
+
+- Repository Settings -> Pages -> Source: GitHub Actions.
+- Cloudflare DNS for sam-bennett.dev: `CNAME inphase -> sambennettdev.github.io`,
+  DNS only (grey cloud), so GitHub can issue the HTTPS certificate.
+- After the first deploy, tick Enforce HTTPS under Settings -> Pages.

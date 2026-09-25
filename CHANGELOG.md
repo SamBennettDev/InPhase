@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 - 2026-09-25
 
 - Fix a host crash (heap corruption) when a stream could not capture the
   desktop, as while the PC is locked or showing a UAC prompt. The host now
