@@ -2,13 +2,12 @@
 
 ## Unreleased
 
-- The library's desktop tile is live: up to ~30 fps (23 fps measured with a
-  GPU-heavy window open at 1440p) at up to 960 px, sharp on phones, instead of
-  a 320 px still every 2.5 s. Frames are JPEG, produced by a background thread
-  only while the tile is watched and sent only when the desktop changed (a
-  still desktop costs ~0.3 Mbps). The preview keeps using GDI capture: DXGI
-  duplication was faster but blocked the stream's own capture, and the host
-  crashed when a stream then failed to start.
+- The library's desktop tile is a live view of the PC: the real stream at
+  tile size (960x540, 30 fps, H.264 at up to 2.5 Mbps; ~29 fps measured),
+  over the same WebTransport path and decoder as a player. A preview is
+  view-only and never "in use": any device's stream takes over from it at
+  once, and while another device streams the tile shows a placeholder. It
+  replaces a 320 px still refreshed every 2.5 s.
 
 ## 0.2.0 - 2026-09-24
 

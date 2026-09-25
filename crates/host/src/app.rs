@@ -375,7 +375,7 @@ impl HostRuntime {
                 let mut last: Option<(bool, String, String)> = None;
                 loop {
                     iv.tick().await;
-                    let st = sessions.state();
+                    let st = sessions.public_state();
                     let streaming = matches!(
                         st,
                         crate::session::SessionState::Playing

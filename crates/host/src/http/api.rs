@@ -114,7 +114,7 @@ pub struct Mode {
 }
 
 pub async fn status(State(st): State<HttpState>, headers: HeaderMap) -> Json<HostStatus> {
-    let state = st.sessions.state();
+    let state = st.sessions.public_state();
     // What is being played is a paired device's business, not a stranger's.
     let paired = require_session(&st, &headers).is_some();
     let active_stream = (paired
@@ -515,7 +515,7 @@ pub async fn admin_status(State(st): State<HttpState>) -> Json<serde_json::Value
     let (pin, ttl) = st.pairing.current_pin();
     let (pin_failures, pin_locked) = st.pairing.pin_guard();
     Json(serde_json::json!({
-        "state": st.sessions.state().label(),
+        "state": st.sessions.public_state().label(),
         "pin": pin,
         "pin_ttl_secs": ttl.map(|d| d.as_secs()),
         "pin_failures": pin_failures,
@@ -833,48 +833,4 @@ pub async fn library_poster(
         bytes,
     )
         .into_response()
-}
-
-/// `GET /api/v1/desktop-preview` — a small bitmap of the primary desktop for the
-/// play-page monitor bezel. Paired devices only; never cached.
-/// `GET /api/v1/desktop-preview[?after=<seq>]` - the live desktop tile. With
-/// `after`, waits up to ~1 s for a frame newer than `seq` and answers 204 if
-/// the desktop did not change; the frame's own number is in `x-frame-seq`.
-pub async fn desktop_preview(
-    State(st): State<HttpState>,
-    headers: HeaderMap,
-    axum::extract::RawQuery(q): axum::extract::RawQuery,
-) -> Response {
-    if require_session(&st, &headers).is_none() {
-        return (StatusCode::UNAUTHORIZED, "pair first").into_response();
-    }
-    let after = q
-        .as_deref()
-        .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("after=")))
-        .and_then(|v| v.parse::<u64>().ok());
-    match tokio::task::spawn_blocking(move || platform::desktop_preview_image(after)).await {
-        Ok(Ok(Some((bytes, seq)))) => (
-            StatusCode::OK,
-            [
-                (header::CONTENT_TYPE, "image/jpeg".to_string()),
-                (header::CACHE_CONTROL, "no-store".to_string()),
-                (
-                    header::HeaderName::from_static("x-frame-seq"),
-                    seq.to_string(),
-                ),
-            ],
-            bytes,
-        )
-            .into_response(),
-        Ok(Ok(None)) => (
-            StatusCode::NO_CONTENT,
-            [(header::CACHE_CONTROL, "no-store")],
-        )
-            .into_response(),
-        Ok(Err(e)) => {
-            tracing::debug!("desktop preview: {e:#}");
-            (StatusCode::SERVICE_UNAVAILABLE, "preview unavailable").into_response()
-        }
-        Err(_) => (StatusCode::SERVICE_UNAVAILABLE, "preview unavailable").into_response(),
-    }
 }

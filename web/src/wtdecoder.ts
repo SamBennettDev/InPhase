@@ -214,10 +214,15 @@ export class WtDecoder {
     /** This device's decoder cannot sustain the mode: `available` says a
      *  smaller one exists, `apply` switches to it (see nextStepDown). */
     private readonly stepDown?: { available: () => boolean; apply: (why: string) => void },
+    /** Draw with the 2D canvas even where WebGL is preferred: the library
+     *  tile copies frames out for a thumbnail, and a WebGL canvas reads back
+     *  blank once composited. Its frames are small enough for 2D anywhere. */
+    opts: { canvas2d?: boolean } = {},
   ) {
     this.canvas = document.createElement("canvas");
     this.canvas.className = "wt-video";
-    const gl = preferWebGl(navigator.userAgent, globalThis.location?.search ?? "");
+    const gl =
+      !opts.canvas2d && preferWebGl(navigator.userAgent, globalThis.location?.search ?? "");
     this.gl = gl ? GlRenderer.create(this.canvas) : null;
     if (this.gl === null) this.ctx = this.context2d();
     this.renderMode = this.gl !== null ? "webgl" : "direct";

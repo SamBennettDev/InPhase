@@ -20,6 +20,7 @@ import { TouchController } from "../input/touch.js";
 import { WtAudio } from "../wtaudio.js";
 import { FrameProbe } from "../diag.js";
 import { Hud } from "./hud.js";
+import { DesktopPreview } from "./preview.js";
 import { icon } from "./icons.js";
 import { escapeHtml } from "./html.js";
 import {
@@ -140,7 +141,7 @@ function showHome(root: HTMLElement) {
           <select id="source-filter" aria-label="Game launcher"><option value="">All launchers</option></select></div></div>
         <div class="library" role="group" aria-label="Choose what to stream">
           <button type="button" class="desk-card" id="select-desktop" aria-pressed="false" aria-label="Select Whole desktop">
-            <span class="lib-cover desk-cover" id="desktop-preview">${icon("monitor")}<canvas id="desktop-preview-img" aria-hidden="true"></canvas><span class="lib-badges" id="desk-badges"></span><span class="lib-check" aria-hidden="true">✓</span></span>
+            <span class="lib-cover desk-cover" id="desktop-preview">${icon("monitor")}<span class="lib-badges" id="desk-badges"></span><span class="lib-check" aria-hidden="true">✓</span></span>
             <span class="lib-name">${icon("monitor", 15)} Whole desktop</span>
           </button>
           <div id="library"><p class="library-empty">Loading your library…</p></div>
@@ -160,11 +161,11 @@ function showHome(root: HTMLElement) {
   const search = $<HTMLInputElement>("#game-search");
   const source = $<HTMLSelectElement>("#source-filter");
   const dialog = $<HTMLDialogElement>("#settings-dialog");
+  const desktop = new DesktopPreview($("#desktop-preview"), () => onPicture());
   let settings = loadSettings(),
     items: LibraryItem[] = [],
     activeStream: StreamTarget | null = null;
   let available = false,
-    hostBusy = false,
     stopped = false,
     poll = 0,
     libraryPoll = 0,
@@ -173,7 +174,9 @@ function showHome(root: HTMLElement) {
     stopped = true;
     clearTimeout(poll);
     clearTimeout(libraryPoll);
-    clearTimeout(previewPoll);
+    clearInterval(previewPoll);
+    desktop.stop();
+    document.removeEventListener("visibilitychange", onHidden);
   };
   const updateSelection = () => {
     settings = loadSettings();
@@ -194,11 +197,9 @@ function showHome(root: HTMLElement) {
       ? null
       : items.find((i) => target.type === "game" && i.id === target.id);
     const thumb = $<HTMLImageElement>("#pickthumb");
-    const shot = $<HTMLCanvasElement>("#desktop-preview-img");
     thumb.src = desk
-      ? $("#desktop-preview").classList.contains("has-shot")
-        ? shot.toDataURL("image/jpeg", 0.7)
-        : posterFor({ id: "desktop", name: "Whole desktop", kind: "desktop" })
+      ? (desktop.snapshot() ??
+        posterFor({ id: "desktop", name: "Whole desktop", kind: "desktop" }))
       : posterFor(
           item ?? {
             id: "",
@@ -283,84 +284,28 @@ function showHome(root: HTMLElement) {
       libraryPoll = window.setTimeout(() => void loadLibrary(tries + 1), 3000);
   };
   void loadLibrary();
-  // The desktop tile is live, up to 30 frames a second, drawn to a canvas
-  // (no image element to reload and flash). Each request asks for a frame
-  // newer than the last one; the host holds it until the desktop changes, so
-  // a still desktop costs nothing. The next request is sent while the current
-  // frame decodes. One a second while another device streams (its capture
-  // competes with the game); paused while this tab is hidden.
+  // The desktop tile is the real stream at tile size (see DesktopPreview);
+  // `refresh` starts it while the PC is free and the page is visible.
   const wallpaper = $("#desktop-preview");
-  const preview = $<HTMLCanvasElement>("#desktop-preview-img");
-  const pctx = preview.getContext("2d", { alpha: false });
   let thumbAt = 0;
-  let seq: string | null = null;
-  const live = () => !stopped && root.contains(connect);
-  const wait = (ms: number) =>
-    new Promise<void>((done) => {
-      previewPoll = window.setTimeout(done, Math.max(0, ms));
-    });
-  type Pull = { status: number; blob?: Blob; seq?: string | null };
-  const pull = async (): Promise<Pull> => {
-    try {
-      const r = await fetch(
-        "/api/v1/desktop-preview" + (seq ? `?after=${seq}` : ""),
-        { cache: "no-store", signal: AbortSignal.timeout(5000) },
-      );
-      if (r.status !== 200) return { status: r.status };
-      return { status: 200, blob: await r.blob(), seq: r.headers.get("x-frame-seq") };
-    } catch {
-      return { status: 0 };
+  const onPicture = () => {
+    wallpaper.classList.add("has-shot");
+    const now = performance.now();
+    if (now - thumbAt > 1000 && loadSettings().streamTarget.type === "desktop") {
+      thumbAt = now;
+      const shot = desktop.snapshot();
+      if (shot) $<HTMLImageElement>("#pickthumb").src = shot;
     }
   };
-  const previewLoop = async () => {
-    let next = pull();
-    let sentAt = performance.now();
-    while (live()) {
-      const got = await next;
-      if (!live() || got.status === 401) return;
-      // How long until the next request may go out.
-      const gap = document.hidden
-        ? 500
-        : got.status === 0
-          ? 1000 // a network hiccup
-          : got.status !== 200 && got.status !== 204
-            ? 5000 // no preview on this host right now
-            : hostBusy
-              ? 1000
-              : 1000 / 30;
-      if (got.seq) seq = got.seq;
-      // Ask for the next frame now, on the 30 fps cadence, and decode this
-      // one while that request is out.
-      next = wait(gap - (performance.now() - sentAt)).then(() => {
-        sentAt = performance.now();
-        return document.hidden ? { status: 204 } : pull();
-      });
-      if (!got.blob) continue;
-      try {
-        const frame = await createImageBitmap(got.blob);
-        if (!live()) {
-          frame.close();
-          return;
-        }
-        if (preview.width !== frame.width || preview.height !== frame.height) {
-          preview.width = frame.width;
-          preview.height = frame.height;
-        }
-        pctx?.drawImage(frame, 0, 0);
-        frame.close();
-        wallpaper.classList.add("has-shot");
-      } catch {
-        continue;
-      }
-      // The launch bar's thumbnail follows about once a second.
-      const now = performance.now();
-      if (now - thumbAt > 1000 && loadSettings().streamTarget.type === "desktop") {
-        thumbAt = now;
-        $<HTMLImageElement>("#pickthumb").src = preview.toDataURL("image/jpeg", 0.7);
-      }
-    }
+  const onHidden = () => {
+    if (document.hidden) desktop.stop();
+    else if (available) void desktop.start();
   };
-  void previewLoop();
+  document.addEventListener("visibilitychange", onHidden);
+  // Keep the launch-bar thumbnail following the live desktop.
+  previewPoll = window.setInterval(() => {
+    if (desktop.active) onPicture();
+  }, 1000);
   const openSettings = () => {
     const panel = $("#panel");
     if (!panel.dataset["built"]) {
@@ -430,7 +375,8 @@ function showHome(root: HTMLElement) {
         render();
       }
       available = !st.busy && st.available !== false;
-      hostBusy = st.busy;
+      if (available && !document.hidden) void desktop.start();
+      else if (!available) desktop.stop();
       connect.disabled = !available;
       $("#host-status").className =
         "connection-pill " + (available ? "ok" : st.busy ? "live" : "warn");

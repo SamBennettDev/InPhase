@@ -172,9 +172,12 @@ export class SignalSocket {
   constructor(
     private readonly onMessage: (m: SignalMessage) => void,
     private readonly onClose: (ev: CloseEvent) => void,
+    /** `/api/v1/signal`, plus `?preview=1` for the library tile's view-only
+     *  session. */
+    path = "/api/v1/signal",
   ) {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    this.ws = new WebSocket(`${proto}//${location.host}/api/v1/signal`);
+    this.ws = new WebSocket(`${proto}//${location.host}${path}`);
     this.ws.addEventListener("close", (e) => {
       this.closed = true;
       this.onClose(e);

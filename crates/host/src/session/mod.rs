@@ -106,6 +106,9 @@ pub struct PlayerSession {
     /// while disarmed are dropped.
     pub input_armed: bool,
     pub media_ready: bool,
+    /// A view-only preview for the library's desktop tile: small, no input,
+    /// never "in use". Any real player displaces it; it displaces nobody.
+    pub preview: bool,
 }
 
 impl PlayerSession {
@@ -188,15 +191,31 @@ impl SessionManager {
         self.inner.lock().state
     }
 
-    pub fn is_busy(&self) -> bool {
-        !matches!(
-            self.inner.lock().state,
-            SessionState::Idle | SessionState::Stopping
-        )
+    /// The state as the outside world should see it: a preview is idle.
+    pub fn public_state(&self) -> SessionState {
+        let g = self.inner.lock();
+        if g.player.as_ref().is_some_and(|p| p.preview) {
+            SessionState::Idle
+        } else {
+            g.state
+        }
     }
 
+    /// Someone is playing. A preview does not count: it gives way to anyone.
+    pub fn is_busy(&self) -> bool {
+        let g = self.inner.lock();
+        !g.player.as_ref().is_some_and(|p| p.preview)
+            && !matches!(g.state, SessionState::Idle | SessionState::Stopping)
+    }
+
+    /// The current player, unless it is only a preview.
     pub fn peer_info(&self) -> Option<PeerInfo> {
-        self.inner.lock().player.as_ref().map(|p| p.peer.clone())
+        self.inner
+            .lock()
+            .player
+            .as_ref()
+            .filter(|p| !p.preview)
+            .map(|p| p.peer.clone())
     }
 
     pub fn active_config(&self) -> Option<SessionConfig> {
@@ -213,6 +232,7 @@ impl SessionManager {
         &self,
         peer: PeerInfo,
         to_client: mpsc::UnboundedSender<SignalMessage>,
+        preview: bool,
     ) -> Result<SessionTicket, StartRejected> {
         // Newest player wins (§15): an abrupt client death (browser quit,
         // network drop) can leave the previous session unreaped for a while.
@@ -227,6 +247,11 @@ impl SessionManager {
             let stale_state = busy.state;
             (busy.player.is_some() || busy.state != SessionState::Idle).then_some(stale_state)
         };
+        // A preview takes only a free host: it never displaces a player, nor
+        // another device's preview (two library pages would take turns).
+        if preview && reclaim_needed.is_some() {
+            return Err(StartRejected::Busy);
+        }
         if let Some(stale_state) = reclaim_needed {
             tracing::info!(state = ?stale_state, "session busy - reclaiming for the new player");
             self.force_disconnect();
@@ -275,6 +300,7 @@ impl SessionManager {
             controller_id: None,
             input_armed: false,
             media_ready: false,
+            preview,
         });
         self.force_state(&mut g, SessionState::Paired);
         g.ticket += 1;
@@ -382,6 +408,10 @@ impl SessionManager {
             return false;
         }
         p.media_ready = true;
+        if p.preview {
+            info!("preview ready - media path up, input stays disarmed");
+            return true;
+        }
         p.input_armed = true;
         info!("session ready — media path up, input armed");
         true
@@ -424,10 +454,10 @@ mod tests {
         let stats = Arc::new(StatsCollector::new());
         let sm = SessionManager::new(cfg, stats);
         let (tx1, mut rx1) = mpsc::unbounded_channel();
-        let t1 = sm.claim(PeerInfo::default(), tx1).await.ok();
+        let t1 = sm.claim(PeerInfo::default(), tx1, false).await.ok();
         let (tx2, _rx2) = mpsc::unbounded_channel();
         let t2 = sm
-            .claim(PeerInfo::default(), tx2)
+            .claim(PeerInfo::default(), tx2, false)
             .await
             .expect("a new claim reclaims a stale session instead of BUSY");
         assert!(matches!(rx1.try_recv(), Ok(SignalMessage::Bye)));
@@ -444,11 +474,43 @@ mod tests {
     async fn stopping_returns_to_idle_and_frees_slot() {
         let sm = SessionManager::new(Arc::new(Config::default()), Arc::new(StatsCollector::new()));
         let (tx, _rx) = mpsc::unbounded_channel();
-        sm.claim(PeerInfo::default(), tx).await.unwrap();
+        sm.claim(PeerInfo::default(), tx, false).await.unwrap();
         sm.transition(SessionState::Negotiating);
         sm.transition(SessionState::Playing);
         assert!(sm.transition(SessionState::Stopping));
         assert_eq!(sm.state(), SessionState::Idle);
         assert!(!sm.is_busy());
+    }
+
+    #[tokio::test]
+    async fn a_preview_gives_way_and_never_takes() {
+        let sm = SessionManager::new(Arc::new(Config::default()), Arc::new(StatsCollector::new()));
+        let (ptx, mut prx) = mpsc::unbounded_channel();
+        let preview = sm.claim(PeerInfo::default(), ptx, true).await.unwrap();
+        sm.transition(SessionState::Negotiating);
+        sm.transition(SessionState::Playing);
+        assert!(!sm.is_busy(), "a preview is not 'in use'");
+        assert_eq!(sm.public_state(), SessionState::Idle);
+        assert!(sm.peer_info().is_none());
+        sm.mark_ready();
+        assert!(!sm.input_armed(), "a preview never drives input");
+
+        // Another preview does not displace it...
+        let (tx2, _rx2) = mpsc::unbounded_channel();
+        assert!(sm.claim(PeerInfo::default(), tx2, true).await.is_err());
+        assert!(sm.owns(preview));
+
+        // ...a real player does, and is then busy.
+        let (tx3, _rx3) = mpsc::unbounded_channel();
+        let real = sm.claim(PeerInfo::default(), tx3, false).await.unwrap();
+        assert!(matches!(prx.try_recv(), Ok(SignalMessage::Bye)));
+        assert!(!sm.owns(preview));
+        sm.transition(SessionState::Negotiating);
+        assert!(sm.is_busy());
+
+        // And a preview cannot take it back.
+        let (tx4, _rx4) = mpsc::unbounded_channel();
+        assert!(sm.claim(PeerInfo::default(), tx4, true).await.is_err());
+        assert!(sm.owns(real));
     }
 }

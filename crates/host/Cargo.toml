@@ -78,9 +78,6 @@ futures = "0.3.34"
 # non-Windows host, so `cargo test -p inphase-protocol` still works on Linux.
 # ---------------------------------------------------------------------------
 [target.'cfg(windows)'.dependencies]
-# Desktop preview tile: JPEG frames for the library's live desktop (30 fps at
-# up to 960 px would be ~45 MB/s as BMP). Pure Rust, no system codec.
-jpeg-encoder = "0.7"
 # Safe Rust bindings to GStreamer 1.28.x (§4.1, §17). Pin the minor range; the
 # lockfile pins the patch.
 gstreamer = { version = "0.25", features = ["v1_28"] }

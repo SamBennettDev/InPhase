@@ -61,6 +61,8 @@ pub struct PeerDesc {
     /// The peer is on the local network. Only there may a paired session
     /// enrol a device key it has not used before.
     pub lan: bool,
+    /// A view-only preview for the library tile (`?preview=1`).
+    pub preview: bool,
 }
 
 fn send_msg(to_link: &LinkTx, msg: &SignalMessage) {
@@ -72,6 +74,7 @@ fn send_msg(to_link: &LinkTx, msg: &SignalMessage) {
 pub async fn signal_ws(
     State(st): State<HttpState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
@@ -93,6 +96,9 @@ pub async fn signal_ws(
         addr_label: addr.ip().to_string(),
         session: Some(session),
         lan: crate::net::is_lan_peer(addr.ip()),
+        preview: query
+            .as_deref()
+            .is_some_and(|q| q.split('&').any(|kv| kv == "preview=1")),
     };
 
     ws.on_upgrade(move |socket| bridge_inbound(socket, st, peer))
@@ -209,7 +215,11 @@ pub async fn drive(mut from_link: LinkRx, to_link: LinkTx, st: HttpState, peer: 
     };
     // The ticket identifies the session THIS link created; its close path
     // may only tear down a session it still owns (review §11).
-    let session_ticket = match st.sessions.claim(peer_info, out_tx.clone()).await {
+    let session_ticket = match st
+        .sessions
+        .claim(peer_info, out_tx.clone(), peer.preview)
+        .await
+    {
         Ok(t) => t,
         Err(_) => {
             send_msg(
@@ -358,10 +368,15 @@ pub async fn drive(mut from_link: LinkRx, to_link: LinkTx, st: HttpState, peer: 
 
     // Inbound loop: plain JSON `SignalMessage` frames.
     while let Some(text) = from_link.recv().await {
-        let Ok(msg) = serde_json::from_str::<SignalMessage>(&text) else {
+        let Ok(mut msg) = serde_json::from_str::<SignalMessage>(&text) else {
             warn!("unparseable signaling message");
             continue;
         };
+        if peer.preview {
+            if let SignalMessage::ClientHello { requested_mode, .. } = &mut msg {
+                preview_mode(requested_mode);
+            }
+        }
         // The client's WT redial after its video connection closed. This
         // request used to be answered only by the control pump, which reads
         // the WebRTC data channel - gone since ADR-0011 - so over this socket
@@ -656,6 +671,24 @@ fn verify_and_maybe_enroll(
     );
     acl.add(&id, "Home Screen app");
     acl.get(&id)
+}
+
+/// What a preview may ask for: the tile's size at most, 30 fps, a few Mbps,
+/// and only ever the desktop - a preview must not launch a game.
+fn preview_mode(m: &mut inphase_protocol::RequestedMode) {
+    const MAX_W: u32 = 960;
+    const MAX_H: u32 = 540;
+    if m.width > MAX_W || m.height > MAX_H {
+        let scale = f64::min(
+            MAX_W as f64 / m.width as f64,
+            MAX_H as f64 / m.height as f64,
+        );
+        m.width = ((m.width as f64 * scale) as u32) & !1;
+        m.height = ((m.height as f64 * scale) as u32) & !1;
+    }
+    m.fps = m.fps.min(30);
+    m.max_bitrate_kbps = Some(m.max_bitrate_kbps.unwrap_or(2_500).min(2_500));
+    m.stream_target = inphase_protocol::StreamTarget::Desktop;
 }
 
 /// Clamp a client-requested mode to what the host will actually serve.

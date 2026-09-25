@@ -105,7 +105,6 @@ pub fn lan_router(state: HttpState) -> Router {
         .route("/api/v1/capabilities", get(api::capabilities))
         .route("/api/v1/library", get(api::library))
         .route("/api/v1/library/poster/:id", get(api::library_poster))
-        .route("/api/v1/desktop-preview", get(api::desktop_preview))
         .route("/api/v1/session/stop", post(api::session_stop))
         .route("/api/v1/audio/capture-device", post(api::set_audio_device))
         .route("/api/v1/logout", post(api::logout))
