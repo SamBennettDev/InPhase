@@ -1,10 +1,12 @@
 //! Windows platform helpers (architecture report §3.1, §8.1, §29 step 2).
 
 mod audio;
+mod capture_check;
 mod console;
 mod firewall;
 mod games;
 mod gpus;
+pub use capture_check::desktop_capture_available;
 mod hotkey;
 mod monitors;
 pub mod net6;

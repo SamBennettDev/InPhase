@@ -161,6 +161,9 @@ pub struct Pipeline {
     bridge: WebRtcBridge,
     stats: Arc<StatsCollector>,
     session: SessionConfig,
+    /// The pipeline refused PLAYING. See [`Pipeline::start`]: such a pipeline
+    /// is never shut down or freed.
+    failed: bool,
 }
 
 impl Pipeline {
@@ -391,6 +394,7 @@ impl Pipeline {
             bridge,
             stats,
             session: session.clone(),
+            failed: false,
         })
     }
 
@@ -399,10 +403,25 @@ impl Pipeline {
             codec = ?self.session.codec, w = self.session.width, h = self.session.height,
             fps = self.session.fps, "starting media pipeline"
         );
-        self.pipeline
-            .set_state(gst::State::Playing)
-            .context("pipeline -> PLAYING")?;
+        let res = self.pipeline.set_state(gst::State::Playing);
+        if res.is_err() {
+            self.failed = true;
+        }
+        res.context("pipeline -> PLAYING")?;
         Ok(())
+    }
+
+    /// A pipeline whose capture source failed to prepare is left exactly as
+    /// it is: taking it to NULL, or letting its last reference go, crashed the
+    /// host with heap corruption inside the d3d11 capture element (reproduced
+    /// 2026-09-25 by starting a stream while desktop duplication was
+    /// unavailable - which is also what a locked PC or a UAC prompt does). One
+    /// small leak per failed start is the price.
+    fn abandon(&mut self) {
+        if self.failed {
+            warn!("leaving a pipeline that failed to start (its teardown crashes)");
+            std::mem::forget(self.pipeline.clone());
+        }
     }
 
     pub fn on_client_signal(&mut self, msg: &SignalMessage) -> anyhow::Result<()> {
@@ -420,6 +439,12 @@ impl Pipeline {
     }
 
     pub fn stop(&mut self) {
+        if self.failed {
+            self.abandon();
+            self.failed = false; // abandoned once; Drop must not touch it either
+            self.pipeline = gst::Pipeline::new();
+            return;
+        }
         let _ = self.pipeline.set_state(gst::State::Null);
         self.stats.reset_session();
         info!("media pipeline stopped");

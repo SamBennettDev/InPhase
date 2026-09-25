@@ -107,3 +107,8 @@ impl EmergencyHotkey {
         None
     }
 }
+
+/// Desktop capture is Windows-only; elsewhere the pipeline reports it.
+pub fn desktop_capture_available() -> Result<(), String> {
+    Ok(())
+}

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Fix a host crash (heap corruption) when a stream could not capture the
+  desktop, as while the PC is locked or showing a UAC prompt. The host now
+  checks that the desktop can be captured before building a pipeline and tells
+  the player why not ("The PC is locked or showing a Windows security prompt.
+  Unlock it and try again."); a pipeline that still fails to start is left
+  alone rather than torn down, since tearing down a d3d11 capture element that
+  failed to prepare is what corrupted the heap. The reason a session ended now
+  reaches the player instead of being cut off when the connection closes.
 - Controllers work out of the box. Setup offers to install the ViGEmBus
   driver (a ticked task, skipped when it is already installed; the bundled
   installer is pinned by SHA-256), controller support is on by default, and

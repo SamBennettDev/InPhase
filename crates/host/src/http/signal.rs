@@ -415,6 +415,10 @@ pub async fn drive(mut from_link: LinkRx, to_link: LinkTx, st: HttpState, peer: 
     // player's session mid-stream (the "quit, re-enter, black" repro).
     info!(%addr, "signaling link closed");
     st.sessions.end_link(session_ticket);
+    // The pump forwards queued messages to the link. Aborting it at once lost
+    // the error that ended the session (a refused start then read as "the PC
+    // closed the connection" with no reason); give it a moment to drain.
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
     pump.abort();
     input_pump.abort();
     control_pump.abort();
@@ -487,6 +491,23 @@ async fn handle_message(
                     Ok(false) => {}
                     Err(e) => warn!("could not launch `{id}`: {e:#}"),
                 });
+            }
+            // Ask before building: a pipeline whose capture cannot start is
+            // unsafe to tear down (Pipeline::abandon), and "Element failed to
+            // change its state" tells the player nothing. A monitor chosen in
+            // config is left to the pipeline to report.
+            if st.cfg.capture.monitor_index.is_none() {
+                let check = tokio::task::spawn_blocking(crate::platform::desktop_capture_available)
+                    .await
+                    .unwrap_or(Ok(()));
+                if let Err(why) = check {
+                    let _ = out.send(SignalMessage::error(
+                        SignalErrorCode::CaptureUnavailable,
+                        why,
+                    ));
+                    st.sessions.transition(SessionState::Stopping);
+                    return false;
+                }
             }
             let media = media.clone();
             let cfg_for_build = cfg.clone();
