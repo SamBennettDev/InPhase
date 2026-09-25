@@ -16,6 +16,10 @@
 #ifndef SourceDir
   #define SourceDir "..\dist\InPhase"
 #endif
+#ifndef RedistDir
+  #define RedistDir "..\dist\redist"
+#endif
+#define ViGEmSetup "ViGEmBus_1.22.0_x64_x86_arm64.exe"
 #define AppName "InPhase Host"
 #define AppPublisher "Sam Bennett"
 #define AppExe "InPhaseHost.exe"
@@ -62,6 +66,9 @@ Name: "en"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "startup"; Description: "Start InPhase Host automatically when I sign in"; GroupDescription: "Startup:"
+; Game controllers need a virtual-controller driver on the PC. Ticked by
+; default; skipped when ViGEmBus is already installed (Sunshine, Parsec, ...).
+Name: "controllers"; Description: "Controller support (installs the free ViGEmBus driver)"; GroupDescription: "Controllers:"; Check: not ViGEmBusInstalled
 
 [Files]
 ; Everything package.ps1 emitted: InPhaseHost.exe, runtime\, MANIFEST.csv,
@@ -69,6 +76,8 @@ Name: "startup"; Description: "Start InPhase Host automatically when I sign in";
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 ; The host EXE carries no icon resource; shortcuts and Apps & features use this.
 Source: "inphase.ico"; DestDir: "{app}"; Flags: ignoreversion
+Source: "licenses\ViGEmBus-LICENSE.txt"; DestDir: "{app}\licenses\ViGEmBus"; Flags: ignoreversion
+Source: "{#RedistDir}\{#ViGEmSetup}"; DestDir: "{tmp}"; Flags: deleteafterinstall; Tasks: controllers
 
 [Icons]
 Name: "{group}\InPhase Host";        Filename: "{app}\{#AppExe}"; WorkingDir: "{app}"; IconFilename: "{app}\inphase.ico"; Comment: "Start InPhase Host"
@@ -83,6 +92,7 @@ Type: filesandordirs; Name: "{commonappdata}\InPhase\tls"
 
 [Run]
 Filename: "{sys}\certutil.exe"; Parameters: "-delstore -f Root ""InPhase Local CA"""; Flags: runhidden waituntilterminated
+Filename: "{tmp}\{#ViGEmSetup}"; Parameters: "/exenoui /qn /norestart"; StatusMsg: "Installing controller support (ViGEmBus driver)..."; Flags: waituntilterminated; Tasks: controllers
 Filename: "{app}\{#AppExe}"; Parameters: "--setup-firewall"; StatusMsg: "Configuring Windows Firewall..."; Flags: runhidden waituntilterminated
 Filename: "{app}\{#AppExe}"; Parameters: "--trust-ca"; StatusMsg: "Setting up your InPhase certificate..."; Flags: runhidden waituntilterminated runasoriginaluser; Check: ShouldConfigureCertificate
 Filename: "{app}\{#AppExe}"; Parameters: "--enable-startup"; Flags: runhidden waituntilterminated runasoriginaluser; Tasks: startup
@@ -103,6 +113,12 @@ Type: filesandordirs; Name: "{localappdata}\InPhase\gst-registry.bin"
 Type: filesandordirs; Name: "{commonappdata}\InPhase\tls"
 
 [Code]
+// ViGEmBus registers a kernel service; its key is the reliable "already there".
+function ViGEmBusInstalled: Boolean;
+begin
+  Result := RegKeyExists(HKLM, 'SYSTEM\CurrentControlSet\Services\ViGEmBus');
+end;
+
 // The package regression test isolates upgrade behavior from certificate-store
 // behavior on GitHub's headless Windows runner. Normal installs never set this.
 function ShouldConfigureCertificate: Boolean;

@@ -15,6 +15,8 @@ interface Admin {
    *  PIN pairing (host `lockout_after`). */
   pin_failures?: number;
   pin_locked?: boolean;
+  /** Can player-side controllers reach games (host `controller_support`). */
+  controllers?: "ready" | "driver_missing" | "off";
   peer: { browser: string; ip: string } | null;
   uptime_secs: number;
   stats: {
@@ -94,7 +96,7 @@ export function renderDashboard(root: HTMLElement) {
       <div class="dash-grid">
         <section class="panel dash-now" aria-labelledby="state">
           <div class="now-state"><p class="eyebrow">This PC</p><h1 id="state">Checking your PC…</h1><p id="state-detail">Fetching the latest host status.</p>
-            <div class="now-meta"><span id="access">${icon("wifi")} Checking access</span><span id="uptime"></span></div></div>
+            <div class="now-meta"><span id="access">${icon("wifi")} Checking access</span><span id="pad-state"></span><span id="uptime"></span></div></div>
           <div class="metric-list" id="metrics"></div>
           <div id="health" class="health-note" role="status"></div>
           <button id="disconnect" class="secondary compact danger" hidden>${icon("power")} End stream</button>
@@ -399,6 +401,17 @@ export function renderDashboard(root: HTMLElement) {
         if (!pending.has(b)) b.disabled = false;
       }
       $("#version").textContent = "InPhase " + pub.version;
+      const pad = $("#pad-state");
+      pad.className = admin.controllers === "driver_missing" ? "warn" : "";
+      pad.innerHTML =
+        admin.controllers === "ready"
+          ? icon("gamepad", 15) + " Controllers ready"
+          : admin.controllers === "driver_missing"
+            ? icon("gamepad", 15) +
+              ' Controllers need the ViGEmBus driver. <a href="https://github.com/nefarius/ViGEmBus/releases/latest" target="_blank" rel="noreferrer">Install it</a>'
+            : admin.controllers === "off"
+              ? icon("gamepad", 15) + " Controllers off"
+              : "";
       $("#uptime").textContent = admin.uptime_secs
         ? "Up " + formatUptime(admin.uptime_secs)
         : "";

@@ -47,6 +47,19 @@ pub fn new_default_backend(cfg: &InputConfig) -> Box<dyn InputBackend> {
     }
 }
 
+/// Can a controller on the player's device reach games on this PC?
+/// `"ready"`, `"driver_missing"` (ViGEmBus not installed) or `"off"` (turned
+/// off in config).
+pub fn controller_support(cfg: &InputConfig) -> &'static str {
+    if !cfg.enable_virtual_hid {
+        "off"
+    } else if virtual_hid::driver_present() {
+        "ready"
+    } else {
+        "driver_missing"
+    }
+}
+
 /// Pick the gamepad backend (Phase 5, §13). Only returns a real backend when
 /// the `virtual-hid` feature is built **and** config opts in **and** the
 /// compatibility gate has been recorded as passed.

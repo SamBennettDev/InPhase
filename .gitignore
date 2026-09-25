@@ -31,3 +31,6 @@ web/playwright-report/
 
 # Streaming harness run output (per-run JSON, screenshots)
 tests/streaming/out/
+
+# Build output (installer, packaged runtime, bundled redistributables)
+/dist/

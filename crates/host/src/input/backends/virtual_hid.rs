@@ -31,6 +31,30 @@ pub fn try_new() -> Option<Box<dyn InputBackend>> {
     }
 }
 
+/// Whether the ViGEmBus driver answers. Opening a client is a handle open on
+/// the bus device; cached briefly because the dashboard polls every 2 s.
+pub fn driver_present() -> bool {
+    #[cfg(all(windows, feature = "virtual-hid"))]
+    {
+        use parking_lot::Mutex;
+        use std::time::{Duration, Instant};
+        static CACHE: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
+        let mut g = CACHE.lock();
+        if let Some((at, present)) = *g {
+            if at.elapsed() < Duration::from_secs(10) {
+                return present;
+            }
+        }
+        let present = vigem_client::Client::connect().is_ok();
+        *g = Some((Instant::now(), present));
+        present
+    }
+    #[cfg(not(all(windows, feature = "virtual-hid")))]
+    {
+        false
+    }
+}
+
 /// Set to `true` only when the §5 Phase-5 gate has been executed and recorded:
 /// XInput identity verified, install/uninstall clean, representative game matrix
 /// + anti-cheat behaviour validated (compatibility only, never bypasses).

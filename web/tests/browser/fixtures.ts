@@ -13,6 +13,8 @@ export async function mockHost(
     offline?: boolean;
     /** PIN pairing locked by too many wrong PINs. */
     pinLocked?: boolean;
+    /** The PC has no ViGEmBus driver. */
+    noControllerDriver?: boolean;
   } = {},
 ) {
   const calls: string[] = [];
@@ -71,6 +73,7 @@ export async function mockHost(
           pin_ttl_secs: 240,
           pin_failures: options.pinLocked ? 10 : 0,
           pin_locked: options.pinLocked ?? false,
+          controllers: options.noControllerDriver ? "driver_missing" : "ready",
           peer: options.streaming
             ? { browser: "Safari on iPhone", ip: "192.168.1.42" }
             : null,

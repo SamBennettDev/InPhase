@@ -44,7 +44,7 @@ Use **Ctrl+Shift+Q** to leave a stream. The host emergency stop is
 | Graphics | A supported hardware encoder and current GPU driver. NVIDIA, AMD, Intel and Media Foundation plugins are bundled; availability depends on hardware and drivers. |
 | Player | A current browser with WebTransport and WebCodecs: Chrome, Edge, Firefox, or Safari on macOS and iOS. H.264 decodes everywhere; HEVC where the device decodes it in hardware. |
 | Network | A reachable PC on the same trusted LAN. Ethernet on the host is a useful starting point. |
-| Controller | Optional. Virtual gamepad input requires a separately installed compatible ViGEmBus driver and the documented input opt-in. This installer does not supply the driver. |
+| Controller | Setup offers to install the free ViGEmBus driver (ticked by default, skipped if it is already there). A controller on the player device then appears on the PC as an Xbox 360 controller. |
 
 iPhone Safari renders web pages at 60 Hz by default. For 120 fps, turn off
 **Settings → Apps → Safari → Advanced → Feature Flags → Prefer Page Rendering

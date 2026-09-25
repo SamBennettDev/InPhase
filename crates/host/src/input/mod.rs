@@ -35,8 +35,12 @@ pub struct InputSession {
     state: InputState,
     /// Keyboard + mouse ([`backends::SendInputBackend`]).
     backend: Box<dyn InputBackend>,
-    /// Optional gamepad backend ([`backends::virtual_hid`], Phase 5).
+    /// Optional gamepad backend ([`backends::virtual_hid`], Phase 5). Created
+    /// on the first controller input, not with the session: a virtual Xbox
+    /// pad plugged in for every stream made games show controller prompts, or
+    /// take it as player 2, for people playing on keyboard and mouse.
     gamepad: Option<Box<dyn InputBackend>>,
+    gamepad_tried: bool,
     last_packet_at: Instant,
     /// Highest `sequence` accepted so far (wrapping compare).
     high_water: Option<u32>,
@@ -52,12 +56,12 @@ pub struct InputSession {
 
 impl InputSession {
     pub fn new(cfg: InputConfig) -> Self {
-        let gamepad = new_gamepad_backend(&cfg);
         let now = Instant::now();
         Self {
             state: InputState::default(),
             backend: new_default_backend(&cfg),
-            gamepad,
+            gamepad: None,
+            gamepad_tried: false,
             last_packet_at: now,
             high_water: None,
             // Start "released": the watchdog stays quiet until the first packet
@@ -107,6 +111,14 @@ impl InputSession {
             .iter()
             .any(|a| matches!(a, InputAction::Gamepad(_) | InputAction::GamepadCleared));
         if has_pad {
+            let pressed = diff
+                .actions
+                .iter()
+                .any(|a| matches!(a, InputAction::Gamepad(_)));
+            if self.gamepad.is_none() && !self.gamepad_tried && pressed {
+                self.gamepad_tried = true;
+                self.gamepad = new_gamepad_backend(&self.cfg);
+            }
             if let Some(gp) = self.gamepad.as_mut() {
                 gp.apply_diff(diff);
             }

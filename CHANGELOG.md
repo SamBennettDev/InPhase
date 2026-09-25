@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Controllers work out of the box. Setup offers to install the ViGEmBus
+  driver (a ticked task, skipped when it is already installed; the bundled
+  installer is pinned by SHA-256), controller support is on by default, and
+  the virtual Xbox 360 pad is plugged in on the first controller input rather
+  than at the start of every stream, so keyboard-and-mouse players never get a
+  phantom controller. The dashboard says whether controllers are ready or the
+  driver is missing.
 - The library's desktop tile is a live view of the PC: the real stream at
   tile size (960x540, 30 fps, H.264 at up to 2.5 Mbps; ~29 fps measured),
   over the same WebTransport path and decoder as a player. A preview is

@@ -100,9 +100,12 @@ Select the right host audio source in Stream settings. Check browser mute and
 device volume. Click the stream to focus it. Browser shortcut restrictions,
 Windows secure screens, elevated games and protected input paths can limit input.
 
-Gamepad emulation requires a compatible ViGEmBus driver and the opt-in in
-[ADR-0008](adr/0008-input-injection.md). The installer does not install a kernel
-driver. Keyboard/mouse input is independent of that optional backend.
+Controllers appear on the PC as a virtual Xbox 360 controller through the
+ViGEmBus driver. Setup installs it when the **Controller support** task is ticked
+(the default), and the dashboard shows **Controllers ready** or that the driver is
+missing, with a link to install it. The virtual controller is plugged in the first
+time a controller is used in a stream. Keyboard and mouse input do not depend on it.
+See [ADR-0008](adr/0008-input-injection.md) for the trade-offs.
 
 ## The stream connects but the picture is black
 

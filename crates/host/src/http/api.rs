@@ -520,6 +520,7 @@ pub async fn admin_status(State(st): State<HttpState>) -> Json<serde_json::Value
         "pin_ttl_secs": ttl.map(|d| d.as_secs()),
         "pin_failures": pin_failures,
         "pin_locked": pin_locked,
+        "controllers": crate::input::backends::controller_support(&st.cfg.input),
         "paired_devices": st.pairing.session_count(),
         "play_url": st.play_url,
         "peer": st.sessions.peer_info().map(|p| serde_json::json!({

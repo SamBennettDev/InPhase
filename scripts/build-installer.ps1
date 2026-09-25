@@ -50,6 +50,22 @@ Sign $exe
 Write-Host "== 3. package private runtime ==" -ForegroundColor Cyan
 & (Join-Path $scriptDir "package.ps1")
 
+Write-Host "== 3b. controller driver installer (ViGEmBus) ==" -ForegroundColor Cyan
+# Bundled so controllers work out of the box: setup offers to install it (a
+# ticked task, skipped when the driver is already present). Pinned by SHA-256;
+# ViGEmBus is BSD-3-Clause and archived upstream, so this file never changes.
+$vigemName = "ViGEmBus_1.22.0_x64_x86_arm64.exe"
+$vigemUrl = "https://github.com/nefarius/ViGEmBus/releases/download/v1.22.0/$vigemName"
+$vigemSha = "89220a7865076b342892f98865f3499fb7c4cfd673159e89d352c360fd014c6a"
+$redist = Join-Path $root "dist\redist"
+New-Item -ItemType Directory -Force $redist | Out-Null
+$vigem = Join-Path $redist $vigemName
+if (-not (Test-Path $vigem) -or (Get-FileHash $vigem -Algorithm SHA256).Hash.ToLowerInvariant() -ne $vigemSha) {
+    Invoke-WebRequest -UseBasicParsing -Uri $vigemUrl -OutFile $vigem
+}
+$got = (Get-FileHash $vigem -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($got -ne $vigemSha) { throw "ViGEmBus installer checksum mismatch: $got" }
+
 Write-Host "== 4. compile installer (ISCC) ==" -ForegroundColor Cyan
 $iscc = (Get-Command ISCC.exe -ErrorAction SilentlyContinue)
 if ($iscc) { $iscc = $iscc.Source }

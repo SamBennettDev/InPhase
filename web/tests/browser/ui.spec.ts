@@ -230,3 +230,12 @@ test("a locked PIN is explained on the device and on the dashboard", async ({
   await page.goto("/");
   await expect(page.locator("#pin-ttl")).toContainText("Locked after 10 wrong PINs");
 });
+test("the dashboard says whether controllers can work", async ({ page }) => {
+  await mockHost(page);
+  await page.goto("/");
+  await expect(page.locator("#pad-state")).toContainText("Controllers ready");
+  await mockHost(page, { noControllerDriver: true });
+  await page.reload();
+  await expect(page.locator("#pad-state")).toContainText("need the ViGEmBus driver");
+  await expect(page.locator("#pad-state a")).toHaveAttribute("href", /ViGEmBus\/releases/);
+});

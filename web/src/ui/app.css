@@ -249,6 +249,8 @@ details > summary::-webkit-details-marker { display: none; }
 .now-meta { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; margin-top: 0.4rem; color: var(--muted); font-size: 0.84rem; }
 .now-meta > span { display: inline-flex; align-items: center; gap: 0.35rem; }
 .now-meta svg { width: 15px; height: 15px; }
+.now-meta .warn { color: var(--warn); }
+.now-meta .warn a { color: var(--warn); text-decoration: underline; }
 
 .metric-list {
   display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));

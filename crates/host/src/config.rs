@@ -195,8 +195,10 @@ pub struct InputConfig {
     /// Release all held keys/buttons if no input packet arrives within this many
     /// milliseconds (§12.2: *"start with ~250 ms and tune"*).
     pub watchdog_ms: u64,
-    /// Enable the optional virtual-HID gamepad backend (Phase 5, §13). Requires
-    /// the `virtual-hid` build feature and a passing compatibility gate.
+    /// Game controllers through a virtual Xbox 360 pad (ViGEmBus, which setup
+    /// offers to install). On by default: with no driver the host logs it and
+    /// streams without controllers, and the pad is only plugged in once a
+    /// controller is actually used.
     pub enable_virtual_hid: bool,
     /// Enable the optional elevated input broker (§13). Off until a reproducible
     /// elevated-game limitation is demonstrated (§19 Phase 3).
@@ -216,7 +218,7 @@ impl Default for InputConfig {
     fn default() -> Self {
         Self {
             watchdog_ms: 250,
-            enable_virtual_hid: false,
+            enable_virtual_hid: true,
             max_packets_per_sec: 2_000,
             packet_burst: 400,
             max_mouse_delta: 4_000,
