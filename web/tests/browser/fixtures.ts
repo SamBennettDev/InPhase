@@ -11,6 +11,8 @@ export async function mockHost(
     streaming?: boolean;
     /** Every API call fails, as when the host is not running. */
     offline?: boolean;
+    /** PIN pairing locked by too many wrong PINs. */
+    pinLocked?: boolean;
   } = {},
 ) {
   const calls: string[] = [];
@@ -67,6 +69,8 @@ export async function mockHost(
         body = {
           pin: "482916",
           pin_ttl_secs: 240,
+          pin_failures: options.pinLocked ? 10 : 0,
+          pin_locked: options.pinLocked ?? false,
           peer: options.streaming
             ? { browser: "Safari on iPhone", ip: "192.168.1.42" }
             : null,
@@ -125,8 +129,8 @@ export async function mockHost(
         body = { invites: [{ id: "invite-1", used: false, approved: false }] };
         break;
       case "pair":
-        code = 401;
-        body = { error: "Invitation expired" };
+        code = options.pinLocked ? 423 : 401;
+        body = { error: options.pinLocked ? "pin_locked" : "Invitation expired" };
         break;
     }
     await route.fulfill({

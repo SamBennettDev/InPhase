@@ -29,12 +29,17 @@ pub(super) async fn handle_incoming(
 
     // First control stream carries the token. Everything before a valid token
     // is refused: a QUIC dial is unauthenticated by construction.
-    let (mut tx, mut rx) = tokio::time::timeout(AUTH_TIMEOUT, connection.accept_bi())
+    // The whole pre-auth exchange shares one deadline: timing only the stream
+    // open let an unauthenticated peer hold a connection open indefinitely by
+    // never finishing its auth line.
+    let deadline = tokio::time::Instant::now() + AUTH_TIMEOUT;
+    let (mut tx, mut rx) = tokio::time::timeout_at(deadline, connection.accept_bi())
         .await
         .context("no control stream within auth timeout")?
         .context("control stream open failed")?;
-    let auth_line = read_line(&mut rx, 4096)
+    let auth_line = tokio::time::timeout_at(deadline, read_line(&mut rx, 4096))
         .await
+        .context("no auth line within auth timeout")?
         .context("reading auth line")?
         .context("control stream closed before auth")?;
     let token = match serde_json::from_str::<WtClientMessage>(&auth_line) {

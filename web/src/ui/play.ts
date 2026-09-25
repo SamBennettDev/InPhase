@@ -641,7 +641,11 @@ function showPair(root: HTMLElement) {
         }),
       });
       if (res.status === 429)
-        throw new Error("Too many attempts — wait a minute.");
+        throw new Error("Too many attempts — wait a few minutes.");
+      if (res.status === 423)
+        throw new Error(
+          "PIN pairing is locked after too many wrong PINs. On your PC, open InPhase and choose New PIN.",
+        );
       if (res.status === 401)
         throw new Error(
           "That PIN did not match. Check the current PIN on your PC.",

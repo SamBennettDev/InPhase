@@ -652,6 +652,9 @@ fn tray_status_line(
 
 /// Pairing PIN for the tray right-click menu (and tooltip while idle).
 fn tray_pin_line(pairing: &PairingManager) -> String {
+    if pairing.pin_guard().1 {
+        return "Pairing PIN locked - choose New PIN in the dashboard".to_string();
+    }
     let (pin, ttl) = pairing.current_pin();
     match ttl {
         Some(d) => {

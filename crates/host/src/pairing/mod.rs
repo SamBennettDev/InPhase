@@ -49,6 +49,9 @@ pub enum PairError {
     BadPin,
     /// Too many recent failures — try again later.
     RateLimited { retry_after: Duration },
+    /// Too many wrong PINs in a row: PIN pairing is off until the owner picks a
+    /// new PIN on the PC (see `PairingConfig::lockout_after`).
+    Locked,
 }
 
 struct Attempts {
@@ -70,6 +73,15 @@ struct SessionFile {
     /// from wall time on load.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pin_issued_unix: Option<u64>,
+    /// Wrong PINs since the last success or owner rotation. Persisted so a
+    /// restart does not hand an attacker a fresh allowance.
+    #[serde(default)]
+    pin_failures: u32,
+    /// token -> the device keys (controller ids) that authenticated with it.
+    /// Stores written before this existed load with no bindings; each such
+    /// session binds on its next successful device challenge.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    bindings: HashMap<String, Vec<String>>,
 }
 
 /// Upper bound on stored session tokens. `session_ttl_secs = 0` means "paired
@@ -78,6 +90,9 @@ struct SessionFile {
 /// rewritten on every pair). Evicting the oldest keeps the forever-promise for
 /// devices actually in use while bounding the file.
 const MAX_SESSIONS: usize = 256;
+
+/// Device keys remembered per session (see `bind_controller`).
+const MAX_KEYS_PER_SESSION: usize = 4;
 
 struct Inner {
     cfg: PairingConfig,
@@ -88,6 +103,10 @@ struct Inner {
     store_path: Option<PathBuf>,
     global: Attempts,
     per_ip: HashMap<IpAddr, Attempts>,
+    /// Wrong PINs since the last successful pair or owner rotation.
+    pin_failures: u32,
+    /// token -> device keys bound to that session (see `SessionFile`).
+    bindings: HashMap<String, Vec<String>>,
 }
 
 /// Thread-safe pairing manager.
@@ -107,6 +126,8 @@ impl PairingManager {
             .and_then(|s| serde_json::from_str::<SessionFile>(&s).ok())
             .unwrap_or_default();
         let sessions = stored.tokens;
+        let pin_failures = stored.pin_failures;
+        let bindings = stored.bindings;
         if !sessions.is_empty() {
             debug!(count = sessions.len(), "loaded persisted sessions");
         }
@@ -146,6 +167,8 @@ impl PairingManager {
                     window_start: now,
                 },
                 per_ip: HashMap::new(),
+                pin_failures,
+                bindings,
                 cfg,
             }),
         };
@@ -179,13 +202,28 @@ impl PairingManager {
         (g.pin.clone(), left)
     }
 
-    /// Force a new PIN (dashboard "rotate" button, §25.1).
+    /// Force a new PIN (dashboard "rotate" button, §25.1). This is an owner
+    /// action on the PC itself, so it also lifts a lockout.
     pub fn rotate_pin(&self) -> String {
         let mut g = self.inner.lock();
         g.pin = random_pin();
         g.pin_issued = Instant::now();
+        if g.pin_failures > 0 {
+            tracing::info!(
+                failures = g.pin_failures,
+                "new PIN chosen - PIN pairing re-enabled"
+            );
+        }
+        g.pin_failures = 0;
         g.persist();
         g.pin.clone()
+    }
+
+    /// Wrong PINs since the last success or rotation, and whether that has
+    /// locked PIN pairing (dashboard).
+    pub fn pin_guard(&self) -> (u32, bool) {
+        let g = self.inner.lock();
+        (g.pin_failures, g.locked())
     }
 
     /// Attempt to pair. On success returns a fresh [`SessionId`], persists it,
@@ -197,6 +235,9 @@ impl PairingManager {
         let mut g = self.inner.lock();
         g.rotate_if_expired();
 
+        if g.locked() {
+            return Err(PairError::Locked);
+        }
         if let Some(retry_after) = g.rate_limited(source) {
             return Err(PairError::RateLimited { retry_after });
         }
@@ -212,10 +253,22 @@ impl PairingManager {
 
         if !ok {
             g.record_failure(source);
+            g.pin_failures = g.pin_failures.saturating_add(1);
+            g.persist();
+            if g.locked() {
+                warn!(
+                    failures = g.pin_failures,
+                    %source,
+                    "wrong PIN - PIN pairing is now locked until a new PIN is chosen on the dashboard"
+                );
+                return Err(PairError::Locked);
+            }
+            warn!(failures = g.pin_failures, %source, "wrong pairing PIN");
             return Err(PairError::BadPin);
         }
 
         g.per_ip.remove(&source);
+        g.pin_failures = 0;
         if g.cfg.rotate_pin_on_pair {
             g.pin = random_pin();
             g.pin_issued = Instant::now();
@@ -270,12 +323,68 @@ impl PairingManager {
         g.persist();
     }
 
+    /// Device keys that have authenticated with this session. Empty for a
+    /// session that has not completed a device challenge yet.
+    pub fn session_controllers(&self, sid: &str) -> Vec<String> {
+        self.inner
+            .lock()
+            .bindings
+            .get(sid)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Record that `controller` authenticated with session `sid`. A session is
+    /// one browser, so it holds a handful of keys at most (Safari and its Home
+    /// Screen app share a cookie but not key storage).
+    pub fn bind_controller(&self, sid: &str, controller: &str) {
+        let mut g = self.inner.lock();
+        if !g.sessions.contains_key(sid) {
+            return;
+        }
+        let keys = g.bindings.entry(sid.to_string()).or_default();
+        let id = controller.to_ascii_lowercase();
+        if keys.contains(&id) {
+            return;
+        }
+        keys.push(id);
+        if keys.len() > MAX_KEYS_PER_SESSION {
+            keys.remove(0);
+        }
+        g.persist();
+    }
+
+    /// Revoke every session a device key authenticated with, so revoking a
+    /// device also takes away its cookie: without this the cookie could enrol
+    /// a fresh key and walk straight back in. Returns how many were revoked.
+    pub fn revoke_controller_sessions(&self, controller: &str) -> usize {
+        let mut g = self.inner.lock();
+        let id = controller.to_ascii_lowercase();
+        let doomed: Vec<String> = g
+            .bindings
+            .iter()
+            .filter(|(_, keys)| keys.contains(&id))
+            .map(|(t, _)| t.clone())
+            .collect();
+        for t in &doomed {
+            g.sessions.remove(t);
+        }
+        if !doomed.is_empty() {
+            g.persist();
+        }
+        doomed.len()
+    }
+
     pub fn session_count(&self) -> usize {
         self.inner.lock().sessions.len()
     }
 }
 
 impl Inner {
+    fn locked(&self) -> bool {
+        self.cfg.lockout_after > 0 && self.pin_failures >= self.cfg.lockout_after
+    }
+
     fn rotate_if_expired(&mut self) {
         if self.cfg.pin_ttl_secs == 0 {
             return;
@@ -330,7 +439,11 @@ impl Inner {
         debug!(dropped, kept = cap, "pruned the session store");
     }
 
-    fn persist(&self) {
+    fn persist(&mut self) {
+        // Bindings follow their sessions out: expiry, pruning and revocation
+        // all remove tokens without knowing about bindings.
+        let sessions = &self.sessions;
+        self.bindings.retain(|t, _| sessions.contains_key(t));
         let Some(path) = &self.store_path else { return };
         let file = SessionFile {
             tokens: self.sessions.clone(),
@@ -338,6 +451,8 @@ impl Inner {
             // Convert the monotonic issue instant back to wall time so the age
             // survives the process.
             pin_issued_unix: Some(now_unix().saturating_sub(self.pin_issued.elapsed().as_secs())),
+            pin_failures: self.pin_failures,
+            bindings: self.bindings.clone(),
         };
         let Ok(json) = serde_json::to_string(&file) else {
             return;
@@ -423,6 +538,7 @@ mod tests {
             rotate_pin_on_pair: true,
             max_attempts: 3,
             rate_window_secs: 600,
+            lockout_after: 10,
             session_ttl_secs: 3600,
             persist_sessions: false,
         }
@@ -483,6 +599,131 @@ mod tests {
         // Simulate an ancient session.
         m.inner.lock().sessions.insert(sid.0.clone(), 0);
         assert!(m.validate_session(sid.as_str()).is_some());
+    }
+
+    /// A lockout config with the rate limit out of the way, so the lockout
+    /// is what trips.
+    fn lockout_cfg(after: u32) -> PairingConfig {
+        PairingConfig {
+            max_attempts: 1_000,
+            lockout_after: after,
+            rotate_pin_on_pair: false,
+            pin_ttl_secs: 0,
+            ..cfg()
+        }
+    }
+
+    fn wrong(pin: &str) -> String {
+        format!("{:06}", (pin.parse::<u32>().unwrap() + 1) % 1_000_000)
+    }
+
+    #[test]
+    fn locks_pin_pairing_after_consecutive_failures_even_for_the_right_pin() {
+        let m = PairingManager::new(lockout_cfg(4));
+        let pin = m.current_pin().0;
+        let ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50));
+        for _ in 0..3 {
+            assert_eq!(m.try_pair(ip, &wrong(&pin)).unwrap_err(), PairError::BadPin);
+        }
+        assert_eq!(m.try_pair(ip, &wrong(&pin)).unwrap_err(), PairError::Locked);
+        // Locked means locked: the correct PIN, from anywhere, is refused.
+        let other = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 77));
+        assert_eq!(m.try_pair(other, &pin).unwrap_err(), PairError::Locked);
+        assert_eq!(m.pin_guard(), (4, true));
+    }
+
+    #[test]
+    fn only_a_new_pin_from_the_owner_lifts_the_lockout() {
+        let m = PairingManager::new(lockout_cfg(2));
+        let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 5));
+        let pin = m.current_pin().0;
+        m.try_pair(ip, &wrong(&pin)).unwrap_err();
+        m.try_pair(ip, &wrong(&pin)).unwrap_err();
+        assert!(m.pin_guard().1);
+        let fresh = m.rotate_pin();
+        assert_eq!(m.pin_guard(), (0, false));
+        assert!(m.try_pair(ip, &fresh).is_ok());
+    }
+
+    #[test]
+    fn a_successful_pair_resets_the_failure_count() {
+        let m = PairingManager::new(lockout_cfg(3));
+        let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 6));
+        let pin = m.current_pin().0;
+        m.try_pair(ip, &wrong(&pin)).unwrap_err();
+        m.try_pair(ip, &wrong(&pin)).unwrap_err();
+        m.try_pair(ip, &pin).unwrap();
+        assert_eq!(m.pin_guard(), (0, false));
+        // Two more misses are again below the limit.
+        m.try_pair(ip, &wrong(&pin)).unwrap_err();
+        m.try_pair(ip, &wrong(&pin)).unwrap_err();
+        assert!(!m.pin_guard().1);
+    }
+
+    #[test]
+    fn the_lockout_survives_a_restart() {
+        let (_env, dir) = with_temp_config_dir("lockout");
+        let mut c = lockout_cfg(2);
+        c.persist_sessions = true;
+        {
+            let m = PairingManager::new(c.clone());
+            let pin = m.current_pin().0;
+            let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 7));
+            m.try_pair(ip, &wrong(&pin)).unwrap_err();
+            m.try_pair(ip, &wrong(&pin)).unwrap_err();
+        }
+        let m2 = PairingManager::new(c);
+        let pin = m2.current_pin().0;
+        assert_eq!(
+            m2.try_pair(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 7)), &pin)
+                .unwrap_err(),
+            PairError::Locked
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn revoking_a_device_revokes_the_sessions_it_used() {
+        let m = PairingManager::new(lockout_cfg(10));
+        let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 9));
+        let a = m.try_pair(ip, &m.current_pin().0).unwrap();
+        let b = m.try_pair(ip, &m.current_pin().0).unwrap();
+        m.bind_controller(a.as_str(), "AAAA");
+        m.bind_controller(a.as_str(), "bbbb"); // Home Screen key on the same cookie
+        m.bind_controller(b.as_str(), "cccc");
+        assert_eq!(m.session_controllers(a.as_str()), vec!["aaaa", "bbbb"]);
+        assert_eq!(m.revoke_controller_sessions("BBBB"), 1);
+        assert!(
+            m.validate_session(a.as_str()).is_none(),
+            "its cookie is dead"
+        );
+        assert!(m.validate_session(b.as_str()).is_some(), "others untouched");
+    }
+
+    #[test]
+    fn bindings_leave_with_their_session() {
+        let m = PairingManager::new(lockout_cfg(10));
+        let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 10));
+        let a = m.try_pair(ip, &m.current_pin().0).unwrap();
+        m.bind_controller(a.as_str(), "aaaa");
+        m.revoke(a.as_str());
+        assert!(m.session_controllers(a.as_str()).is_empty());
+        m.bind_controller(a.as_str(), "aaaa");
+        assert!(
+            m.session_controllers(a.as_str()).is_empty(),
+            "no binding to a dead session"
+        );
+    }
+
+    #[test]
+    fn lockout_after_zero_disables_the_lockout() {
+        let m = PairingManager::new(lockout_cfg(0));
+        let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 8));
+        let pin = m.current_pin().0;
+        for _ in 0..50 {
+            m.try_pair(ip, &wrong(&pin)).unwrap_err();
+        }
+        assert!(m.try_pair(ip, &pin).is_ok());
     }
 
     #[test]
@@ -601,6 +842,8 @@ mod tests {
             tokens,
             pin: None,
             pin_issued_unix: None,
+            pin_failures: 0,
+            bindings: HashMap::new(),
         };
         std::fs::write(&path, serde_json::to_string(&f).unwrap()).unwrap();
 

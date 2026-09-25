@@ -1,7 +1,27 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 - 2026-09-24
 
+- Security: PIN guessing is now bounded. After 10 wrong PINs in a row
+  (`[pairing] lockout_after`), from anywhere, PIN pairing stops until the
+  owner chooses New PIN on the dashboard; the count survives restarts, wrong
+  PINs are logged with their source, and the dashboard and tray show the
+  lock. A guesser gets at most 10 tries per PIN.
+- Security: sessions are bound to the device keys that used them. Off the LAN
+  a session cookie works only with a key it has already used, and a new key is
+  enrolled from a paired session only on the LAN. Revoking a device revokes its
+  sessions and closes its stream at the transport; ending a stream from the
+  dashboard does too. Logout no longer revokes an arbitrary device named in
+  the query.
+- Security: the LAN listener refuses host names that are not the host's own
+  (DNS rebinding). The game library, cover art and the name of the game being
+  played need a paired device. Remote invitation pairing is HTTPS-only like
+  remote PIN pairing. A signaling link displaced by a newer player is closed
+  instead of acting on the new session.
+- Security: WebTransport dial tokens that are never used expire and are
+  capped; an unauthenticated connection must finish logging in within the
+  auth timeout.
+- One session per pairing: a PIN pair minted a second, orphaned session token.
 - Library covers no longer flash grey every few seconds: the grid updates in
   place instead of rebuilding every card (and re-decoding every image) each
   time the library is polled for new art. On phones, long titles take one

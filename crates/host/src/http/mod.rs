@@ -120,8 +120,106 @@ pub fn lan_router(state: HttpState) -> Router {
             state.clone(),
             remote_access_gate,
         ))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            host_allowlist,
+        ))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+}
+
+/// Answer only to names that are this host's.
+///
+/// DNS rebinding: a web page at `evil.example` re-points its own name at the
+/// host's LAN address, and a browser on the LAN then talks to InPhase while
+/// believing it is still `evil.example` - same-origin, so the Origin check is
+/// satisfied, and from a LAN address, so "pairing is LAN-only" is too. Every
+/// such request carries the attacker's name in `Host`. The host answers to IP
+/// literals, `localhost`, `.local` (mDNS, never publicly registrable),
+/// Tailscale `.ts.net` names and its own advertised names - nothing an outside page can make its own name
+/// resolve to.
+async fn host_allowlist(
+    axum::extract::State(st): axum::extract::State<HttpState>,
+    req: Request,
+    next: Next,
+) -> Response {
+    let authority = req
+        .uri()
+        .authority()
+        .map(|a| a.as_str().to_string())
+        .or_else(|| {
+            req.headers()
+                .get(axum::http::header::HOST)
+                .and_then(|h| h.to_str().ok())
+                .map(str::to_string)
+        });
+    match authority {
+        // No name at all is not a browser, so not a rebinding: every browser
+        // request names its target, and a rebound one names the attacker's.
+        None => next.run(req).await,
+        Some(a) if host_is_ours(host_from_header(&a), &st) => next.run(req).await,
+        other => {
+            tracing::warn!(host = ?other, "refused a request for a name this host does not serve");
+            (StatusCode::MISDIRECTED_REQUEST, "unknown host").into_response()
+        }
+    }
+}
+
+fn host_is_ours(host: &str, st: &HttpState) -> bool {
+    let bare = host.trim_start_matches('[').trim_end_matches(']');
+    if bare.parse::<std::net::IpAddr>().is_ok() {
+        return true;
+    }
+    let host = bare.trim_end_matches('.').to_ascii_lowercase();
+    // `.ts.net` is Tailscale MagicDNS: resolvable only inside a tailnet, so no
+    // outside page can point one at this host either.
+    if host == "localhost" || host.ends_with(".local") || host.ends_with(".ts.net") {
+        return true;
+    }
+    let play = axum::http::Uri::try_from(st.play_url.as_str())
+        .ok()
+        .and_then(|u| u.host().map(|h| h.to_ascii_lowercase()));
+    if play.as_deref() == Some(host.as_str())
+        || host.eq_ignore_ascii_case(&st.host_name)
+        || st
+            .cfg
+            .tls
+            .domain
+            .as_deref()
+            .is_some_and(|d| d.eq_ignore_ascii_case(&host))
+    {
+        return true;
+    }
+    // The sslip.io name of one of this machine's own addresses: it moves with
+    // the ISP prefix, so it is derived, not configured.
+    host.ends_with(".sslip.io") && own_sslip_names().contains(&host)
+}
+
+/// sslip.io names of this machine's global IPv6 addresses, refreshed at most
+/// every 30 s (the check runs on every request).
+fn own_sslip_names() -> Vec<String> {
+    use parking_lot::Mutex;
+    use std::sync::OnceLock;
+    static CACHE: OnceLock<Mutex<(Option<Instant>, Vec<String>)>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new((None, Vec::new())));
+    let mut g = cache.lock();
+    if g.0
+        .is_none_or(|t| t.elapsed() > std::time::Duration::from_secs(30))
+    {
+        let names = if_addrs::get_if_addrs()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|i| match i.ip() {
+                std::net::IpAddr::V6(v6) if crate::net::is_global_unicast_v6(v6) => {
+                    crate::acme::sslip_hostname(&v6.to_string())
+                }
+                _ => None,
+            })
+            .map(|n| n.to_ascii_lowercase())
+            .collect();
+        *g = (Some(Instant::now()), names);
+    }
+    g.1.clone()
 }
 
 pub fn admin_router(state: HttpState) -> Router {

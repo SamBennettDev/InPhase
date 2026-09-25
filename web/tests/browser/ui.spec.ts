@@ -219,3 +219,14 @@ test("phone cards line up when titles are long", async ({ page }) => {
   for (let i = 0; i < tops.length; i += 3)
     expect(new Set(tops.slice(i, i + 3)).size).toBe(1);
 });
+test("a locked PIN is explained on the device and on the dashboard", async ({
+  page,
+}) => {
+  await mockHost(page, { paired: false, pinLocked: true });
+  await openPlayer(page);
+  await page.getByLabel("Pairing PIN").fill("123456");
+  await page.getByRole("button", { name: "Pair this device" }).click();
+  await expect(page.getByRole("alert")).toContainText("choose New PIN");
+  await page.goto("/");
+  await expect(page.locator("#pin-ttl")).toContainText("Locked after 10 wrong PINs");
+});

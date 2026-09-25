@@ -225,6 +225,7 @@ async fn a_redial_request_over_signaling_gets_a_fresh_dial() {
         inphase_host::http::signal::PeerDesc {
             browser: "test".into(),
             addr_label: "test".into(),
+            ..Default::default()
         },
     ));
 

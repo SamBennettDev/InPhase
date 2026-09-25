@@ -188,13 +188,13 @@ async fn no_form_of_pairing_is_accepted_from_off_network_by_default() {
     // Remote access on — the host is deliberately serving the internet — and
     // pairing must *still* be refused, by PIN...
     assert_eq!(
-        pair_from(state(true), remote, r#"{"pin":"000000"}"#).await,
+        pair_from(state(true), remote, r#"{"pin":"000000","controller_pubkey":"abababababababababababababababababababababababababababababababab"}"#).await,
         StatusCode::FORBIDDEN,
         "a 6-digit PIN must never be accepted from the internet"
     );
     // ...and by invite, because remote enrolment is off by default.
     assert_eq!(
-        pair_from(state(true), remote, r#"{"invite":"anything"}"#).await,
+        pair_from(state(true), remote, r#"{"invite":"anything","controller_pubkey":"abababababababababababababababababababababababababababababababab"}"#).await,
         StatusCode::FORBIDDEN,
         "remote enrolment must be opt-in, not a default"
     );
@@ -205,7 +205,7 @@ async fn no_form_of_pairing_is_accepted_from_off_network_by_default() {
 async fn pin_pairing_still_works_on_the_lan() {
     // A wrong PIN, so this asserts the request was *considered* (401) rather
     // than refused for being off-network (403).
-    let code = pair_from(state(true), "192.168.1.50:44321", r#"{"pin":"000000"}"#).await;
+    let code = pair_from(state(true), "192.168.1.50:44321", r#"{"pin":"000000","controller_pubkey":"abababababababababababababababababababababababababababababababab"}"#).await;
     assert_eq!(
         code,
         StatusCode::UNAUTHORIZED,
@@ -241,20 +241,20 @@ async fn opting_in_allows_remote_invites_and_https_remote_pins() {
 
     // A bogus invite is now *evaluated* (401 = rejected on its merits)...
     assert_eq!(
-        pair_from(st.clone(), remote, r#"{"invite":"bogus"}"#).await,
+        pair_from(st.clone(), remote, r#"{"invite":"bogus","controller_pubkey":"abababababababababababababababababababababababababababababababab"}"#).await,
         StatusCode::UNAUTHORIZED
     );
     // ...and a PIN reaches the PIN check too (401 = wrong code, not refused
     // for being off-network — the operator opted in).
     assert_eq!(
-        pair_from(st.clone(), remote, r#"{"pin":"000000"}"#).await,
+        pair_from(st.clone(), remote, r#"{"pin":"000000","controller_pubkey":"abababababababababababababababababababababababababababababababab"}"#).await,
         StatusCode::UNAUTHORIZED
     );
     // But a PIN on plaintext HTTP never leaves the ground: it would cross the
     // internet readable by every hop.
     st.https = false;
     assert_eq!(
-        pair_from(st, remote, r#"{"pin":"000000"}"#).await,
+        pair_from(st, remote, r#"{"pin":"000000","controller_pubkey":"abababababababababababababababababababababababababababababababab"}"#).await,
         StatusCode::FORBIDDEN,
         "remote PIN pairing must require HTTPS"
     );
@@ -283,7 +283,12 @@ async fn browser_cross_origin_and_rebinding_cannot_mutate_admin_state() {
         stream.write_all(request.as_bytes()).await.unwrap();
         let mut output = String::new();
         stream.read_to_string(&mut output).await.unwrap();
-        assert!(output.starts_with("HTTP/1.1 403"), "{output}");
+        // 403 from the origin checks, or 421 from the Host allowlist (a
+        // rebound name never reaches them).
+        assert!(
+            output.starts_with("HTTP/1.1 403") || output.starts_with("HTTP/1.1 421"),
+            "{output}"
+        );
     }
     let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
     stream.write_all(format!("POST /api/v1/admin/rotate-pin HTTP/1.1\r\nHost: {addr}\r\nOrigin: http://{addr}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
@@ -291,4 +296,35 @@ async fn browser_cross_origin_and_rebinding_cannot_mutate_admin_state() {
     stream.read_to_string(&mut output).await.unwrap();
     assert!(output.starts_with("HTTP/1.1 200"), "{output}");
     assert!(output.to_lowercase().contains("cache-control: no-store"));
+}
+
+/// DNS rebinding: a page whose own name was re-pointed at the host reaches the
+/// LAN router with that name in `Host`, from a LAN address and same-origin. It
+/// must be refused before any route, pairing included; the host's own names,
+/// IP literals, `.local` and Tailscale names are served.
+#[tokio::test]
+async fn a_rebound_name_is_refused_before_any_route() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let addr = spawn(state(false)).await;
+    let ask = |host: String| async move {
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let req =
+            format!("GET /api/v1/status HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+        stream.write_all(req.as_bytes()).await.unwrap();
+        let mut out = String::new();
+        stream.read_to_string(&mut out).await.unwrap();
+        out
+    };
+    let rebound = ask("attacker.example:47800".into()).await;
+    assert!(rebound.starts_with("HTTP/1.1 421"), "{rebound}");
+    for ok in [
+        addr.to_string(),
+        "gaming-pc.local".to_string(),
+        "[fd7a::1]:443".to_string(),
+        "my-pc.tail1234.ts.net".to_string(),
+        "localhost".to_string(),
+    ] {
+        let out = ask(ok.clone()).await;
+        assert!(out.starts_with("HTTP/1.1 200"), "{ok}: {out}");
+    }
 }

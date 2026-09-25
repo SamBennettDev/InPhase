@@ -49,11 +49,18 @@ fn b64e(b: &[u8]) -> String {
 pub type LinkTx = mpsc::UnboundedSender<String>;
 pub type LinkRx = mpsc::UnboundedReceiver<String>;
 
-/// Who is on the other end, for logs + `PeerInfo`.
-#[derive(Clone)]
+/// Who is on the other end, for logs + `PeerInfo`, and what the device
+/// challenge may trust about it.
+#[derive(Clone, Default)]
 pub struct PeerDesc {
     pub browser: String,
     pub addr_label: String,
+    /// The session cookie that authenticated the socket. Device keys bind to
+    /// it; `None` (tests, internal links) skips the binding checks.
+    pub session: Option<String>,
+    /// The peer is on the local network. Only there may a paired session
+    /// enrol a device key it has not used before.
+    pub lan: bool,
 }
 
 fn send_msg(to_link: &LinkTx, msg: &SignalMessage) {
@@ -69,9 +76,9 @@ pub async fn signal_ws(
     ws: WebSocketUpgrade,
 ) -> Response {
     // §14.1: cookie authenticates the socket; no bearer token in the URL.
-    if require_session(&st, &headers).is_none() {
+    let Some(session) = require_session(&st, &headers) else {
         return (StatusCode::UNAUTHORIZED, "pair first").into_response();
-    }
+    };
     // §14.1: validate Origin on WebSocket upgrades.
     if !origin_ok(&st, &headers) {
         return (StatusCode::FORBIDDEN, "bad origin").into_response();
@@ -84,6 +91,8 @@ pub async fn signal_ws(
     let peer = PeerDesc {
         browser,
         addr_label: addr.ip().to_string(),
+        session: Some(session),
+        lan: crate::net::is_lan_peer(addr.ip()),
     };
 
     ws.on_upgrade(move |socket| bridge_inbound(socket, st, peer))
@@ -152,8 +161,13 @@ pub async fn drive(mut from_link: LinkRx, to_link: LinkTx, st: HttpState, peer: 
         Ok(SignalMessage::AuthResponse {
             controller_id,
             signature,
-        }) => match verify_device(&st, &controller_id, &nonce, &signature) {
-            Some(c) => c,
+        }) => match verify_device(&st, &peer, &controller_id, &nonce, &signature) {
+            Some(c) => {
+                if let Some(sid) = &peer.session {
+                    st.pairing.bind_controller(sid, &c.id);
+                }
+                c
+            }
             None => {
                 warn!(%addr, "signaling: device challenge failed — rejecting");
                 send_msg(
@@ -368,6 +382,13 @@ pub async fn drive(mut from_link: LinkRx, to_link: LinkTx, st: HttpState, peer: 
             }
             continue;
         }
+        // A link displaced by a newer player speaks for nobody: its messages
+        // (restart media, launch a game, change mode) would act on the new
+        // player's session. It ends here; `end_link` below is a no-op for it.
+        if !st.sessions.owns(session_ticket) {
+            info!(%addr, "signaling link was displaced by a newer player - closing it");
+            break;
+        }
         if !handle_message(&st, &out_tx, &media_tx, msg).await {
             break;
         }
@@ -520,23 +541,53 @@ async fn handle_message(
 /// Verify an `auth_response`: `signature` (base64) must be a valid Ed25519
 /// signature by `controller_id` (hex) over the challenge `nonce`.
 ///
-/// A valid session cookie already authenticated this socket. The device key
-/// is the durable identity. iOS Home Screen apps share Safari's cookie and
-/// keep a separate IndexedDB, so they mint a new key that was never
-/// PIN-paired — Stream desktop then failed the challenge immediately. A
-/// verified signature on a paired session enrolls that key instead of
-/// rejecting. Revoked keys stay revoked.
+/// A valid session cookie already authenticated this socket; the device key
+/// is the durable identity, and the two are tied together:
+///
+/// * off the local network a known key is accepted only on a session it is
+///   bound to (or one with no bindings yet: paired before bindings existed,
+///   which then binds to it). A cookie carried off the network cannot borrow
+///   another device's standing;
+/// * a key never seen before is enrolled only from the local network. iOS Home
+///   Screen apps share Safari's cookie but keep their own IndexedDB, and
+///   Safari may clear IndexedDB after a week of disuse while the cookie
+///   survives; both legitimately arrive with a new key on a paired cookie. Off
+///   the LAN the same request is exactly what a stolen cookie looks like, so
+///   there the device has to be re-paired;
+/// * revoked keys stay revoked, and revoking a key revokes its sessions.
 fn verify_device(
     st: &HttpState,
+    peer: &PeerDesc,
     controller_id: &str,
     nonce: &[u8; 32],
     signature: &str,
 ) -> Option<crate::identity::acl::Controller> {
-    verify_and_maybe_enroll(&st.acl, controller_id, nonce, signature)
+    let bound = peer
+        .session
+        .as_deref()
+        .map(|sid| st.pairing.session_controllers(sid))
+        .unwrap_or_default();
+    let policy = EnrolPolicy {
+        bound: &bound,
+        may_enrol: peer.lan || peer.session.is_none(),
+        checked: peer.session.is_some(),
+    };
+    verify_and_maybe_enroll(&st.acl, &policy, controller_id, nonce, signature)
+}
+
+/// What a session may do with a verified key (see [`verify_device`]).
+struct EnrolPolicy<'a> {
+    /// Keys already bound to the session.
+    bound: &'a [String],
+    /// A key the host has never seen may be enrolled.
+    may_enrol: bool,
+    /// Enforce `bound` (false only for links with no session cookie).
+    checked: bool,
 }
 
 fn verify_and_maybe_enroll(
     acl: &crate::identity::acl::ControllerAcl,
+    policy: &EnrolPolicy<'_>,
     controller_id: &str,
     nonce: &[u8; 32],
     signature: &str,
@@ -564,6 +615,21 @@ fn verify_and_maybe_enroll(
     }
     let id = controller_id.to_ascii_lowercase();
     if let Some(controller) = acl.get(&id) {
+        // On the LAN a session may pick up another enrolled key (Safari and
+        // its Home Screen app, paired separately, sharing one cookie). Off it,
+        // only a key this session has already used: a cookie carried off the
+        // network cannot borrow another device's standing.
+        if policy.checked
+            && !policy.may_enrol
+            && !policy.bound.is_empty()
+            && !policy.bound.iter().any(|b| b.eq_ignore_ascii_case(&id))
+        {
+            warn!(
+                id = short,
+                "auth: off-network session presented a device key it has not used before - rejecting"
+            );
+            return None;
+        }
         return Some(controller);
     }
     if acl
@@ -572,6 +638,14 @@ fn verify_and_maybe_enroll(
         .any(|c| c.id.eq_ignore_ascii_case(&id) && c.revoked)
     {
         warn!(id = short, "auth: revoked controller — not re-enrolling");
+        return None;
+    }
+    if !policy.may_enrol {
+        warn!(
+            id = short,
+            "auth: new device key on a paired session from off the local network - \
+             refusing to enrol it (re-pair this device on the LAN)"
+        );
         return None;
     }
     // Cookie proved this origin is paired; the signature proved possession
@@ -803,6 +877,59 @@ mod tests {
         ControllerAcl::load_at(path)
     }
 
+    /// A LAN session with no bindings yet: the most permissive real case.
+    const LAN_NEW: EnrolPolicy<'static> = EnrolPolicy {
+        bound: &[],
+        may_enrol: true,
+        checked: true,
+    };
+
+    #[test]
+    fn a_new_key_is_not_enrolled_from_off_the_lan() {
+        let acl = temp_acl();
+        let (_sk, id, nonce, sig) = signed(11);
+        let remote = EnrolPolicy {
+            bound: &[],
+            may_enrol: false,
+            checked: true,
+        };
+        assert!(verify_and_maybe_enroll(&acl, &remote, &id, &nonce, &sig).is_none());
+        assert!(acl.get(&id).is_none(), "nothing may be enrolled");
+    }
+
+    #[test]
+    fn off_the_lan_a_known_key_is_refused_on_a_session_bound_to_other_keys() {
+        let acl = temp_acl();
+        let (_sk, id, nonce, sig) = signed(12);
+        acl.add(&id, "phone");
+        let other = vec!["ab".repeat(32)];
+        let remote = EnrolPolicy {
+            bound: &other,
+            may_enrol: false,
+            checked: true,
+        };
+        assert!(verify_and_maybe_enroll(&acl, &remote, &id, &nonce, &sig).is_none());
+        let lan = EnrolPolicy {
+            bound: &other,
+            may_enrol: true,
+            checked: true,
+        };
+        assert!(
+            verify_and_maybe_enroll(&acl, &lan, &id, &nonce, &sig).is_some(),
+            "Safari and its Home Screen app share a cookie on the LAN"
+        );
+        let mine = vec![id.clone()];
+        let policy = EnrolPolicy {
+            bound: &mine,
+            may_enrol: false,
+            checked: true,
+        };
+        assert!(
+            verify_and_maybe_enroll(&acl, &policy, &id, &nonce, &sig).is_some(),
+            "its own session, from anywhere"
+        );
+    }
+
     fn signed(seed: u8) -> (SigningKey, String, [u8; 32], String) {
         let sk = SigningKey::from_bytes(&[seed; 32]);
         let id = hex32(&sk.verifying_key().to_bytes());
@@ -816,7 +943,7 @@ mod tests {
         let acl = temp_acl();
         let (_sk, id, nonce, sig) = signed(7);
         assert!(acl.get(&id).is_none());
-        let c = verify_and_maybe_enroll(&acl, &id, &nonce, &sig).expect("enroll");
+        let c = verify_and_maybe_enroll(&acl, &LAN_NEW, &id, &nonce, &sig).expect("enroll");
         assert_eq!(c.id, id);
         assert_eq!(c.name, "Home Screen app");
         assert!(acl.is_authorized(&id));
@@ -827,7 +954,7 @@ mod tests {
         let acl = temp_acl();
         let (_sk, id, nonce, sig) = signed(8);
         acl.add(&id, "Safari on iOS");
-        let c = verify_and_maybe_enroll(&acl, &id, &nonce, &sig).unwrap();
+        let c = verify_and_maybe_enroll(&acl, &LAN_NEW, &id, &nonce, &sig).unwrap();
         assert_eq!(c.name, "Safari on iOS");
     }
 
@@ -837,7 +964,7 @@ mod tests {
         let (_sk, id, nonce, sig) = signed(9);
         acl.add(&id, "old phone");
         acl.revoke(&id);
-        assert!(verify_and_maybe_enroll(&acl, &id, &nonce, &sig).is_none());
+        assert!(verify_and_maybe_enroll(&acl, &LAN_NEW, &id, &nonce, &sig).is_none());
         assert!(!acl.is_authorized(&id));
     }
 
@@ -847,7 +974,7 @@ mod tests {
         let (_sk, id, nonce, _sig) = signed(3);
         let other = SigningKey::from_bytes(&[4u8; 32]);
         let sig = b64e(&other.sign(&nonce).to_bytes());
-        assert!(verify_and_maybe_enroll(&acl, &id, &nonce, &sig).is_none());
+        assert!(verify_and_maybe_enroll(&acl, &LAN_NEW, &id, &nonce, &sig).is_none());
         assert!(acl.get(&id).is_none());
     }
 }

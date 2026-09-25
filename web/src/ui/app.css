@@ -282,6 +282,8 @@ details > summary::-webkit-details-marker { display: none; }
   font-variant-numeric: tabular-nums; margin-top: 0.35rem;
 }
 .pin-ttl { display: block; margin-top: 0.5rem; font-size: 0.8rem; color: var(--muted); }
+.pin-ttl.alert { color: var(--warn); }
+.pin.locked { color: var(--faint); text-decoration: line-through; text-decoration-thickness: 2px; }
 .address-field {
   display: flex; align-items: center; gap: 0.5rem; margin-top: 1.1rem;
   padding: 0.3rem 0.3rem 0.3rem 0.85rem;

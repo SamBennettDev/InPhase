@@ -236,6 +236,12 @@ pub struct PairingConfig {
     /// Failed-pair attempts allowed inside `rate_window_secs` (§14.1: 5 / 10 min).
     pub max_attempts: u32,
     pub rate_window_secs: u64,
+    /// Wrong PINs in a row, from anywhere, after which PIN pairing stops until
+    /// the owner picks a new PIN on the PC's dashboard. The rate limit only
+    /// slows guessing; this bounds it: an attacker gets this many tries at a
+    /// given PIN in total, a 10 in 1,000,000 chance at the default. `0`
+    /// disables the lockout.
+    pub lockout_after: u32,
     /// Authenticated-session lifetime. `0` = never expires ("paired forever on
     /// this device"). The cookie's `Max-Age` follows this.
     pub session_ttl_secs: u64,
@@ -253,6 +259,7 @@ impl Default for PairingConfig {
             rotate_pin_on_pair: true,
             max_attempts: 5,
             rate_window_secs: 600,
+            lockout_after: 10,
             session_ttl_secs: 0,
             persist_sessions: true,
         }

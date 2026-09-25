@@ -1302,6 +1302,21 @@ impl WtVideoTransport {
         self.events_rx.lock().try_recv().ok()
     }
 
+    /// Drop the connected client, if any: the video slot is cleared and its
+    /// connection closed. The signaling `Bye` that ends a session is only a
+    /// request - a client that ignores it would otherwise keep receiving the
+    /// desktop over a connection the host never closes.
+    pub fn drop_client(&self, why: &str) {
+        let had = self.shared.active.lock().take();
+        let conn = self.shared.live_connection.borrow().clone();
+        if let Some(c) = conn {
+            c.close(wtransport::VarInt::from_u32(0), why.as_bytes());
+        }
+        if had.is_some() {
+            tracing::info!(why, "wt: dropped the connected client");
+        }
+    }
+
     pub fn shutdown(&self) {
         let _ = self.shutdown_tx.send(true);
         self.endpoint.close(0u32.into(), b"inphase wt shutdown");

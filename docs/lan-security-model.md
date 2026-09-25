@@ -73,16 +73,34 @@ the player cannot pair.
   fresh host also needs an explicit **Approve** click on the dashboard. No PAKE
   or HMAC proof — the TLS channel is already confidential and host-authenticated,
   so holding the secret within its 120 s TTL is the proof.
+- **PIN guessing is bounded, not just slowed.** Wrong PINs are rate-limited
+  (`[pairing] max_attempts` per `rate_window_secs`, counted globally and per
+  /64), and after `lockout_after` wrong PINs in a row (default 10), from any
+  source, PIN pairing is refused until the owner chooses **New PIN** on the
+  dashboard, which is loopback-only. A guesser therefore gets at most 10 tries
+  at any PIN: a 1 in 100,000 chance, however long they keep trying. The count
+  survives restarts; wrong PINs are logged with their source and shown on the
+  dashboard. Off the LAN, PIN and invitation pairing are HTTPS-only and need
+  `allow_remote_pairing`.
 - **Per-connect device challenge.** On every `/api/v1/signal` connection the host
   sends a random 32-byte nonce; the browser returns
   `{ controller_id, signature }` where the signature is Ed25519 over the nonce.
   The host verifies it against an **active** ACL entry before any media setup.
-  This binds the session to a specific paired device, not just cookie
-  possession.
-- **Input arming.** Input packets are dropped until the WebRTC media path is up
-  (`session_ready`). Because the SDP + DTLS fingerprints were exchanged over the
-  authenticated signaling channel, the DTLS peer is inherently the authenticated
-  peer — no separate data-channel proof is needed.
+  Sessions are bound to the device keys that used them: off the LAN a session
+  cookie only works with a key it has already been used with, so a cookie
+  copied off a device is not enough on its own. A key the host has never seen
+  is enrolled from a paired session only on the LAN (the Safari Home Screen
+  and cleared-storage cases); elsewhere the device must be re-paired.
+  Revoking a device revokes the sessions it used and closes its stream.
+- **Host names.** The LAN listener answers only to IP literals, `localhost`,
+  `.local` and `.ts.net` names and its own advertised names, so a web page that
+  re-points its own domain at the host (DNS rebinding) is refused before any
+  route, pairing included.
+- **Input arming.** Input is dropped until the media path is up. The
+  WebTransport connection is authorized by a single-use 60 s token minted over
+  the authenticated signaling socket; ending a stream from the dashboard, or
+  revoking a device, closes that connection on the host rather than asking the
+  client to leave.
 - **Emergency stop.** `Ctrl+Alt+Shift+F12` on the host cuts any active
   session regardless of network / browser state.
 - **Admin surface.** `/api/v1/admin/*` is loopback-only (served on
@@ -96,7 +114,13 @@ the player cannot pair.
 - A compromised host OS, or malicious code served from the host's own origin
   (the player bundle is embedded in the host binary — trust the binary).
 - Someone you've added to your tailnet who also has a paired browser. Sharing a
-  tailnet is sharing trust; revoke devices in the dashboard.
+  tailnet is sharing trust; revoke devices in the dashboard. The host treats
+  `100.64.0.0/10` (Tailscale, and carrier-grade NAT) as local.
+- Another Windows account on the same PC: the admin API trusts loopback.
+- A stolen local CA key (`tls\ca.key`, DPAPI-protected for your Windows user).
+  The CA is not name-constrained, so a device that trusts it would trust any
+  certificate signed with that key.
+- A paired device you no longer trust, until you revoke it.
 
 ## Out of scope (was in the SaaS design, now dropped)
 

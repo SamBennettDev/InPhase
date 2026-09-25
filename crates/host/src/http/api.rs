@@ -113,12 +113,15 @@ pub struct Mode {
     pub fps: u32,
 }
 
-pub async fn status(State(st): State<HttpState>) -> Json<HostStatus> {
+pub async fn status(State(st): State<HttpState>, headers: HeaderMap) -> Json<HostStatus> {
     let state = st.sessions.state();
-    let active_stream = matches!(
-        state,
-        SessionState::Playing | SessionState::Negotiating | SessionState::Reconnecting
-    )
+    // What is being played is a paired device's business, not a stranger's.
+    let paired = require_session(&st, &headers).is_some();
+    let active_stream = (paired
+        && matches!(
+            state,
+            SessionState::Playing | SessionState::Negotiating | SessionState::Reconnecting
+        ))
     .then(|| st.sessions.active_config().map(|c| c.stream_target))
     .flatten();
     Json(HostStatus {
@@ -223,25 +226,35 @@ pub async fn pair(
         return pair_err(StatusCode::FORBIDDEN, "pairing_is_lan_only");
     }
 
+    // A device key is mandatory, and checked before anything is spent: a PIN
+    // match or an invite consumed for a request that then fails would mint a
+    // session nobody holds, or burn the owner's invitation.
+    if !body.controller_pubkey.as_deref().is_some_and(is_hex_key) {
+        tracing::warn!("pair: rejected - missing or malformed controller_pubkey");
+        return pair_err(StatusCode::BAD_REQUEST, "controller_key_required");
+    }
+
+    // Off the LAN, both paths are HTTPS-only: a PIN or an invitation code on
+    // plaintext HTTP is readable on every hop between the device and the host.
+    if !on_lan && !st.https {
+        return pair_err(StatusCode::FORBIDDEN, "pairing_requires_https");
+    }
+
     // ---- invitation path ----------------------------------------------
     if let Some(invite) = body.invite.as_deref().filter(|s| !s.trim().is_empty()) {
         return match st.invites.consume(invite) {
-            Ok(()) => pair_success(&st, &body).await,
+            Ok(()) => pair_success(&st, &body, st.pairing.mint_session()).await,
             Err(e) => pair_err(StatusCode::UNAUTHORIZED, e.as_str()),
         };
     }
 
     // ---- PIN path ------------------------------------------------------
-    // Remote PIN pairing is opt-in (`allow_remote_pairing` above) and
-    // HTTPS-only: a six-digit code on plaintext HTTP is readable on every hop
-    // between phone and host.
-    if !on_lan && !st.https {
-        return pair_err(StatusCode::FORBIDDEN, "pin_requires_https");
-    }
-
+    // Remote PIN pairing is opt-in (`allow_remote_pairing` above), HTTPS-only
+    // (checked above) and capped by the lockout.
     match st.pairing.try_pair(addr.ip(), body.pin.trim()) {
-        Ok(_sid) => pair_success(&st, &body).await,
+        Ok(sid) => pair_success(&st, &body, sid).await,
         Err(crate::pairing::PairError::BadPin) => pair_err(StatusCode::UNAUTHORIZED, "bad_pin"),
+        Err(crate::pairing::PairError::Locked) => pair_err(StatusCode::LOCKED, "pin_locked"),
         Err(crate::pairing::PairError::RateLimited { retry_after }) => (
             StatusCode::TOO_MANY_REQUESTS,
             [(header::RETRY_AFTER, retry_after.as_secs().to_string())],
@@ -255,15 +268,17 @@ fn pair_err(code: StatusCode, msg: &str) -> Response {
     (code, Json(serde_json::json!({ "error": msg }))).into_response()
 }
 
-/// Common success path: register the controller key in the ACL and mint the
-/// session cookie.
-async fn pair_success(st: &HttpState, body: &PairRequest) -> Response {
-    // A device key is mandatory. Minting a session cookie without enrolling one
-    // produces a browser that looks paired and can never stream: every
-    // signalling connect fails the Ed25519 device challenge, and the only way
-    // out is "Forget this device". Fail the pair instead.
+/// Common success path: register the controller key in the ACL and hand the
+/// browser the session it was issued (one session per pairing).
+async fn pair_success(
+    st: &HttpState,
+    body: &PairRequest,
+    sid: crate::pairing::SessionId,
+) -> Response {
+    // Checked up front in `pair`; a device key is mandatory. A session cookie
+    // without an enrolled key looks paired and can never stream: every
+    // signalling connect fails the Ed25519 device challenge.
     let Some(pk) = body.controller_pubkey.as_deref().filter(|p| is_hex_key(p)) else {
-        tracing::warn!("pair: rejected - missing or malformed controller_pubkey");
         return pair_err(StatusCode::BAD_REQUEST, "controller_key_required");
     };
     let name = body
@@ -272,8 +287,8 @@ async fn pair_success(st: &HttpState, body: &PairRequest) -> Response {
         .map(sanitize_name)
         .unwrap_or_else(|| "browser".into());
     st.acl.add(pk, &name);
+    st.pairing.bind_controller(sid.as_str(), pk);
 
-    let sid = st.pairing.mint_session();
     let secure = st.https;
     let max_age = match st.cfg.pairing.session_ttl_secs {
         0 => 10 * 365 * 24 * 3600,
@@ -463,17 +478,23 @@ pub async fn logout(
     axum::extract::RawQuery(q): axum::extract::RawQuery,
     headers: HeaderMap,
 ) -> Response {
-    if let Some(sid) = require_session(&st, &headers) {
-        st.pairing.revoke(&sid);
-        st.sessions.transition(SessionState::Stopping);
-    }
+    let Some(sid) = require_session(&st, &headers) else {
+        // Nothing to log out of - and without a session this must not touch
+        // the ACL: it used to revoke any controller whose key was named.
+        return pair_err(StatusCode::UNAUTHORIZED, "not_paired");
+    };
+    // Only this browser's own device key may be forgotten.
+    let mine = st.pairing.session_controllers(&sid);
     if let Some(pk) = q
         .as_deref()
         .and_then(|s| s.split('&').find_map(|kv| kv.strip_prefix("controller=")))
         .filter(|s| is_hex_key(s))
+        .filter(|pk| mine.iter().any(|m| m.eq_ignore_ascii_case(pk)))
     {
         st.acl.revoke(pk);
     }
+    st.pairing.revoke(&sid);
+    st.sessions.transition(SessionState::Stopping);
     (
         StatusCode::OK,
         [(
@@ -492,10 +513,13 @@ pub async fn admin_status(State(st): State<HttpState>) -> Json<serde_json::Value
     // what the host dashboard needs (§25.1 "Current short-lived PIN with expiry
     // countdown").
     let (pin, ttl) = st.pairing.current_pin();
+    let (pin_failures, pin_locked) = st.pairing.pin_guard();
     Json(serde_json::json!({
         "state": st.sessions.state().label(),
         "pin": pin,
         "pin_ttl_secs": ttl.map(|d| d.as_secs()),
+        "pin_failures": pin_failures,
+        "pin_locked": pin_locked,
         "paired_devices": st.pairing.session_count(),
         "play_url": st.play_url,
         "peer": st.sessions.peer_info().map(|p| serde_json::json!({
@@ -506,8 +530,17 @@ pub async fn admin_status(State(st): State<HttpState>) -> Json<serde_json::Value
     }))
 }
 
-pub async fn admin_disconnect(State(st): State<HttpState>) -> Response {
+/// End the stream at the transport as well as at signaling: `force_disconnect`
+/// only asks the player to leave.
+fn drop_stream(st: &HttpState, why: &str) {
     st.sessions.force_disconnect();
+    if let Some(wt) = st.wt.get() {
+        wt.drop_client(why);
+    }
+}
+
+pub async fn admin_disconnect(State(st): State<HttpState>) -> Response {
+    drop_stream(&st, "ended from the dashboard");
     (StatusCode::OK, Json(serde_json::json!({ "ok": true }))).into_response()
 }
 
@@ -554,7 +587,7 @@ pub async fn admin_rotate_pin(State(st): State<HttpState>) -> Response {
 pub async fn admin_revoke_all(State(st): State<HttpState>) -> Response {
     st.pairing.revoke_all();
     st.acl.revoke_all();
-    st.sessions.force_disconnect();
+    drop_stream(&st, "all devices unpaired");
     (StatusCode::OK, Json(serde_json::json!({ "ok": true }))).into_response()
 }
 
@@ -650,8 +683,12 @@ pub async fn admin_revoke_controller(
 ) -> Response {
     match st.acl.revoke(body.id.trim()) {
         Some(id) => {
+            // Its sessions go too: a cookie alone could otherwise enrol a
+            // fresh key and come straight back.
+            let sessions = st.pairing.revoke_controller_sessions(&id);
+            tracing::info!(sessions, "revoked a device and its sessions");
             // If the active player is that controller, cut it now.
-            st.sessions.force_disconnect();
+            drop_stream(&st, "device revoked");
             (
                 StatusCode::OK,
                 Json(serde_json::json!({ "ok": true, "revoked": id })),
@@ -705,7 +742,16 @@ pub struct LibraryResponse {
     pub art_pending: bool,
 }
 
-pub async fn library(State(st): State<HttpState>) -> Json<LibraryResponse> {
+pub async fn library(State(st): State<HttpState>, headers: HeaderMap) -> Response {
+    // The installed-games list is personal, and building it starts outbound
+    // art lookups: paired devices only.
+    if require_session(&st, &headers).is_none() {
+        return (StatusCode::UNAUTHORIZED, "pair first").into_response();
+    }
+    library_for(&st).await.into_response()
+}
+
+async fn library_for(st: &HttpState) -> Json<LibraryResponse> {
     let games = platform::enumerate_installed_games().unwrap_or_default();
 
     // Prefer Steam box art everywhere, except for Steam games that already show
@@ -754,12 +800,21 @@ pub async fn library(State(st): State<HttpState>) -> Json<LibraryResponse> {
 
 /// `GET /api/v1/library/poster/:id` — a cover image: the Steam box art we
 /// fetched keylessly, or the file a launcher had on disk.
-pub async fn library_poster(State(st): State<HttpState>, Path(id): Path<String>) -> Response {
-    let Some(path) = st
-        .art
-        .cached(&id)
-        .or_else(|| platform::poster_path_for_game_id(&id))
-    else {
+pub async fn library_poster(
+    State(st): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    if require_session(&st, &headers).is_none() {
+        return (StatusCode::UNAUTHORIZED, "pair first").into_response();
+    }
+    // A cache miss scans every launcher on disk: off the async workers.
+    let art = st.art.clone();
+    let lookup = tokio::task::spawn_blocking(move || {
+        art.cached(&id)
+            .or_else(|| platform::poster_path_for_game_id(&id))
+    });
+    let Ok(Some(path)) = lookup.await else {
         return (StatusCode::NOT_FOUND, "no poster").into_response();
     };
     let Ok(bytes) = tokio::fs::read(&path).await else {

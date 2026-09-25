@@ -11,6 +11,10 @@ interface Admin {
   state: string;
   pin: string;
   pin_ttl_secs: number | null;
+  /** Wrong PINs since the last success or new PIN, and whether that locked
+   *  PIN pairing (host `lockout_after`). */
+  pin_failures?: number;
+  pin_locked?: boolean;
   peer: { browser: string; ip: string } | null;
   uptime_secs: number;
   stats: {
@@ -399,10 +403,20 @@ export function renderDashboard(root: HTMLElement) {
         ? "Up " + formatUptime(admin.uptime_secs)
         : "";
       $("#pin").textContent = admin.pin;
-      $("#pin-ttl").textContent =
-        admin.pin_ttl_secs == null
-          ? "Regenerate this PIN whenever you need to."
-          : "Refreshes in " + admin.pin_ttl_secs + "s";
+      const failures = admin.pin_failures ?? 0;
+      $("#pin-ttl").textContent = admin.pin_locked
+        ? "Locked after " +
+          failures +
+          " wrong PINs. Choose New PIN to allow PIN pairing again."
+        : failures > 0
+          ? failures +
+            (failures === 1 ? " wrong PIN" : " wrong PINs") +
+            " entered since this PIN was set."
+          : admin.pin_ttl_secs == null
+            ? "Regenerate this PIN whenever you need to."
+            : "Refreshes in " + admin.pin_ttl_secs + "s";
+      $("#pin-ttl").classList.toggle("alert", !!admin.pin_locked || failures > 0);
+      $("#pin").classList.toggle("locked", !!admin.pin_locked);
       $("#connection").className =
         "connection-pill " + (pub.busy ? "live" : "ok");
       $("#connection").innerHTML =
