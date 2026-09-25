@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>InPhase: your gaming PC, on your other screen</title>
+    <meta
+      name="description"
+      content="Stream games and your whole Windows desktop from your PC to any browser, at up to 4K and 120 fps. Free and open source. No account, no cloud."
+    />
+    <meta name="theme-color" content="#0b0d12" />
+    <meta name="color-scheme" content="dark" />
+    <link rel="canonical" href="https://inphase.sam-bennett.dev/" />
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="icon" href="/assets/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://inphase.sam-bennett.dev/" />
+    <meta property="og:title" content="InPhase: your gaming PC, on your other screen" />
+    <meta
+      property="og:description"
+      content="Stream games and your whole Windows desktop to any browser. Free, open source, no account."
+    />
+    <meta property="og:image" content="https://inphase.sam-bennett.dev/assets/og.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:image" content="https://inphase.sam-bennett.dev/assets/og.png" />
+
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <header class="top">
+      <a class="brand" href="/" aria-label="InPhase home"><img src="/assets/logo.svg" alt="InPhase" width="176" height="50" /></a>
+      <nav aria-label="Page">
+        <a href="#how">How it works</a>
+        <a href="#support">Support</a>
+        <a href="https://github.com/SamBennettDev/InPhase">GitHub</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="kicker"><span class="dot"></span> Free and open source</p>
+          <h1>Your gaming PC, on your other screen.</h1>
+          <p class="lede">
+            InPhase streams games and your whole Windows desktop to a browser on your phone,
+            tablet or laptop. Nothing to install on the other device, no account, and nothing
+            in the cloud between you and your PC.
+          </p>
+          <div class="cta">
+            <a class="btn primary" id="download" href="https://github.com/SamBennettDev/InPhase/releases/latest/download/InPhaseSetup.exe">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 19h16" /></svg>
+              Download for Windows
+            </a>
+            <a class="btn" href="#support">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 8h1a3 3 0 0 1 0 6h-1M3 8h14v6a5 5 0 0 1-5 5H8a5 5 0 0 1-5-5V8Zm3-5v2m4-2v2m4-2v2" /></svg>
+              Support development
+            </a>
+          </div>
+          <p class="fine" id="release-line">InPhaseSetup.exe · Windows 10 and 11 (x64)</p>
+        </div>
+        <figure class="hero-shot">
+          <div class="phone">
+            <picture>
+              <source srcset="/assets/iphone-library.webp" type="image/webp" />
+              <img
+                src="/assets/iphone-library.jpg"
+                width="690"
+                height="1499"
+                alt="InPhase on an iPhone: the library, with a live view of the PC's desktop above the installed games"
+              />
+            </picture>
+          </div>
+          <figcaption>The library on an iPhone. The top tile is the PC's desktop, live.</figcaption>
+        </figure>
+      </section>
+
+      <section class="specs" aria-label="At a glance">
+        <div><strong>4K · 120 fps</strong><span>Up to, when your PC and device can keep up</span></div>
+        <div><strong>~22 ms</strong><span>PC to screen on a home network, measured at 1440p120</span></div>
+        <div><strong>Any browser</strong><span>Chrome, Edge, Firefox and Safari, including iPhone</span></div>
+        <div><strong>$0</strong><span>No subscription, no account, GPL-3.0</span></div>
+      </section>
+
+      <section class="features" aria-labelledby="features-title">
+        <h2 id="features-title" class="section-title">Built for playing, not just watching</h2>
+        <div class="feature-grid">
+          <article>
+            <h3>Your games, one tap away</h3>
+            <p>
+              InPhase finds what you have installed across Steam, Epic, GOG, Xbox and more, with
+              cover art. Pick a game and it launches on the PC as the stream starts.
+            </p>
+          </article>
+          <article>
+            <h3>Hardware all the way</h3>
+            <p>
+              Your GPU encodes H.265 or H.264; your device decodes it in hardware. Frames go out
+              over WebTransport and are repaired on the fly when Wi-Fi drops a few.
+            </p>
+          </article>
+          <article>
+            <h3>Keyboard, mouse, controller, touch</h3>
+            <p>
+              Full mouse capture and keyboard on a computer, a trackpad and keys on a phone.
+              Game controllers work too, with a free driver on the PC.
+            </p>
+          </article>
+          <article>
+            <h3>Private by design</h3>
+            <p>
+              Your PC serves its own secure page. Devices pair once with a PIN or QR code, remote
+              access is off until you turn it on, and there is no InPhase server to trust.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section class="how" id="how" aria-labelledby="how-title">
+        <h2 id="how-title" class="section-title">Three steps</h2>
+        <ol class="steps">
+          <li>
+            <span class="num">1</span>
+            <h3>Install on your PC</h3>
+            <p>Run InPhaseSetup.exe. InPhase sits in the system tray and shows a play address and a PIN.</p>
+          </li>
+          <li>
+            <span class="num">2</span>
+            <h3>Pair your device</h3>
+            <p>Open the address in your phone's or laptop's browser and enter the PIN, or scan the QR code.</p>
+          </li>
+          <li>
+            <span class="num">3</span>
+            <h3>Play</h3>
+            <p>Choose a game or the whole desktop. Settings for resolution, frame rate and quality are one tap away.</p>
+          </li>
+        </ol>
+        <p class="req">
+          Needs Windows 10 (build 19041) or 11 with a hardware video encoder (NVIDIA, AMD or Intel) and the PC
+          awake and signed in. Works best on the same home network; remote access over IPv6 or Tailscale is optional.
+        </p>
+      </section>
+
+      <section class="support" id="support" aria-labelledby="support-title">
+        <div class="support-card">
+          <img class="support-mark" src="/assets/mark.svg" alt="" width="72" height="72" />
+          <div>
+            <h2 id="support-title">InPhase is made by one person</h2>
+            <p>
+              I'm Sam. I build InPhase in my spare time and give it away. If it saves you a
+              subscription or lets you play from the couch, a coffee keeps the work going: more
+              hardware to test on, faster fixes, and new features.
+            </p>
+            <div class="cta">
+              <a class="btn coffee" id="coffee" href="https://buymeacoffee.com/sambennettdev" rel="noopener">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 8h1a3 3 0 0 1 0 6h-1M3 8h14v6a5 5 0 0 1-5 5H8a5 5 0 0 1-5-5V8Zm3-5v2m4-2v2m4-2v2" /></svg>
+                Buy me a coffee
+              </a>
+              <a class="btn" href="https://github.com/SamBennettDev/InPhase">Star it on GitHub</a>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="foot">
+      <span>InPhase is free software under the GPL-3.0. Game art belongs to its owners.</span>
+      <span><a href="https://github.com/SamBennettDev/InPhase">Source</a> · <a href="https://github.com/SamBennettDev/InPhase/releases">Releases</a> · <a href="https://sam-bennett.dev">sam-bennett.dev</a></span>
+    </footer>
+
+    <script>
+      // Name the release the button downloads. The link works without this;
+      // it only adds the version and size once GitHub answers.
+      fetch("https://api.github.com/repos/SamBennettDev/InPhase/releases/latest")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((rel) => {
+          const exe = rel && rel.assets && rel.assets.find((a) => a.name === "InPhaseSetup.exe");
+          if (!exe) return;
+          const mb = (exe.size / 1048576).toFixed(0);
+          document.getElementById("release-line").textContent =
+            "InPhase " + rel.tag_name + " · " + mb + " MB · Windows 10 and 11 (x64)";
+        })
+        .catch(() => {});
+    </script>
+  </body>
+</html>

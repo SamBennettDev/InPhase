@@ -11,6 +11,7 @@ InPhase streams a Windows desktop or game to a browser, with hardware video
 encoding, game audio, keyboard and mouse input. The host runs in your system tray;
 the player runs in your browser. No InPhase account, subscription, or hosted relay.
 
+[Website](https://inphase.sam-bennett.dev) ·
 [Download releases](https://github.com/SamBennettDev/InPhase/releases) ·
 [Get help](docs/TROUBLESHOOTING.md) · [Contribute](CONTRIBUTING.md)
 
