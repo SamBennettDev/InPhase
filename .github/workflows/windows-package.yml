@@ -127,4 +127,12 @@ jobs:
             dist/InPhase/MANIFEST.csv
             dist/InPhase/OPEN-SOURCE-COMPONENTS.txt
             dist/InPhase/licenses
-            ${{ runner.temp }}/inphase-*.log
+      # Logs are a separate artifact: files from two roots in one artifact are
+      # stored under their common ancestor, which buried the installer at
+      # <workspace>/dist/... and the release job found no dist/InPhaseSetup.exe.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: InPhase-windows-logs
+          if-no-files-found: ignore
+          path: ${{ runner.temp }}/inphase-*.log
