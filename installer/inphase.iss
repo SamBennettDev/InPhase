@@ -11,7 +11,7 @@
 ; SIGNTOOL in the environment; unsigned builds compile with a warning.
 
 #ifndef AppVersion
-  #define AppVersion "0.3.0"
+  #define AppVersion "0.3.1"
 #endif
 #ifndef SourceDir
   #define SourceDir "..\dist\InPhase"

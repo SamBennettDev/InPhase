@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.1 - 2026-09-25
+
+- Fix keyboard, mouse, touch and controller input being ignored for a whole
+  stream. When the video connection came up before the host had finished
+  building the stream (more likely since 0.3.0 checks the desktop can be
+  captured first), the host missed the "video is up" signal, never left
+  Negotiating and never turned input on.
+
 ## 0.3.0 - 2026-09-25
 
 - Fix a host crash (heap corruption) when a stream could not capture the

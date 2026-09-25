@@ -1,4 +1,14 @@
-# InPhase 0.3.0
+# InPhase 0.3.1
+
+**Fixes input in 0.3.0.** In 0.3.0 a stream could show the PC but ignore your
+keyboard, mouse, touch and controller for the whole session, because the host
+missed the moment the video connection came up. Update if you installed 0.3.0;
+installing over it keeps your settings and paired devices.
+
+Everything below is from 0.3.0.
+
+---
+
 
 Stream your Windows gaming PC to a browser on another screen: hardware
 encoding on the PC, WebTransport and WebCodecs in the browser. No InPhase
