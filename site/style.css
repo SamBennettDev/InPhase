@@ -89,7 +89,7 @@ h1 { font-size: clamp(2.4rem, 5.6vw, 4.1rem); font-weight: 750; max-width: 13ch;
 /* The screenshot, in a plain phone outline; the brand wave runs behind it. */
 .hero-shot { margin: 0; position: relative; display: flex; flex-direction: column; align-items: center; }
 .hero-shot::before {
-  content: ""; position: absolute; left: -14%; right: -14%; top: 46%; height: 26px; z-index: 0;
+  content: ""; position: absolute; left: -14%; right: calc(-1 * var(--gutter)); top: 46%; height: 26px; z-index: 0;
   background: linear-gradient(90deg, var(--cyan), var(--violet));
   /* The wave, faded out at both ends rather than stopping at a hard edge. */
   -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='96' height='26'%3E%3Cpath d='M0 13C16 2 32 2 48 13s32 11 48 0' fill='none' stroke='%23000' stroke-width='3'/%3E%3C/svg%3E") repeat-x 0 50% / 96px 26px,
@@ -175,6 +175,10 @@ h1 { font-size: clamp(2.4rem, 5.6vw, 4.1rem); font-weight: 750; max-width: 13ch;
 @media (max-width: 880px) {
   .hero { grid-template-columns: minmax(0, 1fr); }
   .hero-shot { order: 2; }
+  /* One column: the shot is as wide as the page's content, so run the wave
+   * exactly to the screen edges. Past them, iOS lets the page pan sideways
+   * whatever html's overflow says. */
+  .hero-shot::before { left: calc(-1 * var(--gutter)); right: calc(-1 * var(--gutter)); }
   .specs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .specs > div:nth-child(2) { border-right: 0; }
   .specs > div:nth-child(-n + 2) { border-bottom: 1px solid var(--line); }
