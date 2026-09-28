@@ -28,7 +28,7 @@ inphase-protocol = { path = "crates/protocol" }
 # Async host runtime (§17).
 tokio = { version = "1.40", features = ["full"] }
 # HTTP, WebSocket and static-asset endpoints (§16, §17).
-axum = { version = "0.7", features = ["ws"] }
+axum = { version = "0.8", features = ["ws"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["set-header", "trace"] }
 # Signaling / control protocol (§15, §16).
