@@ -28,14 +28,14 @@ jobs:
           }
       - name: Rust toolchain
         run: rustup show
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
           key: windows-cargo-${{ hashFiles('Cargo.lock') }}
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}\gstreamer.exe
           key: gstreamer-1.28.6-msvc-x64-complete
