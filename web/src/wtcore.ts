@@ -104,6 +104,18 @@ export interface WtClientStats {
    *  hardcoded zero (review §14). */
   freezeCount: number;
   totalFreezeMs: number;
+  /** Frametimes over the frames shown since the previous report. */
+  frametime?: {
+    frames: number;
+    p50: number;
+    p99: number;
+    max: number;
+    hitches: number;
+    netMs: number | null;
+    decodeMs: number;
+    waitMs: number;
+    showMs: number;
+  };
 }
 
 export interface WtClientHandlers {
@@ -1103,6 +1115,7 @@ export class WtVideoClient {
     // the client cannot see loss and does not need to. What it can report is
     // frames that never completed - the host reset the stream, or the
     // connection went - which is the number that actually matters.
+    const ft = stats?.frametime;
     const payload = {
       type: "client_telemetry",
       at_us: Math.round(nowMs * 1000),
@@ -1162,6 +1175,17 @@ export class WtVideoClient {
       // recovering means the repair path is doing its job.
       nacks_sent: this.nacksSent,
       keys_received: this.keysReceived,
+      // Frametimes since the last report (frametimes.ts): what the player
+      // saw, and the stage each frame's age went to. -1 = no clock sync.
+      ft_frames: ft?.frames ?? 0,
+      ft_p50_ms: round1(ft?.p50 ?? 0),
+      ft_p99_ms: round1(ft?.p99 ?? 0),
+      ft_max_ms: round1(ft?.max ?? 0),
+      ft_hitches: ft?.hitches ?? 0,
+      stage_net_ms: ft?.netMs != null ? round1(ft.netMs) : -1,
+      stage_decode_ms: round1(ft?.decodeMs ?? 0),
+      stage_wait_ms: round1(ft?.waitMs ?? 0),
+      stage_show_ms: round1(ft?.showMs ?? 0),
       // §13: the host needs real support data from real clients.
       audio_opus_supported: opusSupportProbe(),
     };
@@ -1405,3 +1429,5 @@ export function opusSupportProbe(): boolean | undefined {
   }
   return opusProbeResult;
 }
+
+const round1 = (v: number): number => Math.round(v * 10) / 10;

@@ -204,6 +204,8 @@ try {
 
   // ---- sample both ends once a second -----------------------------------
   const timeline = [];
+  /** Every frame that reached the screen: interval and stage times. */
+  const frameLog = [];
   let prev = null;
   const hist = [];
   const startAt = Date.now();
@@ -216,6 +218,12 @@ try {
         const w = window.__inphaseWt;
         const wire = window.__inphaseWtWire;
         const cv = document.querySelector("canvas.wt-video");
+        // Every frame that reached the screen since the last read (the page
+        // keeps ~300; a read a second never misses any at <=120 fps).
+        const tl = window.__inphaseFrameTimeline;
+        const since = window.__xbFramesSeen ?? 0;
+        const fresh = tl ? tl.samples().filter((f) => f.shownMs > since) : [];
+        if (fresh.length) window.__xbFramesSeen = fresh.at(-1).shownMs;
         const err = document.querySelector(".err, [role=alert]");
         return {
           audio: window.__inphaseAudio ? { ...window.__inphaseAudio } : null,
@@ -224,6 +232,7 @@ try {
           w: cv?.width ?? 0,
           h: cv?.height ?? 0,
           uiError: err && err.textContent ? err.textContent.trim().slice(0, 200) : "",
+          frames: fresh.map((f) => ({ ...f })),
         };
       })
       .catch((e) => ({ evalError: String(e) }));
@@ -289,6 +298,7 @@ try {
       route_loss_pct: h.stats?.host?.route_loss_pct ?? null,
       admin_error: h.adminError ?? null,
     };
+    for (const f of c.frames ?? []) frameLog.push({ s: row.s, ...f });
     timeline.push(row);
     prev = { t: now, decoded, presented, received };
     if (now - lastLog > 10000) {
@@ -359,6 +369,7 @@ try {
     },
   ];
   const passed = checks.every((c) => c.ok);
+  const frametimes = frameStats(frameLog.filter((f) => f.s > WARMUP), target);
   result = {
     label: LABEL,
     engine: ENGINE,
@@ -379,13 +390,23 @@ try {
       client_p95_ms_p50: q(steady.map((r) => r.cli_p95_ms), 0.5),
       freeze_ms: freezeMs,
       stall_seconds: stallSecs,
+      frametimes,
       codec: timeline.at(-1)?.codec,
       dims: timeline.at(-1)?.dims,
     },
     errors: errors.slice(0, 20),
     console: consoleLines.slice(-60),
     timeline,
+    frames: frameLog,
   };
+  if (frametimes) {
+    const f = frametimes;
+    log(
+      `frametime p50 ${f.p50} p99 ${f.p99} max ${f.max} ms; ${f.hitches} hitches of ${f.frames} ` +
+        `(${JSON.stringify(f.hitch_cause)}); stages p50 net ${f.stage_p50.net} dec ${f.stage_p50.decode} ` +
+        `wait ${f.stage_p50.wait} show ${f.stage_p50.show} ms`,
+    );
+  }
 } catch (e) {
   result = { label: LABEL, engine: ENGINE, profile: PROFILE, passed: false, fatal: String(e), errors, console: consoleLines.slice(-60) };
   await page.screenshot({ path: join(OUT, `${LABEL}.fail.png`) }).catch(() => {});
@@ -407,3 +428,54 @@ if (result.fatal) log(`FATAL: ${result.fatal}`);
 for (const c of result.checks ?? []) log(`${c.ok ? "PASS" : "FAIL"}  ${c.name}: ${c.detail}`);
 log(result.passed ? "RESULT: PASS" : "RESULT: FAIL", `-> ${join(OUT, `${LABEL}.json`)}`);
 process.exit(result.passed ? 0 : 1);
+
+/**
+ * Frametime numbers from the page's per-frame log: percentiles of the gap
+ * between frames reaching the screen, hitches (over 1.5x the slower of the
+ * stream's interval and the display refresh), and for each hitch the stage
+ * that grew most against its median - the likely cause.
+ */
+function frameStats(frames, fps) {
+  const iv = frames.map((f) => f.intervalMs).filter((v) => v > 0).sort((a, b) => a - b);
+  if (iv.length < 10) return null;
+  const pct = (xs, p) => +xs[Math.min(xs.length - 1, Math.floor(p * xs.length))].toFixed(1);
+  const sorted = (k) => frames.map((f) => f[k]).filter((v) => typeof v === "number").sort((a, b) => a - b);
+  const stages = { net: sorted("netMs"), decode: sorted("decodeMs"), wait: sorted("waitMs"), show: sorted("showMs") };
+  const med = Object.fromEntries(Object.entries(stages).map(([k, v]) => [k, v.length ? pct(v, 0.5) : null]));
+  // The display's refresh: the most common short interval is one refresh
+  // when the stream runs at or above it.
+  const refresh = pct(iv, 0.05);
+  const target = Math.max(1000 / fps, refresh * 0.9);
+  const cause = {};
+  let hitches = 0;
+  frames.forEach((f, i) => {
+    if (!(f.intervalMs > target * 1.5)) return;
+    hitches++;
+    // The frame shown late, or the one before it held the screen: compare
+    // this frame's stages against the medians.
+    const excess = {
+      net: (f.netMs ?? med.net ?? 0) - (med.net ?? 0),
+      decode: f.decodeMs - (med.decode ?? 0),
+      wait: f.waitMs - (med.wait ?? 0),
+      show: f.showMs - (med.show ?? 0),
+    };
+    let top = "none";
+    let topV = 2; // under 2 ms extra in every stage: the frame was late leaving the PC
+    for (const [k, v] of Object.entries(excess)) if (v > topV) [top, topV] = [k, v];
+    const k = top === "none" ? "host/arrival gap" : top;
+    cause[k] = (cause[k] ?? 0) + 1;
+    void i;
+  });
+  return {
+    frames: frames.length,
+    p50: pct(iv, 0.5),
+    p95: pct(iv, 0.95),
+    p99: pct(iv, 0.99),
+    max: +iv.at(-1).toFixed(1),
+    refresh_ms: refresh,
+    hitches,
+    hitch_cause: cause,
+    stage_p50: med,
+    stage_p95: Object.fromEntries(Object.entries(stages).map(([k, v]) => [k, v.length ? pct(v, 0.95) : null])),
+  };
+}

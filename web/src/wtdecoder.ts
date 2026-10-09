@@ -21,6 +21,7 @@ import {
   shouldCountFreeze,
 } from "./decoderpolicy.js";
 import { FrameOrderer } from "./frameorder.js";
+import { FrameTimeline } from "./frametimes.js";
 import { GlRenderer, preferWebGl } from "./glrender.js";
 import type { WtFrame } from "./wtvideo.js";
 
@@ -164,6 +165,8 @@ export class WtDecoder {
   private hiddenSincePresent = false;
   private readonly onVisibility = (): void => {
     if (document.hidden) this.hiddenSincePresent = true;
+    // A background tab is not a stutter: start the intervals afresh.
+    this.frames.reset();
   };
   /** WebCodecs acceleration preference; `prefer-software` once hardware has
    *  failed, for the rest of the session. */
@@ -188,6 +191,10 @@ export class WtDecoder {
   private presentEmaMs = 0;
   private presentSamples = 0;
   private framesPresented = 0;
+  /** Per-frame stage stamps for the overlay's frametime graph. */
+  readonly frames = new FrameTimeline();
+  /** The refresh timestamp while a requestAnimationFrame callback draws. */
+  private inRefreshMs: number | null = null;
   /** Glass-age diagnostics: last raw sample + accepted-sample count. */
   private lastAgeMs = 0;
   private ageSamples = 0;
@@ -231,6 +238,11 @@ export class WtDecoder {
 
   get root(): HTMLCanvasElement {
     return this.canvas;
+  }
+
+  /** The stream's frame rate as configured, or 0 before the first config. */
+  get streamFps(): number {
+    return this.lastCfg?.fps ?? 0;
   }
 
   /** The last configuration applied (for duplicate-config detection), or
@@ -462,6 +474,12 @@ export class WtDecoder {
 
   onFrame(f: WtFrame): void {
     if (this.stopped || this.decoder === null || this.decoder.state !== "configured") return;
+    const offset = this.clockOffsetUs();
+    this.frames.arrived(
+      f.capture_us,
+      performance.now(),
+      offset !== null ? glassAgeMs(performance.now() * 1000, f.capture_us, offset) : null,
+    );
     // Ordering lives in FrameOrderer - pure logic over frame numbers, tested
     // directly. Streams complete independently, so frames arrive out of order
     // and a late keyframe must still anchor the sequence.
@@ -619,6 +637,7 @@ export class WtDecoder {
       this.decodeEmaMs = this.decodeEmaMs === 0 ? decodeMs : 0.9 * this.decodeEmaMs + 0.1 * decodeMs;
     }
     this.framesDecoded++;
+    this.frames.decoded(vf.timestamp, performance.now());
     // The codec produced a frame, so whatever failed before was transient.
     this.restarts.onProgress(performance.now());
 
@@ -669,12 +688,15 @@ export class WtDecoder {
   private armRefresh(): void {
     if (this.refreshArmed) return;
     this.refreshArmed = true;
-    requestAnimationFrame(() => {
+    requestAnimationFrame((ts) => {
       this.refreshArmed = false;
       if (this.stopped) return;
+      this.frames.refresh(ts);
       const held = this.refresh.onRefresh();
       if (held !== null) {
+        this.inRefreshMs = ts;
         this.drawFrame(held);
+        this.inRefreshMs = null;
         this.armRefresh();
       }
     });
@@ -684,6 +706,7 @@ export class WtDecoder {
     const verdict = this.refresh.offer(vf);
     if (verdict.action === "hold") {
       if (verdict.release !== null) {
+        this.frames.discard(verdict.release.timestamp);
         verdict.release.close();
         this.framesCoalesced++;
       }
@@ -789,8 +812,12 @@ export class WtDecoder {
         this.presentSamples++;
       }
     }
+    this.frames.drawn(vf.timestamp, nowMs, this.inRefreshMs);
     vf.close();
     this.framesPresented++;
+    // The bitmap path draws from a promise, outside any refresh: make sure
+    // one follows to show (and time) it.
+    this.armRefresh();
   }
 
   requestKey(): void {
@@ -804,6 +831,7 @@ export class WtDecoder {
    */
   reset(): void {
     this.refresh.clear()?.close();
+    this.frames.reset();
     this.submitTimes.clear();
     this.order.reset();
     this.announced = true; // already rendering — don't re-run first-frame wiring
@@ -859,6 +887,9 @@ export class WtDecoder {
     };
     // Console-diagnosable without opening the HUD panel.
     (window as unknown as Record<string, unknown>).__inphaseWt = s;
+    // The frametime graph's numbers, for the test harness.
+    (window as unknown as Record<string, unknown>).__inphaseFrames = this.frames.summary(this.streamFps);
+    (window as unknown as Record<string, unknown>).__inphaseFrameTimeline = this.frames;
     return s;
   }
 

@@ -18,6 +18,7 @@ import {
   Settings,
   Maximize,
 } from "lucide";
+import { FrameGraph, type FrameGraphSource } from "./framegraph.js";
 
 /** Re-render any `<i data-lucide>` placeholders inside `scope` as SVGs. */
 export function refreshIcons(scope: ParentNode = document) {
@@ -103,6 +104,22 @@ export class Hud {
   }
 
   private statsOverlay: HTMLElement;
+  private graph: FrameGraph | null = null;
+
+  /** Add the frametime graph under the stats lines. It draws only while the
+   *  overlay is shown. */
+  attachFrameGraph(source: () => FrameGraphSource | null) {
+    this.graph?.stop();
+    this.graph?.root.remove();
+    this.graph = new FrameGraph(source);
+    this.statsOverlay.append(this.graph.root);
+    if (this.settings.showMetrics) this.graph.start();
+  }
+
+  /** The session is over: stop drawing. */
+  dispose() {
+    this.graph?.stop();
+  }
 
   private audioState: HudMetrics["audioState"] = null;
   private audioHostFailed = false;
@@ -267,6 +284,8 @@ export class Hud {
       const v = (e.target as HTMLInputElement).checked;
       this.settings.showMetrics = v;
       this.statsOverlay.style.display = v ? "" : "none";
+      if (v) this.graph?.start();
+      else this.graph?.stop();
       this.onMetrics(v);
     });
 

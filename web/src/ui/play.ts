@@ -761,6 +761,12 @@ export class Session {
         saveSettings(this.settings);
       },
     );
+    this.hud.attachFrameGraph(() => {
+      const d = this.wtDecoder;
+      if (d === null || !this.wtActive) return null;
+      const fps = d.streamFps || this.settings.fps;
+      return { samples: d.frames.samples(), targetMs: d.frames.targetMs(fps), summary: d.frames.summary(fps) };
+    });
 
     // No WebRTC session: video, audio and input all ride WebTransport, and
     // the host's signaling offer is ignored below.
@@ -1140,9 +1146,23 @@ export class Session {
         // Once-per-second WT telemetry reports decoder + playout stats to the
         // host's congestion controller (media/bitrate.rs), same shape as the
         // WebRTC path's ClientTelemetry.
+        let ftSince = 0;
         client.setStatsProvider(() => {
           const s = decoder.stats();
+          const ft = decoder.frames.summary(decoder.streamFps || this.settings.fps, ftSince);
+          ftSince = decoder.frames.samples().at(-1)?.shownMs ?? ftSince;
           return {
+            frametime: {
+              frames: ft.frames,
+              p50: ft.p50,
+              p99: ft.p99,
+              max: ft.max,
+              hitches: ft.jank,
+              netMs: ft.netMs,
+              decodeMs: ft.decodeMs,
+              waitMs: ft.waitMs,
+              showMs: ft.showMs,
+            },
             codec: this.wtCodecLabel ?? null,
             framesDecoded: s.framesDecoded,
             framesPresented: s.framesPresented,
@@ -1606,6 +1626,7 @@ export class Session {
     } catch {
       /* */
     }
+    this.hud.dispose();
     this.hud.root.remove();
     this.stage.remove();
     this.enterOverlay?.remove();

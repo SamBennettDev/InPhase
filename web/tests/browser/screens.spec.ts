@@ -123,7 +123,26 @@ for (const [vp, size] of Object.entries(VIEWPORTS)) {
           path: "LAN",
           audioState: "signal",
         });
+        // A 120 fps stream on a 120 Hz panel with two hitches: one late
+        // frame from the network, one slow decode.
+        const { FrameTimeline } = await import("/src/frametimes.ts");
+        const t = new FrameTimeline();
+        let now = 1000;
+        for (let i = 0; i < 300; i++) {
+          now += 8.33;
+          const net = i === 120 ? 38 : 9 + Math.sin(i / 7) * 1.5;
+          const dec = i === 230 ? 24 : 3 + (i % 5) * 0.3;
+          const arrive = now - 6 - dec;
+          t.arrived(i, arrive, net);
+          t.decoded(i, arrive + dec);
+          t.drawn(i, arrive + dec + 0.4);
+          if (i === 120 || i === 230) now += 16.7;
+          t.refresh(Math.max(now, arrive + dec + 0.4));
+        }
+        hud.attachFrameGraph(() => ({ samples: t.samples(), targetMs: t.targetMs(120), summary: t.summary(120) }));
       });
+      await page.waitForTimeout(250);
+      await expect(page.locator(".frame-graph canvas")).toHaveCount(2);
       await shoot(page, `hud-${vp}`, info);
       await page.locator('[data-act="panel"]').click();
       await shoot(page, `hud-panel-${vp}`, info);

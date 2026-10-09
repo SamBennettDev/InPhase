@@ -189,7 +189,7 @@ pub enum WtClientEvent {
     Connected,
     Disconnected,
     KeyframeRequest,
-    Telemetry(ClientTelemetry),
+    Telemetry(Box<ClientTelemetry>),
 }
 
 /// Bind arguments: where to listen, and the identity (and its validity window)

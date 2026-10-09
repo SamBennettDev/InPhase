@@ -140,7 +140,7 @@ pub enum WtClientMessage {
     /// Wire tag matches stats.ts exactly - the WebRTC control channel parses
     /// `client_telemetry`, so the WT control stream must too.
     #[serde(rename = "client_telemetry")]
-    Telemetry(crate::signaling::ClientTelemetry),
+    Telemetry(Box<crate::signaling::ClientTelemetry>),
     Ping {
         at_us: u64,
     },

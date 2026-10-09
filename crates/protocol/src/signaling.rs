@@ -387,6 +387,31 @@ pub struct ClientTelemetry {
     pub nacks_sent: u64,
     #[serde(default)]
     pub keys_received: u64,
+    /// Frametimes over the frames shown since the previous report: the gap
+    /// between frames reaching the screen (p50/p99/max, ms) and how many
+    /// were hitches (over 1.5x the expected interval). Absent from older
+    /// clients, hence `default`.
+    #[serde(default)]
+    pub ft_frames: u32,
+    #[serde(default)]
+    pub ft_p50_ms: f32,
+    #[serde(default)]
+    pub ft_p99_ms: f32,
+    #[serde(default)]
+    pub ft_max_ms: f32,
+    #[serde(default)]
+    pub ft_hitches: u32,
+    /// Mean time a frame spent in each stage over the same frames (ms):
+    /// capture on the host to arrival (-1 before the clock syncs), arrival
+    /// to decoded, decoded to drawn, drawn to the refresh that showed it.
+    #[serde(default)]
+    pub stage_net_ms: f32,
+    #[serde(default)]
+    pub stage_decode_ms: f32,
+    #[serde(default)]
+    pub stage_wait_ms: f32,
+    #[serde(default)]
+    pub stage_show_ms: f32,
 }
 
 // PartialEq for ClientTelemetry uses f32 fields; Eq is intentionally not derived.

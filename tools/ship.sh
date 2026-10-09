@@ -104,7 +104,13 @@ ok "protocol tests"
 # The host *lib* does build off-Windows (only the GStreamer pipeline is gated),
 # so its pure logic - control laws, health assessment - is testable right here
 # rather than only on the target.
-cargo test -q -p inphase-host --lib >/dev/null 2>&1 || die 1 "host lib tests failed (run: cargo test -p inphase-host --lib)"
+PREFLIGHT_LOG=$(mktemp)
+cargo test -q -p inphase-host --lib >"$PREFLIGHT_LOG" 2>&1 || {
+  # Show why: this has failed intermittently with no clue left behind.
+  grep -E "panicked|FAILED|failures:|error(\[|:)|Killed|signal" -A4 "$PREFLIGHT_LOG" | head -40 >&2 || tail -30 "$PREFLIGHT_LOG" >&2
+  die 1 "host lib tests failed (full log: $PREFLIGHT_LOG)"
+}
+rm -f "$PREFLIGHT_LOG"
 ok "host lib tests"
 ( cd web && npx tsc --noEmit ) || die 1 "web typecheck failed"
 ok "web typecheck"

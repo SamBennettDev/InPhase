@@ -192,7 +192,23 @@ impl HostRuntime {
                                 drain = tel.drain_pps,
                                 "wt client wire"
                             );
-                            stats.ingest_client(tel);
+                            if tel.ft_frames > 0 {
+                                // What the player saw: frame pacing on their
+                                // screen and where each frame's age went.
+                                debug!(
+                                    frames = tel.ft_frames,
+                                    p50 = tel.ft_p50_ms,
+                                    p99 = tel.ft_p99_ms,
+                                    max = tel.ft_max_ms,
+                                    hitches = tel.ft_hitches,
+                                    net = tel.stage_net_ms,
+                                    decode = tel.stage_decode_ms,
+                                    wait = tel.stage_wait_ms,
+                                    show = tel.stage_show_ms,
+                                    "wt client frametime"
+                                );
+                            }
+                            stats.ingest_client(*tel);
                         }
                         Some(crate::media::wt::WtClientEvent::Input(bytes)) => {
                             // Input over WT datagrams (§13): identical
