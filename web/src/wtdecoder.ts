@@ -22,6 +22,7 @@ import {
 } from "./decoderpolicy.js";
 import { FrameOrderer } from "./frameorder.js";
 import { FrameTimeline } from "./frametimes.js";
+import { PacedQueue, PlayoutClock } from "./pacing.js";
 import { GlRenderer, preferWebGl } from "./glrender.js";
 import type { WtFrame } from "./wtvideo.js";
 
@@ -342,6 +343,8 @@ export class WtDecoder {
     // numbering and PTS owe nothing to the frames decoded before (a rebuild
     // of the same stream keeps them - `newStream` false).
     this.order.reset(newStream);
+    // Frames held for pacing belong to the decode state being replaced.
+    this.dropPaced();
     // Only a new stream may ask at once. A rebuild re-asking past the throttle
     // was one IDR request per decode error (audit §3.1).
     if (newStream) this.keyThrottle.reset();
@@ -483,7 +486,7 @@ export class WtDecoder {
     // Ordering lives in FrameOrderer - pure logic over frame numbers, tested
     // directly. Streams complete independently, so frames arrive out of order
     // and a late keyframe must still anchor the sequence.
-    for (const ready of this.order.accept(f)) this.submit(ready);
+    for (const ready of this.order.accept(f)) this.admit(ready);
     if (this.order.needsResync) {
       this.lastGapSeq = f.frame_no;
       this.referenceGap();
@@ -685,6 +688,65 @@ export class WtDecoder {
   /** Frames decoded but superseded before any refresh could show them. */
   framesCoalesced = 0;
 
+  /** Frame pacing (setting, off by default): encoded frames wait for their
+   *  slot before the decoder (pacing.ts says why before, not after). */
+  private pacing = false;
+  private readonly playout = new PlayoutClock();
+  private readonly paced = new PacedQueue<WtFrame>();
+  private paceTimer = 0;
+
+  /** Turn frame pacing on or off; applies from the next frame. */
+  setPacing(on: boolean): void {
+    if (on === this.pacing) return;
+    this.pacing = on;
+    // Held frames go to the decoder now: each references the ones before it,
+    // so dropping any would break the picture until the next keyframe.
+    this.releasePaced(Infinity);
+    this.playout.reset();
+  }
+
+  /** The delay pacing adds right now, ms (0 when off). */
+  get pacingDelayMs(): number {
+    return this.pacing ? this.playout.delayMs : 0;
+  }
+
+  /** An in-order frame from the orderer: to the decoder now, or held for its
+   *  pacing slot. */
+  private admit(f: WtFrame): void {
+    // The first frames are never held: announcing the first picture runs the
+    // watchdog, which needs it presented.
+    if (!this.pacing || !this.announced) {
+      this.submit(f);
+      return;
+    }
+    this.playout.observe(f.capture_us, performance.now());
+    for (const early of this.paced.push(f, this.playout.dueMs(f.capture_us))) this.release(early);
+    this.releasePaced(performance.now());
+  }
+
+  private release(f: WtFrame): void {
+    this.frames.released(f.capture_us, performance.now());
+    this.submit(f);
+  }
+
+  /** Hand every frame due by `nowMs` to the decoder, then wait for the next. */
+  private releasePaced(nowMs: number): void {
+    clearTimeout(this.paceTimer);
+    this.paceTimer = 0;
+    for (const f of this.paced.take(nowMs)) this.release(f);
+    const next = this.paced.nextDue;
+    if (next !== null && !this.stopped) {
+      this.paceTimer = window.setTimeout(() => this.releasePaced(performance.now()), Math.max(0, next - nowMs));
+    }
+  }
+
+  /** Drop held frames with the rest of the decode state (reset, stop). */
+  private dropPaced(): void {
+    clearTimeout(this.paceTimer);
+    this.paceTimer = 0;
+    for (const f of this.paced.clear()) this.frames.discard(f.capture_us);
+  }
+
   private armRefresh(): void {
     if (this.refreshArmed) return;
     this.refreshArmed = true;
@@ -831,6 +893,8 @@ export class WtDecoder {
    */
   reset(): void {
     this.refresh.clear()?.close();
+    this.dropPaced();
+    this.playout.reset();
     this.frames.reset();
     this.submitTimes.clear();
     this.order.reset();
@@ -896,6 +960,7 @@ export class WtDecoder {
   stop(): void {
     this.stopped = true;
     this.refresh.clear()?.close();
+    this.dropPaced();
     document.removeEventListener("visibilitychange", this.onVisibility);
     // A decode error may already have closed the codec — closing again throws.
     if (this.decoder && this.decoder.state !== "closed") this.decoder.close();

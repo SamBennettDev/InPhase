@@ -15,8 +15,8 @@
 // - The stage times say where a frame's age went: `netMs` (capture on the PC
 //   to arrival, so host encode + network; needs the synced clock), `decodeMs`
 //   (arrival to decoded, including any wait behind a missing frame), `waitMs`
-//   (decoded to drawn: held for a refresh) and `showMs` (drawn to the refresh
-//   that shows it).
+//   (held by frame pacing before decode, and decoded to drawn: held for a
+//   refresh) and `showMs` (drawn to the refresh that shows it).
 //
 // "Shown" is the next requestAnimationFrame after the draw - the frame the
 // browser composites the canvas into. The panel scans out a refresh or so
@@ -57,6 +57,8 @@ export interface FrameSummary {
 
 interface Pending {
   arriveMs: number;
+  /** Handed to the decoder: later than arrival when frame pacing held it. */
+  releasedMs: number;
   netMs: number | null;
   decodedMs: number;
   drawnMs: number;
@@ -92,10 +94,17 @@ export class FrameTimeline {
     }
     this.inFlight.set(captureUs, {
       arriveMs: nowMs,
+      releasedMs: nowMs,
       netMs: netMs !== null && netMs >= 0 && netMs < 5000 ? netMs : null,
       decodedMs: 0,
       drawnMs: 0,
     });
+  }
+
+  /** Frame pacing held the frame until now before decoding it. */
+  released(captureUs: number, nowMs: number): void {
+    const p = this.inFlight.get(captureUs);
+    if (p) p.releasedMs = nowMs;
   }
 
   decoded(captureUs: number, nowMs: number): void {
@@ -148,8 +157,9 @@ export class FrameTimeline {
       shownMs,
       intervalMs: this.lastShownMs > 0 ? shownMs - this.lastShownMs : 0,
       netMs: p.netMs,
-      decodeMs: Math.max(0, p.decodedMs - p.arriveMs),
-      waitMs: Math.max(0, p.drawnMs - p.decodedMs),
+      decodeMs: Math.max(0, p.decodedMs - p.releasedMs),
+      // Held for its pacing slot before decode, then for a refresh after.
+      waitMs: Math.max(0, p.releasedMs - p.arriveMs) + Math.max(0, p.drawnMs - p.decodedMs),
       showMs: Math.max(0, shownMs - p.drawnMs),
     });
     this.lastShownMs = shownMs;
@@ -177,14 +187,14 @@ export class FrameTimeline {
    *  every 16.7 ms, and that is not stutter). */
   targetMs(streamFps: number): number {
     const stream = streamFps > 0 ? 1000 / streamFps : 0;
-    return Math.max(stream, this.refreshMs());
+    return Math.max(stream, this.refreshIntervalMs());
   }
 
   /** The display's refresh interval: the median recent gap between
    *  refreshes. Not the shortest - one early callback (iPhone Safari at
    *  60 Hz has them) made a 60 Hz page look like 120 Hz, and every normal
    *  frame then counted as a hitch. */
-  private refreshMs(): number {
+  refreshIntervalMs(): number {
     const g = [...this.refreshGaps].sort((a, b) => a - b);
     return g.length ? g[Math.floor(g.length / 2)]! : 0;
   }
@@ -209,7 +219,7 @@ export class FrameTimeline {
       decodeMs: mean((x) => x.decodeMs),
       waitMs: mean((x) => x.waitMs),
       showMs: mean((x) => x.showMs),
-      refreshMs: this.refreshMs(),
+      refreshMs: this.refreshIntervalMs(),
       overdrawn: this.overdrawnCount,
     };
   }

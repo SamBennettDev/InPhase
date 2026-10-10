@@ -46,6 +46,8 @@ export interface HudMetrics {
   path?: string | null;
   /** Tooltip phrase for the path label — never contains an address. */
   pathDetail?: string | null;
+  /** Delay frame pacing adds now, ms; undefined when pacing is off. */
+  pacingMs?: number;
 }
 
 export class Hud {
@@ -62,6 +64,8 @@ export class Hud {
     private readonly mountAudio: (el: HTMLElement) => void = () => {},
     /** Metrics-overlay toggle (persisted by the Session). */
     private readonly onMetrics: (v: boolean) => void = () => {},
+    /** Frame-pacing toggle: applies live, persisted by the Session. */
+    private readonly onPacing: (v: boolean) => void = () => {},
   ) {
     this.root = document.createElement("div");
     this.root.className = "hud";
@@ -195,6 +199,9 @@ export class Hud {
     if (m.decodeMs != null && m.decodeMs > 0) {
       perfParts.push({ text: `${m.decodeMs.toFixed(1)} ms dec` });
     }
+    if (m.pacingMs !== undefined) {
+      perfParts.push({ text: `+${Math.round(m.pacingMs)} ms pacing`, title: "delay frame pacing adds to even out arrival" });
+    }
     if (m.jitterBufferMs != null && m.jitterBufferMs > 0) {
       perfParts.push({ text: `${Math.round(m.jitterBufferMs)} ms buf` });
     }
@@ -270,6 +277,9 @@ export class Hud {
       </label>
       <label class="hud-chk"><input data-s="metrics" type="checkbox" ${s.showMetrics ? "checked" : ""} />
         Show metrics overlay</label>
+      <label class="hud-chk"><input data-s="pacing" type="checkbox" ${s.framePacing ? "checked" : ""} />
+        Frame pacing</label>
+      <p class="sub">Evens out a bumpy Wi-Fi or cellular connection by holding frames a few milliseconds. Adds that much delay.</p>
       <div class="home-audio" data-audio-mount></div>
       <div class="hud-panel-btns">
         <button data-act="apply">Apply &amp; reconnect</button>
@@ -287,6 +297,13 @@ export class Hud {
       if (v) this.graph?.start();
       else this.graph?.stop();
       this.onMetrics(v);
+    });
+
+    // Frame pacing applies live too.
+    (el("pacing") as HTMLInputElement).addEventListener("change", (e) => {
+      const v = (e.target as HTMLInputElement).checked;
+      this.settings.framePacing = v;
+      this.onPacing(v);
     });
 
     // Volume applies live (no reconnect).

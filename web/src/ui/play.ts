@@ -760,6 +760,11 @@ export class Session {
         this.settings.showMetrics = v;
         saveSettings(this.settings);
       },
+      (v) => {
+        this.settings.framePacing = v;
+        saveSettings(this.settings);
+        this.wtDecoder?.setPacing(v);
+      },
     );
     this.hud.attachFrameGraph(() => {
       const d = this.wtDecoder;
@@ -1059,6 +1064,7 @@ export class Session {
         },
       },
     );
+    decoder.setPacing(this.settings.framePacing);
     this.wtSyncError = () => client.syncErrorMs();
     // Lip sync: audio aims at the age the video is shown at, on the same
     // host clock (WtAudio.syncedStartUs).
@@ -1472,6 +1478,7 @@ export class Session {
       codec: this.wtCodecLabel ?? "--",
       jitterBufferMs: undefined,
       decodeMs: wtStats?.decodeMs,
+      pacingMs: this.settings.framePacing ? (this.wtDecoder?.pacingDelayMs ?? 0) : undefined,
       packetsLost: undefined,
       audioState: null,
       audioHostFailed: this.audioHostFailed,

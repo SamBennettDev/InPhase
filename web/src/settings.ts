@@ -23,6 +23,9 @@ export interface StreamSettings {
   audioOutputId: string;
   /** HUD stats overlay (perf / stream lines) visibility. */
   showMetrics: boolean;
+  /** Frame pacing: space frames the way the PC captured them, adding a
+   *  small adaptive delay (pacing.ts). Off: each frame shows as it decodes. */
+  framePacing: boolean;
 }
 
 export const RESOLUTIONS: { label: string; width: number; height: number }[] = [
@@ -44,16 +47,16 @@ const DEFAULTS: StreamSettings = {
   fps: 60,
   maxBitrateKbps: 20000,
   preset: "low_latency",
-  // No receiver jitter buffer — by design, not a setting (§10). Every frame is
-  // presented the instant it decodes; `webrtc.ts` pins
-  // `jitterBufferTarget=0` / `playoutDelayHint=0` itself and there is no UI to
-  // change it. (Safari enforces its own internal floor of ~2 frames; Chrome
-  // honours 0 exactly.)
+  // By default every frame is presented the instant it decodes (§10). Frame
+  // pacing below is the opt-in exception, for jittery routes (Wi-Fi, 5G)
+  // where an even picture is worth a few ms of delay - asked for on
+  // 2026-10-10 after the frametime graph showed cellular hitches.
   streamTarget: { type: "desktop" },
   volume: 1,
   muted: false,
   audioOutputId: "",
   showMetrics: false,
+  framePacing: false,
 };
 
 // Bump when a stored default becomes actively harmful and must be re-migrated
@@ -93,6 +96,10 @@ export function loadSettings(): StreamSettings {
           typeof s.showMetrics === "boolean"
             ? s.showMetrics
             : DEFAULTS.showMetrics,
+        framePacing:
+          typeof s.framePacing === "boolean"
+            ? s.framePacing
+            : DEFAULTS.framePacing,
       };
     }
   } catch {

@@ -27,6 +27,18 @@ test("a frame drawn inside a refresh callback is shown by that refresh", () => {
   assert.equal(t.samples()[0]!.netMs, null);
 });
 
+test("time held by frame pacing counts as wait, not decode", () => {
+  const t = new FrameTimeline();
+  t.arrived(1, 100, 10);
+  t.released(1, 120);
+  t.decoded(1, 124);
+  t.drawn(1, 125);
+  t.refresh(130);
+  const [s] = t.samples();
+  assert.equal(s!.decodeMs, 4);
+  assert.equal(s!.waitMs, 21);
+});
+
 test("intervals are between frames that reached the screen", () => {
   const t = new FrameTimeline();
   for (let i = 0; i < 5; i++) {

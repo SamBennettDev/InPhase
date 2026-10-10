@@ -15,6 +15,8 @@
 #   loss1   1 % random loss
 #   burst   Gilbert-Elliott bursts: ~2 % loss arriving in runs (Wi-Fi A-MPDU)
 #   wifi    jitter + light bursty loss together
+#   cell    30 ms base, delivered in bursts every 4-24 ms (netem slot), like
+#           the uneven arrival of a measured 5G session (2026-10-10)
 #   cap40   40 Mbit/s bottleneck with a 30 ms queue - below an 80 Mbps target,
 #           so the controller must find the rate without stalling the picture
 #
@@ -22,7 +24,7 @@
 # REORDERS packets, which a real access network does not do, and the test
 # would measure reordering instead of jitter.
 set -eu
-PROFILE="${1:?usage: netem.sh <clean|jitter|loss1|burst|wifi|cap40|clear> [iface] [host-ip]}"
+PROFILE="${1:?usage: netem.sh <clean|jitter|loss1|burst|wifi|cell|cap40|clear> [iface] [host-ip]}"
 IFACE="${2:-${INPHASE_NETEM_IFACE:-$(ip route get 192.168.1.100 | sed -n 's/.* dev \([^ ]*\).*/\1/p')}}"
 HOST="${3:-${INPHASE_HOST_IP:-192.168.1.100}}"
 
@@ -38,6 +40,7 @@ case "$PROFILE" in
   burst)  NETEM="loss gemodel 0.6% 30% 100% 0%" ;;
   wifi)   NETEM="delay 2ms 3ms distribution normal loss gemodel 0.3% 30% 100% 0% rate 600mbit" ;;
   cap40)  NETEM="rate 40mbit limit 120" ;;
+  cell)   NETEM="delay 30ms slot 4ms 24ms rate 300mbit" ;;
   *) echo "netem: unknown profile $PROFILE" >&2; exit 2 ;;
 esac
 
