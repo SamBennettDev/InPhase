@@ -49,7 +49,7 @@ export interface FrameSummary {
   decodeMs: number;
   waitMs: number;
   showMs: number;
-  /** Shortest gap between refreshes seen - the display's refresh, ms. */
+  /** Median recent gap between refreshes - the display's refresh, ms. */
   refreshMs: number;
   /** Frames drawn but replaced before any refresh showed them. */
   overdrawn: number;
@@ -66,6 +66,8 @@ interface Pending {
 export const FRAME_WINDOW = 300;
 /** A frame this many times the expected interval counts as a hitch. */
 export const JANK_FACTOR = 1.5;
+/** Refresh gaps the display-rate estimate looks at. */
+const REFRESH_GAPS = 120;
 /** Frames in flight tracked at once; more means stamps are leaking. */
 const MAX_IN_FLIGHT = 64;
 
@@ -76,7 +78,8 @@ export class FrameTimeline {
   private readonly ring: FrameSample[] = [];
   private lastShownMs = 0;
   private lastRefreshMs = 0;
-  private refreshMinMs = 0;
+  /** Recent gaps between refreshes, ms (newest last). */
+  private readonly refreshGaps: number[] = [];
   private overdrawnCount = 0;
 
   constructor(private readonly window = FRAME_WINDOW) {}
@@ -125,7 +128,10 @@ export class FrameTimeline {
   refresh(refreshMs: number): void {
     if (this.lastRefreshMs > 0) {
       const gap = refreshMs - this.lastRefreshMs;
-      if (gap > 2 && (this.refreshMinMs === 0 || gap < this.refreshMinMs)) this.refreshMinMs = gap;
+      if (gap > 2) {
+        this.refreshGaps.push(gap);
+        if (this.refreshGaps.length > REFRESH_GAPS) this.refreshGaps.shift();
+      }
     }
     this.lastRefreshMs = refreshMs;
     this.show(refreshMs);
@@ -171,7 +177,16 @@ export class FrameTimeline {
    *  every 16.7 ms, and that is not stutter). */
   targetMs(streamFps: number): number {
     const stream = streamFps > 0 ? 1000 / streamFps : 0;
-    return Math.max(stream, this.refreshMinMs);
+    return Math.max(stream, this.refreshMs());
+  }
+
+  /** The display's refresh interval: the median recent gap between
+   *  refreshes. Not the shortest - one early callback (iPhone Safari at
+   *  60 Hz has them) made a 60 Hz page look like 120 Hz, and every normal
+   *  frame then counted as a hitch. */
+  private refreshMs(): number {
+    const g = [...this.refreshGaps].sort((a, b) => a - b);
+    return g.length ? g[Math.floor(g.length / 2)]! : 0;
   }
 
   /** Over the whole window, or only frames shown after `sinceMs`. */
@@ -194,7 +209,7 @@ export class FrameTimeline {
       decodeMs: mean((x) => x.decodeMs),
       waitMs: mean((x) => x.waitMs),
       showMs: mean((x) => x.showMs),
-      refreshMs: this.refreshMinMs,
+      refreshMs: this.refreshMs(),
       overdrawn: this.overdrawnCount,
     };
   }

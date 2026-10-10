@@ -74,6 +74,21 @@ test("a summary since a time covers only later frames", () => {
   assert.equal(s.max, 40);
 });
 
+test("an early refresh callback does not make a 60 Hz page look like 120 Hz", () => {
+  // iPhone Safari at 60 Hz, a 120 fps stream: one frame shown per refresh,
+  // and now and then a callback lands a few ms after the last.
+  const t = new FrameTimeline();
+  let now = 0;
+  for (let i = 0; i < 120; i++) {
+    now += i % 30 === 7 ? 5 : 16.7;
+    frame(t, i, now - 8, now - 3, now - 1);
+    t.refresh(now);
+  }
+  const s = t.summary(120);
+  assert.ok(Math.abs(t.targetMs(120) - 16.7) < 0.01);
+  assert.equal(s.jank, 0, "steady 60 Hz is not stutter");
+});
+
 test("the window keeps the newest frames", () => {
   const t = new FrameTimeline(10);
   for (let i = 0; i < 25; i++) {
