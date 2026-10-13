@@ -1,0 +1,229 @@
+{
+  "date": "2026-10-13",
+  "baselineRevision": "20a807d0ef2900e0f35c4f887357c70a557b2c89",
+  "platform": "Linux x86_64, four vCPU quota, no /dev/dri",
+  "networkRunCountPerRevision": 42,
+  "virtualSecondsPerRun": 60,
+  "fps": [
+    60,
+    120
+  ],
+  "seeds": [
+    1,
+    7,
+    42
+  ],
+  "networkMetric": "admitted to ordered decode input, not decoded or presented",
+  "network": [
+    {
+      "profile": "lan",
+      "before": {
+        "minAdmittedPercent": 100,
+        "maxGapMs": 16.7,
+        "maxResyncs": 0
+      },
+      "after": {
+        "minAdmittedPercent": 100,
+        "maxGapMs": 16.7,
+        "maxResyncs": 0,
+        "maxHeld": 0,
+        "maxAssemblies": 1
+      }
+    },
+    {
+      "profile": "wifi-jitter",
+      "before": {
+        "minAdmittedPercent": 100,
+        "maxGapMs": 34.2,
+        "maxResyncs": 0
+      },
+      "after": {
+        "minAdmittedPercent": 100,
+        "maxGapMs": 34.2,
+        "maxResyncs": 0,
+        "maxHeld": 2,
+        "maxAssemblies": 4
+      }
+    },
+    {
+      "profile": "loss-1pct",
+      "before": {
+        "minAdmittedPercent": 100,
+        "maxGapMs": 215.4,
+        "maxResyncs": 0
+      },
+      "after": {
+        "minAdmittedPercent": 100,
+        "maxGapMs": 154.7,
+        "maxResyncs": 0,
+        "maxHeld": 16,
+        "maxAssemblies": 4
+      }
+    },
+    {
+      "profile": "loss-5pct",
+      "before": {
+        "minAdmittedPercent": 19.76,
+        "maxGapMs": 1185,
+        "maxResyncs": 60
+      },
+      "after": {
+        "minAdmittedPercent": 99.88,
+        "maxGapMs": 305.5,
+        "maxResyncs": 0,
+        "maxHeld": 34,
+        "maxAssemblies": 9
+      }
+    },
+    {
+      "profile": "wan",
+      "before": {
+        "minAdmittedPercent": 86.96,
+        "maxGapMs": 761.9,
+        "maxResyncs": 16
+      },
+      "after": {
+        "minAdmittedPercent": 99.88,
+        "maxGapMs": 299.4,
+        "maxResyncs": 0,
+        "maxHeld": 34,
+        "maxAssemblies": 8
+      }
+    },
+    {
+      "profile": "burst",
+      "before": {
+        "minAdmittedPercent": 99.89,
+        "maxGapMs": 76,
+        "maxResyncs": 0
+      },
+      "after": {
+        "minAdmittedPercent": 99.89,
+        "maxGapMs": 76,
+        "maxResyncs": 0,
+        "maxHeld": 5,
+        "maxAssemblies": 5
+      }
+    },
+    {
+      "profile": "outage-1s",
+      "before": {
+        "minAdmittedPercent": 97.75,
+        "maxGapMs": 1371.8,
+        "maxResyncs": 1
+      },
+      "after": {
+        "minAdmittedPercent": 97.75,
+        "maxGapMs": 1371.8,
+        "maxResyncs": 1,
+        "maxHeld": 3,
+        "maxAssemblies": 2
+      }
+    }
+  ],
+  "browserVersion": "153.0.8010.12",
+  "browser": [
+    {
+      "width": 640,
+      "height": 360,
+      "fps": 60,
+      "pacing": false,
+      "durationMs": 10000,
+      "jitterMs": 25,
+      "framesDecoded": 598,
+      "framesDrawn": 593,
+      "frametimeWindowFrames": 300,
+      "frametimeP50Ms": 16.6,
+      "frametimeP99Ms": 49.9,
+      "hitchesInWindow": 56,
+      "pacingDelayMs": 0,
+      "visiblePixels": true,
+      "errors": []
+    },
+    {
+      "width": 640,
+      "height": 360,
+      "fps": 60,
+      "pacing": true,
+      "durationMs": 10000,
+      "jitterMs": 25,
+      "framesDecoded": 598,
+      "framesDrawn": 591,
+      "frametimeWindowFrames": 300,
+      "frametimeP50Ms": 16.7,
+      "frametimeP99Ms": 32.2,
+      "hitchesInWindow": 26,
+      "pacingDelayMs": 25.0,
+      "visiblePixels": true,
+      "errors": []
+    },
+    {
+      "width": 1920,
+      "height": 1080,
+      "fps": 60,
+      "pacing": false,
+      "durationMs": 10000,
+      "jitterMs": 25,
+      "framesDecoded": 598,
+      "framesDrawn": 572,
+      "frametimeWindowFrames": 300,
+      "frametimeP50Ms": 16.6,
+      "frametimeP99Ms": 37,
+      "hitchesInWindow": 38,
+      "pacingDelayMs": 0,
+      "visiblePixels": true,
+      "errors": []
+    },
+    {
+      "width": 1920,
+      "height": 1080,
+      "fps": 60,
+      "pacing": true,
+      "durationMs": 10000,
+      "jitterMs": 25,
+      "framesDecoded": 598,
+      "framesDrawn": 556,
+      "frametimeWindowFrames": 300,
+      "frametimeP50Ms": 16.7,
+      "frametimeP99Ms": 45.0,
+      "hitchesInWindow": 21,
+      "pacingDelayMs": 36.4,
+      "visiblePixels": true,
+      "errors": []
+    },
+    {
+      "width": 2560,
+      "height": 1440,
+      "fps": 120,
+      "pacing": false,
+      "durationMs": 10000,
+      "jitterMs": 25,
+      "framesDecoded": 398,
+      "framesDrawn": 398,
+      "frametimeWindowFrames": 300,
+      "frametimeP50Ms": 21,
+      "frametimeP99Ms": 55.8,
+      "hitchesInWindow": 97,
+      "pacingDelayMs": 0,
+      "visiblePixels": true,
+      "errors": []
+    },
+    {
+      "width": 2560,
+      "height": 1440,
+      "fps": 120,
+      "pacing": true,
+      "durationMs": 10000,
+      "jitterMs": 25,
+      "framesDecoded": 261,
+      "framesDrawn": 261,
+      "frametimeWindowFrames": 260,
+      "frametimeP50Ms": 23.8,
+      "frametimeP99Ms": 149.7,
+      "hitchesInWindow": 114,
+      "pacingDelayMs": 40,
+      "visiblePixels": true,
+      "errors": []
+    }
+  ]
+}

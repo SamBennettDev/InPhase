@@ -243,7 +243,7 @@ test("an expired frame is tombstoned - late re-sends do not resurrect it", () =>
   assert.equal(priv.framesAbandoned, 1, "abandon count unchanged");
 });
 
-test("holes past the eighth are requested too - one per FEC group, rotating", () => {
+test("holes past the eighth are requested too, with a fair bounded repair budget", () => {
   // The old selection walked missing indices from 0 and stopped at 8, so a
   // frame with nine holes asked for the lowest eight in every round and never
   // for the ninth - it could not assemble however much the host re-sent, and
@@ -258,9 +258,9 @@ test("holes past the eighth are requested too - one per FEC group, rotating", ()
   for (let i = 0; i < cnt; i++) frags.push(payload.subarray(i * budget, (i + 1) * budget));
 
   // Nine holes: one in group 0, two in group 1, one in group 2, five in
-  // group 3. Group 1's pair is FEC-dead until one is restored, so asking for
-  // both in the same round wastes a datagram; index 30 is the ninth hole and
-  // is the tail, which parity can never rebuild - it must be asked for.
+  // group 3. With no parity received, each missing fragment needs a request;
+  // fair allocation must reach the ninth hole rather than repeating the first
+  // eight forever.
   const holes = [1, 9, 10, 17, 24, 25, 26, 27, 30];
 
   const c = new WtVideoClient();
@@ -299,16 +299,12 @@ test("holes past the eighth are requested too - one per FEC group, rotating", ()
 
   for (const round of perRound) {
     assert.ok(round.length <= 8, "bounded to 8 datagrams per round");
-    const groups = new Set(round.map((i) => Math.floor(i / GROUP)));
-    assert.equal(groups.size, round.length, "at most one hole per FEC group per round");
+    const groups = new Set(round.slice(0, 4).map((i) => Math.floor(i / GROUP)));
+    assert.equal(groups.size, 4, "each damaged group gets a request before extra holes");
+    assert.equal(new Set(round).size, round.length, "no duplicate request in a round");
   }
   const union = new Set(asked);
-  // Decisive: the ninth hole is the frame's tail, which parity can never
-  // rebuild. The old selection asked for the lowest eight in every round and
-  // never once for this one. (A single group holding five holes cannot be
-  // fully covered in four rounds by any one-per-group policy - and is
-  // FEC-dead at three - so the union is asserted to reach at least the eight
-  // the old loop managed, plus that tail.)
+  // The ninth hole is requested despite the eight-request round cap.
   assert.ok(union.has(30), "the ninth hole is requested (the old loop never asked for it)");
   assert.ok(union.size >= 8, `at least as much coverage as before (got ${union.size})`);
 });
@@ -443,15 +439,55 @@ test("a frame that left no trace is asked for whole, once", () => {
   assert.deepEqual(whole.map((m) => m.frame), [2], "frame 2 requested whole, exactly once");
 });
 
-test("repair timing scales with RTT, keeping the old timings when RTT is unknown", async () => {
+test("repair retries leave time for a second response inside the reorder budget", async () => {
   const { nackTiming } = await import("./wtcore.js");
   assert.deepEqual(nackTiming(0), { firstMs: 150, gapMs: 180 });
   const lan = nackTiming(5);
   assert.ok(lan.firstMs <= 45 && lan.gapMs <= 50, `LAN repair must not wait 150 ms (${JSON.stringify(lan)})`);
-  assert.deepEqual(nackTiming(120), { firstMs: 150, gapMs: 180 }, "a relay-class RTT hits the old ceilings");
+  const relay = nackTiming(120);
+  assert.ok(relay.firstMs <= 150 && relay.gapMs >= 120, "wait for the repair RTT without an excessive first delay");
+  const wifi = nackTiming(40);
+  assert.ok(wifi.firstMs + wifi.gapMs + 40 < 300, "a second response fits the reorder budget");
   // Four rounds on a LAN finish well inside the orderer's 300 ms repair budget.
   assert.ok(lan.firstMs + 3 * lan.gapMs < 300);
 });
+
+for (const useParity of [false, true]) {
+  test(`one NACK round repairs ${useParity ? "three holes with parity" : "two holes without parity"}`, () => {
+    const c = new WtVideoClient();
+    const core = c as unknown as { onVideoFragment(d: Uint8Array, h: unknown): void; lastRttMs: number };
+    core.lastRttMs = 40;
+    const size = 32;
+    const payload = Uint8Array.from({ length: 8 * size }, (_, i) => (i * 7) & 255);
+    const parts = Array.from({ length: 8 }, (_, i) => payload.subarray(i * size, (i + 1) * size));
+    const holes = useParity ? [2, 4, 6] : [2, 4];
+    const asks: number[] = [];
+    const frames: FrameLike[] = [];
+    c.send = async (m) => { if (m.type === "nack") asks.push(Number(m.idx)); };
+    const h = { onFrame: (f: FrameLike) => frames.push(f) };
+    const originalNow = performance.now;
+    let now = 1000;
+    try {
+      performance.now = () => now;
+      for (let i = 0; i < 8; i++) if (!holes.includes(i)) core.onVideoFragment(frag(71, i, 8, parts[i]!, 0), h);
+      if (useParity) {
+        const row = new Uint8Array(size);
+        for (const p of parts) for (let j = 0; j < size; j++) row[j] = row[j]! ^ p[j]!;
+        core.onVideoFragment(frag(71, 0, 8, withTrailer(row, payload.length), 1), h);
+      }
+      now += 146;
+      core.onVideoFragment(frag(71, 0, 8, parts[0]!, 0), h);
+      assert.equal(asks.length, 2, "ask for every hole parity cannot rebuild");
+      now += 40;
+      for (const idx of asks) core.onVideoFragment(frag(71, idx, 8, parts[idx]!, 0), h);
+      assert.equal(frames.length, 1);
+      assert.deepEqual(frames[0]!.payload, payload);
+    } finally {
+      performance.now = originalNow;
+      c.close();
+    }
+  });
+}
 
 test("a large delta frame with two holes in one group is rebuilt from rows 1+2", () => {
   // Deltas of >= 16 fragments now carry row 2 like keyframes do.

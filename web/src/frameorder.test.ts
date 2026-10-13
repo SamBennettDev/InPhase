@@ -14,6 +14,21 @@ function frame(frame_no: number, key = false, capture_us = frame_no * 16_667): W
 const range = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => from + i);
 const nums = (fs: WtFrame[]) => fs.map((f) => f.frame_no);
 
+test("late repairs do not shrink the reorder horizon of a 120 fps stream", () => {
+  const o = new FrameOrderer();
+  const at = (n: number, key = false) => frame(n, key, Math.round(n * 1e6 / 120));
+  o.accept(at(0, true));
+  for (let n = 1; n <= 40; n++) {
+    if (n > 20) assert.deepEqual(o.accept(at(10)), [], "stale repair stays stale");
+    assert.deepEqual(nums(o.accept(at(n))), [n]);
+  }
+  // A 200ms hole after late repairs must still retain the valid deltas.
+  for (let n = 42; n <= 65; n++) o.accept(at(n));
+  assert.equal(o.needsResync, false);
+  assert.deepEqual(nums(o.accept(at(41))), range(41, 65));
+  assert.equal(o.held, 0);
+});
+
 test("an in-order stream passes straight through and holds nothing", () => {
   const o = new FrameOrderer();
   assert.deepEqual(nums(o.accept(frame(10, true))), [10]);

@@ -11,7 +11,9 @@
     "preview": "vite preview",
     "test": "node scripts/test.mjs",
     "typecheck": "tsc --noEmit",
-    "test:browser": "playwright test"
+    "test:browser": "playwright test",
+    "test:network": "node --import tsx scripts/network-stress.ts",
+    "test:streaming": "node scripts/browser-stress.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.9.0",

@@ -50,6 +50,51 @@ macOS's Local Network permission settles; retry. 2026-09-24, 1440p120 /
 
 ## Run
 
+### Automated tests without a Windows host
+
+From the repository root:
+
+```sh
+npm --prefix web ci
+npm --prefix web test
+npm --prefix web exec -- playwright install chromium
+npm --prefix web run test:browser
+cargo test --locked -p inphase-host --test quic_impairment -- --nocapture
+```
+
+For longer diagnostic runs, use the `web` directory:
+
+```sh
+cd web
+# Seven profiles, 60/120 fps, three seeds, 60 virtual seconds each.
+npm run test:network -- /tmp/inphase-network.json
+# Moving H.264 through the production decoder/canvas, pacing off and on.
+# Run on an idle machine: concurrent compilation changes these numbers.
+npm run test:streaming -- /tmp/inphase-browser.json
+```
+
+`INPHASE_SIM_SECONDS=120 npm run test:network -- /tmp/network.json` extends the
+receiver runs. They assert byte integrity, ordered reference chains, bounded
+queues, progress, recovery and profile-specific frame-admission floors. Their
+ages end at decode admission; they model v4 frame delivery, reliable control
+requests and a 150-frame resend cache, not QUIC congestion, bandwidth adaptation,
+Windows capture, audio, GPU decoding or physical display timing. Synthetic v4
+keyframes also exercise FEC here; the live host sends its keyframes reliably.
+
+The Rust test sends actual WebTransport through a userspace UDP proxy with
+bidirectional delay, jitter and packet loss, and checks video plus dedicated
+input-stream delivery. The browser diagnostic reports counters and frametime
+tails; a successful exit means valid visible playback, not that a resolution/FPS
+target was met. The small browser regression tests have explicit progress
+assertions. Higher-resolution results are diagnostic and need hardware checks.
+
+The network harness has no throughput ceiling claim. Use `matrix.sh` and the
+hardware procedures below to test bandwidth caps, a real encoder, controllers,
+audio and game load on a Windows host.
+
+See [the 2026-10-13 stutter report](PERFORMANCE-2026-10-13.md) for measured
+before/after receiver results and browser presentation limits.
+
 ```sh
 cd tests/streaming
 

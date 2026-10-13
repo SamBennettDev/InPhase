@@ -398,6 +398,10 @@ impl WtVideoTransport {
                 loop {
                     let mut shutdown = loop_shutdown.clone();
                     let incoming = tokio::select! {
+                        // Closing the endpoint wakes accept() too, and
+                        // wtransport panics when that closed endpoint wins.
+                        // shutdown() publishes this signal before close().
+                        biased;
                         _ = shutdown.changed() => break,
                         incoming = accept_endpoint.accept() => incoming,
                     };

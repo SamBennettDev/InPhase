@@ -80,7 +80,10 @@ export const NACK_WHOLE_FRAME = 0xffff;
 export function nackTiming(rttMs: number): { firstMs: number; gapMs: number } {
   if (!(rttMs > 0)) return { firstMs: 150, gapMs: 180 };
   const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
-  return { firstMs: clamp(3 * rttMs + 25, 40, 150), gapMs: clamp(3 * rttMs + 30, 50, 180) };
+  // After the first round, one RTT plus slack is enough to see its repair.
+  // Three RTTs between retries put round two beyond the 300ms reorder budget
+  // even on a 40ms route, so a lost repair became a one-second IDR freeze.
+  return { firstMs: clamp(2 * rttMs + 25, 40, 150), gapMs: clamp(rttMs + 30, 50, 180) };
 }
 
 /** Widest frame-number jump treated as loss rather than a new sequence. */
@@ -601,34 +604,39 @@ export class WtVideoClient {
         // At most 8 datagrams per round per frame: the 23:21 storm
         // re-NACKed hundreds of holes per round across 8 partial frames.
         //
-        // *Which* 8 matters. This loop used to walk every missing index from
-        // 0 upward and stop at 8, so a frame with more than 8 holes never
-        // requested the higher ones in any of its four rounds - it could not
-        // assemble no matter how much the host re-sent, and the audit of a
-        // 30-fragment IDR (fragments k..29 arrived, 0..k-1 destroyed by the
-        // send buffer) is exactly that shape. And two holes inside one
-        // 8-fragment group are a wasted datagram: that group is FEC-dead
-        // until one of them is restored, so asking for the second can only
-        // help after the first lands. So: one hole per group, rotating the
-        // start group each round. A 9-hole frame spread over four groups goes
-        // from "never recoverable" to four requests whose partners row-1
-        // parity then rebuilds locally, at the same NACK volume.
+        // Give every group a first request, then spend the remaining budget
+        // on the holes parity cannot cover. One request per group was too
+        // little when parity itself was lost, or a group had three holes:
+        // round two at a 40ms RTT landed after the orderer's 300ms deadline,
+        // turning repairable loss into an IDR and a visible freeze.
         const groupCount = Math.ceil(st.cnt / 8);
-        let budget = 8;
-        for (let g = 0; g < groupCount && budget > 0; g++) {
+        const requests: number[][] = [];
+        for (let g = 0; g < groupCount; g++) {
           const gi = (g + st.nacks) % groupCount;
           const lo = gi * 8;
           const hi = Math.min(lo + 8, st.cnt);
           const missing: number[] = [];
           for (let i = lo; i < hi; i++) if (st.parts[i] === null) missing.push(i);
           if (missing.length === 0) continue;
-          // Rotate *within* the group as well: a group with two holes must
-          // eventually ask for the second one, or the pair is stuck forever
-          // (row 1 can only restore one of them).
-          const idx = missing[(st.nacks + gi) % missing.length]!;
-          budget--;
-          this.nacksSent++;
-          void this.send({ type: "nack", frame: no, idx });
+          // Row 1 can restore the last hole once the requested ones arrive.
+          // Without that row, every missing fragment needs a retransmission.
+          const needed = Math.max(1, missing.length - Number(st.p1?.has(gi) ?? false));
+          requests.push(Array.from({ length: needed }, (_, k) =>
+            missing[(st.nacks + gi + k) % missing.length]!));
+        }
+        let budget = 8;
+        for (let pass = 0; budget > 0; pass++) {
+          let sent = false;
+          for (const group of requests) {
+            const idx = group[pass];
+            if (idx === undefined) continue;
+            budget--;
+            sent = true;
+            this.nacksSent++;
+            void this.send({ type: "nack", frame: no, idx });
+            if (budget === 0) break;
+          }
+          if (!sent) break;
         }
       }
     }

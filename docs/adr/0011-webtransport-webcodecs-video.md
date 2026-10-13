@@ -177,6 +177,25 @@ Total ≈ 5-8 working days for a flag-gated v1.
 - **GC pressure from VideoFrames** — explicit `close()` discipline, verified
   in P2 profiling.
 
+## Receiver recovery update (2026-10-13)
+
+Deterministic v4 loss/jitter runs exposed avoidable stutters in the receiver:
+late repairs distorted the capture-cadence estimate, and one NACK per FEC group
+could not repair three missing fragments or a missing parity row before the
+reorder deadline. Cadence now uses capture-time differences divided by advancing
+frame-number differences; late arrivals do not move that sampling cursor.
+
+NACK rounds give each damaged group a first request before spending spare budget
+on the additional holes row-1 parity cannot restore. The existing eight-request
+round cap and four-round limit remain. The first round waits two RTTs plus slack;
+retries wait one RTT plus slack, so a second response fits the 300ms reorder
+budget on a 40ms route. Unknown RTT keeps the conservative fallback timings.
+
+`web/tests/performance` combines production reassembly and ordering under virtual
+impairments; `crates/host/tests/quic_impairment.rs` exercises actual QUIC sockets.
+These validate recovery and transport behavior, not Windows GPU or optical
+latency. Browser presentation tests use real WebCodecs with synthetic motion.
+
 ## Revisit trigger
 
 If measured glass-to-glass over WT on a stable path exceeds the WebRTC LAN
