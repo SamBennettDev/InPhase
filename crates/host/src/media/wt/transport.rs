@@ -375,7 +375,9 @@ impl WtVideoTransport {
             datagram_video: std::sync::atomic::AtomicBool::new(false),
             key_by_datagram: std::sync::atomic::AtomicBool::new(false),
             wt_resend: Mutex::new(std::collections::VecDeque::new()),
-            wt_resend_tokens: Mutex::new((std::time::Instant::now(), 0)),
+            wt_resend_tokens: Mutex::new(super::repair_budget::RepairBudget::new(
+                std::time::Instant::now(),
+            )),
             pace_pps: std::sync::atomic::AtomicU32::new(crate::media::wt::WT_PACE_PPS as u32),
             wt_nack_dropped: std::sync::atomic::AtomicU64::new(0),
             wt_nack_missed: std::sync::atomic::AtomicU64::new(0),
@@ -398,6 +400,10 @@ impl WtVideoTransport {
                 loop {
                     let mut shutdown = loop_shutdown.clone();
                     let incoming = tokio::select! {
+                        // Closing the endpoint wakes accept() too, and
+                        // wtransport panics when that closed endpoint wins.
+                        // shutdown() publishes this signal before close().
+                        biased;
                         _ = shutdown.changed() => break,
                         incoming = accept_endpoint.accept() => incoming,
                     };
@@ -1801,6 +1807,41 @@ mod tests {
         }
         assert_eq!(assembled.len(), payload_len, "the anchor reassembles whole");
         assert!(assembled.iter().all(|b| *b == 9), "payload intact");
+    }
+
+    #[tokio::test]
+    async fn displaced_session_cannot_forward_reliable_input() {
+        let t = test_transport();
+        let conn = connect_client(&t).await;
+        let (mut ctl, _rx) =
+            open_control_and_auth(&conn, &t.issue_token(Duration::from_secs(30))).await;
+        wait_for(&t, |e| matches!(e, WtClientEvent::Connected)).await;
+        let (mut input, _input_rx) = conn.open_bi().await.unwrap().await.unwrap();
+        input.write_all(&[0, 2, 1, 7]).await.unwrap();
+        let event = wait_for(&t, |e| matches!(e, WtClientEvent::Input(_))).await;
+        assert!(matches!(event, WtClientEvent::Input(bytes) if bytes == [1, 7]));
+
+        // Leave the old connection drainable to exercise queued input at
+        // handover, independent of when QUIC finishes closing the incumbent.
+        let old = t.shared.active.lock().unwrap();
+        *t.shared.active.lock() = Some(old.wrapping_add(1));
+        input.write_all(&[0, 2, 2, 8]).await.unwrap();
+        ctl.write_all(b"{\"type\":\"input\",\"data_b64\":\"Awk\"}\n")
+            .await
+            .unwrap();
+        conn.send_datagram([4, 10]).unwrap();
+
+        let deadline = Instant::now() + Duration::from_millis(300);
+        while Instant::now() < deadline {
+            while let Some(event) = t.try_next_event() {
+                assert!(
+                    !matches!(event, WtClientEvent::Input(_)),
+                    "a displaced input reader forwarded into its successor"
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        t.shutdown();
     }
 
     #[tokio::test]

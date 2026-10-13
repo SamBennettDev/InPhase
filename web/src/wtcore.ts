@@ -77,10 +77,13 @@ export const NACK_WHOLE_FRAME = 0xffff;
  *  150 ms first. Scaled to the measured RTT, with floors that still let a
  *  paced frame's own fragments arrive before any of them is presumed lost.
  *  RTT unknown (0) keeps the old timings. */
-export function nackTiming(rttMs: number): { firstMs: number; gapMs: number } {
+export function nackTiming(rttMs: number, assemblyTailMs = 0): { firstMs: number; gapMs: number } {
   if (!(rttMs > 0)) return { firstMs: 150, gapMs: 180 };
   const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
-  return { firstMs: clamp(3 * rttMs + 25, 40, 150), gapMs: clamp(3 * rttMs + 30, 50, 180) };
+  // After the first round, one RTT plus slack is enough to see its repair.
+  // Three RTTs between retries put round two beyond the 300ms reorder budget
+  // even on a 40ms route, so a lost repair became a one-second IDR freeze.
+  return { firstMs: clamp(Math.max(rttMs + 15, assemblyTailMs + 15), 40, 150), gapMs: clamp(rttMs + 30, 50, 180) };
 }
 
 /** Widest frame-number jump treated as loss rather than a new sequence. */
@@ -284,38 +287,45 @@ export class WtVideoClient {
     // while control-stream messages flowed), so the §12 packet ALSO rides
     // the reliable control stream. The host's sequence-freshness gate
     // applies whichever copy arrives first and drops the duplicate.
-    let sent = false;
+    const writes: Promise<boolean>[] = [];
     const w = this.inputWriter;
-    if (w) {
-      try {
-        await w.write(bytes);
-        sent = true;
-      } catch {
-        this.inputWriter = null;
-      }
+    // A datagram writer under backpressure already holds an older copy.
+    // Keep its queue bounded; the dedicated stream carries the new event.
+    if (w && w.desiredSize !== null && !(w.desiredSize <= 0)) {
+      writes.push((async () => {
+        try { await w.write(bytes); return true; }
+        catch (e) {
+          if (this.inputWriter === w) this.inputWriter = null;
+          throw e;
+        }
+      })());
     }
-    if (this.inputStreamWriter) {
-      try {
-        const framed = new Uint8Array(bytes.length + 2);
-        framed[0] = bytes.length >> 8;
-        framed[1] = bytes.length & 0xff;
-        framed.set(bytes, 2);
-        await this.inputStreamWriter.write(framed);
-        sent = true;
-      } catch {
-        this.inputStreamWriter = null;
-      }
+    const streamWriter = this.inputStreamWriter;
+    if (streamWriter) {
+      const framed = new Uint8Array(bytes.length + 2);
+      framed[0] = bytes.length >> 8;
+      framed[1] = bytes.length & 0xff;
+      framed.set(bytes, 2);
+      writes.push((async () => {
+        try { await streamWriter.write(framed); return true; }
+        catch (e) {
+          if (this.inputStreamWriter === streamWriter) this.inputStreamWriter = null;
+          throw e;
+        }
+      })());
     }
-    if (!sent) {
-      // Last resort: the control stream (reliable but serialized behind
-      // NACKs - only for browsers without the dedicated stream).
-      let bin = "";
-      for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]!);
-      const b64 = btoa(bin);
-      void this.send({ type: "input", data_b64: b64.replace(/=+$/, "") });
-      sent = this.controlWriter !== null;
+    // Start both copies immediately. One path's flow control must not hold
+    // the other copy hostage, and the first successful write completes input.
+    if (writes.length) {
+      try { return await Promise.any(writes); } catch { /* both paths failed */ }
     }
-    return sent;
+    // Last resort: the control stream (reliable but serialized behind
+    // NACKs - only for browsers without the dedicated stream).
+    let bin = "";
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]!);
+    const b64 = btoa(bin);
+    void this.send({ type: "input", data_b64: b64.replace(/=+$/, "") });
+    return this.controlWriter !== null;
   }
 
   /** Ms since the last sign of life from the connection (pong or datagram). */
@@ -334,6 +344,8 @@ export class WtVideoClient {
   }
 
   async dial(info: WtVideoInfo, h: WtClientHandlers): Promise<void> {
+    this.assemblySpreads.length = 0;
+    this.assemblyTailMs = 135;
     if (!("WebTransport" in globalThis)) throw new Error("WebTransport unsupported in this browser");
     const url = `https://${info.hostname ?? globalThis.location?.hostname}:${info.port}/wt-video`;
     console.info(`wt: dialing ${url} (pin ${info.cert_sha256.slice(0, 8)}…)`);
@@ -537,6 +549,11 @@ export class WtVideoClient {
   private keysReceived = 0;
   /** Fragments rebuilt locally from FEC parity - no NACK, no RTT. */
   private v4Repaired = 0;
+  /** Healthy fragment spread, excluding NACK repairs. A route with 120ms
+   *  jitter must not request repairs after 55ms merely because RTT is short.
+   *  Until eight frames calibrate it, keep the conservative 150ms deadline. */
+  private assemblySpreads: number[] = [];
+  private assemblyTailMs = 135;
   /** NACKs sent for missing fragments (diagnosis: repair rate vs IDR waits). */
   private nacksSent = 0;
   /** Frame numbers already assembled - late re-sends land here and stop. */
@@ -581,7 +598,7 @@ export class WtVideoClient {
     // arriving after expiry, and without the tombstone each one
     // resurrected a fresh partial frame that NACKed again - the unbounded
     // loop that ran nacks to 7183 with decode at 0 (23:59 session).
-    const nt = nackTiming(this.lastRttMs);
+    const nt = nackTiming(this.lastRttMs, this.assemblyTailMs);
     for (const [no, st] of this.v4) {
       if (nowMs - st.atMs > 900) {
         this.v4.delete(no);
@@ -601,34 +618,39 @@ export class WtVideoClient {
         // At most 8 datagrams per round per frame: the 23:21 storm
         // re-NACKed hundreds of holes per round across 8 partial frames.
         //
-        // *Which* 8 matters. This loop used to walk every missing index from
-        // 0 upward and stop at 8, so a frame with more than 8 holes never
-        // requested the higher ones in any of its four rounds - it could not
-        // assemble no matter how much the host re-sent, and the audit of a
-        // 30-fragment IDR (fragments k..29 arrived, 0..k-1 destroyed by the
-        // send buffer) is exactly that shape. And two holes inside one
-        // 8-fragment group are a wasted datagram: that group is FEC-dead
-        // until one of them is restored, so asking for the second can only
-        // help after the first lands. So: one hole per group, rotating the
-        // start group each round. A 9-hole frame spread over four groups goes
-        // from "never recoverable" to four requests whose partners row-1
-        // parity then rebuilds locally, at the same NACK volume.
+        // Give every group a first request, then spend the remaining budget
+        // on the holes parity cannot cover. One request per group was too
+        // little when parity itself was lost, or a group had three holes:
+        // round two at a 40ms RTT landed after the orderer's 300ms deadline,
+        // turning repairable loss into an IDR and a visible freeze.
         const groupCount = Math.ceil(st.cnt / 8);
-        let budget = 8;
-        for (let g = 0; g < groupCount && budget > 0; g++) {
+        const requests: number[][] = [];
+        for (let g = 0; g < groupCount; g++) {
           const gi = (g + st.nacks) % groupCount;
           const lo = gi * 8;
           const hi = Math.min(lo + 8, st.cnt);
           const missing: number[] = [];
           for (let i = lo; i < hi; i++) if (st.parts[i] === null) missing.push(i);
           if (missing.length === 0) continue;
-          // Rotate *within* the group as well: a group with two holes must
-          // eventually ask for the second one, or the pair is stuck forever
-          // (row 1 can only restore one of them).
-          const idx = missing[(st.nacks + gi) % missing.length]!;
-          budget--;
-          this.nacksSent++;
-          void this.send({ type: "nack", frame: no, idx });
+          // Row 1 can restore the last hole once the requested ones arrive.
+          // Without that row, every missing fragment needs a retransmission.
+          const needed = Math.max(1, missing.length - Number(st.p1?.has(gi) ?? false));
+          requests.push(Array.from({ length: needed }, (_, k) =>
+            missing[(st.nacks + gi + k) % missing.length]!));
+        }
+        let budget = 8;
+        for (let pass = 0; budget > 0; pass++) {
+          let sent = false;
+          for (const group of requests) {
+            const idx = group[pass];
+            if (idx === undefined) continue;
+            budget--;
+            sent = true;
+            this.nacksSent++;
+            void this.send({ type: "nack", frame: no, idx });
+            if (budget === 0) break;
+          }
+          if (!sent) break;
         }
       }
     }
@@ -721,6 +743,14 @@ export class WtVideoClient {
     nowMs: number,
   ): void {
     if (st.got !== st.cnt) return;
+    if (st.nacks === 0) {
+      this.assemblySpreads.push(Math.max(0, nowMs - st.atMs));
+      if (this.assemblySpreads.length > 120) this.assemblySpreads.shift();
+      if (this.assemblySpreads.length >= 8) {
+        const sorted = [...this.assemblySpreads].sort((a, b) => a - b);
+        this.assemblyTailMs = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))]!;
+      }
+    }
     {
       this.v4.delete(frameNo);
       this.v4Done.add(frameNo);
@@ -806,9 +836,16 @@ export class WtVideoClient {
     if (st.total === null) return null;
     if (st.cnt === 1) return st.total;
     const full = st.parts.find((p, i) => p !== null && i < st.cnt - 1);
-    if (full === undefined || full === null) return null;
-    const len = st.total - (st.cnt - 1) * full.byteLength;
-    return len > 0 && len <= full.byteLength ? len : null;
+    // A parity row covering a non-final fragment has the full fragment
+    // width, even if every data fragment is missing (e.g. a two-fragment IDR).
+    let width = full?.byteLength ?? 0;
+    if (width === 0) {
+      for (const [group, row] of st.p1 ?? []) {
+        if (group * 8 < st.cnt - 1) width = Math.max(width, row.byteLength);
+      }
+    }
+    const len = st.total - (st.cnt - 1) * width;
+    return width > 0 && len > 0 && len <= width ? len : null;
   }
 
   /** Local fragment rebuild from FEC parity (zero round-trips): row 1
@@ -854,7 +891,9 @@ export class WtVideoClient {
         const aOdd = (a - lo) % 2 === 1;
         const bOdd = (b - lo) % 2 === 1;
         if (aOdd === bOdd) continue;
-        if (a === st.cnt - 1 || b === st.cnt - 1) continue;
+        const hasTail = a === st.cnt - 1 || b === st.cnt - 1;
+        const tailLength = hasTail ? this.finalLength(st) : null;
+        if (hasTail && tailLength === null) continue;
         const evenMiss = aOdd ? b : a;
         const oddMiss = aOdd ? a : b;
         // accOdd = row2 ^ present odds = the lost odd-offset fragment.
@@ -865,8 +904,8 @@ export class WtVideoClient {
         const accEven = new Uint8Array(p1);
         for (let j = 0; j < accEven.byteLength; j++) accEven[j] = (accEven[j] ?? 0) ^ (p2[j] ?? 0);
         xor(accEven, p1, (i) => i === evenMiss || (i - lo) % 2 === 1, [lo, hi]);
-        st.parts[evenMiss] = accEven;
-        st.parts[oddMiss] = accOdd;
+        st.parts[evenMiss] = evenMiss === st.cnt - 1 ? accEven.subarray(0, tailLength!) : accEven;
+        st.parts[oddMiss] = oddMiss === st.cnt - 1 ? accOdd.subarray(0, tailLength!) : accOdd;
         st.got += 2;
         this.v4Repaired += 2;
       }
@@ -1394,6 +1433,7 @@ export class WtVideoClient {
     this.wt?.close();
     this.wt = null;
     this.inputWriter = null;
+    this.inputStreamWriter = null;
   }
 }
 

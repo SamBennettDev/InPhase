@@ -32,6 +32,7 @@
 //! This file keeps only the types those modules share.
 
 pub mod congestion;
+mod repair_budget;
 pub(crate) mod session;
 mod tokens;
 mod transport;
@@ -439,7 +440,7 @@ struct Shared {
     /// NACK re-send budget: `tokens` datagrams, refilled at a fixed rate.
     /// Without a cap the re-send stream out-shouts fresh video (23:59: the
     /// storm consumed the datagram queue, decode starved at 0 for 20 s).
-    wt_resend_tokens: Mutex<(std::time::Instant, u32)>,
+    wt_resend_tokens: Mutex<repair_budget::RepairBudget>,
     /// Current v4 injection pace (datagrams/s), per connection: 3800 for
     /// in-page drain, 6500 for worker-drain clients (telemetry `worker`).
     /// The sender reads this per frame; the telemetry handler sets it.

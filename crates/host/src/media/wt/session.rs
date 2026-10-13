@@ -14,6 +14,16 @@ use wtransport::VarInt;
 
 use super::{ControlOutSlot, Shared, WtClientEvent, AUTH_TIMEOUT};
 
+/// Serialize input publication with slot handover on every input carrier.
+fn publish_input(shared: &Shared, session_id: u64, bytes: Vec<u8>) -> bool {
+    let owner = shared.active.lock();
+    if *owner != Some(session_id) {
+        return false;
+    }
+    let _ = shared.events.send(WtClientEvent::Input(bytes));
+    true
+}
+
 pub(super) async fn handle_incoming(
     incoming: wtransport::endpoint::IncomingSession,
     shared: Arc<Shared>,
@@ -152,7 +162,6 @@ pub(super) async fn handle_incoming(
                     Ok(s) => s,
                     Err(_) => break, // connection gone
                 };
-                let events = input_shared.events.clone();
                 let marker_shared = input_shared.clone();
                 tokio::spawn(async move {
                     let (tx, mut rx) = stream;
@@ -195,7 +204,9 @@ pub(super) async fn handle_incoming(
                     // §12 input stream: every packet - including the first -
                     // forwards as input.
                     loop {
-                        let _ = events.send(WtClientEvent::Input(buf));
+                        if !publish_input(&marker_shared, session_id, buf) {
+                            break;
+                        }
                         let mut lbuf = [0u8; 2];
                         if rx.read_exact(&mut lbuf).await.is_err() {
                             break;
@@ -260,7 +271,9 @@ pub(super) async fn handle_incoming(
                         use base64::Engine as _;
                         match base64::engine::general_purpose::STANDARD_NO_PAD.decode(&data_b64) {
                             Ok(bytes) => {
-                                let _ = shared.events.send(WtClientEvent::Input(bytes));
+                                if !publish_input(&shared, session_id, bytes) {
+                                    break;
+                                }
                             }
                             Err(e) => {
                                 warn!("wt: input over control stream failed to decode: {e}");
@@ -499,8 +512,8 @@ pub(super) async fn handle_incoming(
                         // late-but-complete delta beats a frozen pipeline.
                         //
                         // Budgeted: a re-send may take a token, never more.
-                        // 60/s (burst 60) is a fraction of the ~600-1000/s
-                        // fresh stream, so NACK demand can never starve new
+                        // 300/s (burst 300) is a fraction of the fresh stream,
+                        // so NACK demand can never starve new
                         // frames the way it did at 23:59 (decode 0 for 20 s
                         // under the re-send storm). Beyond-budget NACKs are
                         // dropped: parity repairs the common case, the
@@ -508,32 +521,15 @@ pub(super) async fn handle_incoming(
                         // recovers the rest.
                         if let Some(conn) = shared.live_connection.borrow().clone() {
                             let mut budget = shared.wt_resend_tokens.lock();
-                            // 300/s, not 60/s. The client's demand is bounded
-                            // by its own round policy (<= 8 holes per frame
-                            // per round, 4 rounds, >= 180 ms apart), but at
-                            // high bitrate a frame is 30-40 fragments and the
-                            // 80 Mbps session showed it asking up to 506/s
-                            // while this handed out 60/s - so ~88 % of its
-                            // repair requests were discarded, silently, and
-                            // the frames never assembled (decoded 1-17 fps
-                            // with the host dropping nothing at all). The
-                            // storm guard still exists: 300/s ~ 2.7 Mbps of
-                            // re-send traffic while damaged (a fraction of the
-                            // fresh stream at these rates), and interleaved
-                            // fragment order means most bursts are now
-                            // repaired by parity with no NACK at all.
-                            const RATE_PER_SEC: u32 = 300;
-                            let (refill_at, tokens) = &mut *budget;
-                            let refill_ms = refill_at.elapsed().as_millis() as u32;
-                            *tokens = RATE_PER_SEC.min(*tokens + refill_ms * RATE_PER_SEC / 1000);
-                            *refill_at = std::time::Instant::now();
-                            if *tokens == 0 {
+                            // Keep the 300/s ceiling and burst cap while
+                            // retaining fractional credit. Truncating each
+                            // 2ms refill to zero starved repairs at 500 NACKs/s.
+                            if !budget.take(std::time::Instant::now()) {
                                 shared
                                     .wt_nack_dropped
                                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                                 continue;
                             }
-                            *tokens -= 1;
                             if idx == inphase_protocol::NACK_WHOLE_FRAME {
                                 // Every cached fragment of the frame, one
                                 // budget token each. Nothing cached is not a
@@ -548,14 +544,11 @@ pub(super) async fn handle_incoming(
                                     .map(|(_, _, enc)| enc.clone())
                                     .collect();
                                 for (i, enc) in hits.iter().enumerate() {
-                                    if i > 0 {
-                                        if *tokens == 0 {
-                                            shared
-                                                .wt_nack_dropped
-                                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                            break;
-                                        }
-                                        *tokens -= 1;
+                                    if i > 0 && !budget.take(std::time::Instant::now()) {
+                                        shared
+                                            .wt_nack_dropped
+                                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                        break;
                                     }
                                     let _ =
                                         crate::media::wt::transport::try_send_datagram(&conn, enc);
@@ -611,8 +604,8 @@ pub(super) async fn handle_incoming(
             let shared = drain_shared;
             while let Ok(bytes) = conn.receive_datagram().await {
                 // A displaced session must not touch its successor's input.
-                if *shared.active.lock() == Some(session_id) {
-                    let _ = shared.events.send(WtClientEvent::Input(bytes.to_vec()));
+                if !publish_input(&shared, session_id, bytes.to_vec()) {
+                    break;
                 }
             }
         });

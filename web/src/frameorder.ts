@@ -94,7 +94,7 @@ export class FrameOrderer {
   private farAhead = 0;
   /** EMA of the capture-time step between frames, for a horizon in *time*. */
   private cadenceUs = 16_667;
-  private lastCaptureUs: number | null = null;
+  private lastCapture: { no: number; us: number } | null = null;
   /** Newest capture time seen, the orderer's only clock. Survives reset(): it
    *  times keyframe re-requests, which outlive the sequence they repair. */
   private newestUs = 0;
@@ -201,6 +201,11 @@ export class FrameOrderer {
     return this.pending.size;
   }
 
+  /** This exact arrival was accepted and is waiting for its predecessor. */
+  holds(f: WtFrame): boolean {
+    return this.pending.get(f.frame_no) === f;
+  }
+
   /** Unanchored and a keyframe request is due. Stays true until the caller
    *  reports one sent ({@link keyframeRequested}), so a request the page
    *  throttle refused is retried on the next arrival rather than lost. */
@@ -231,7 +236,7 @@ export class FrameOrderer {
     this.nextSeq = null;
     this.resyncNeeded = false;
     this.farAhead = 0;
-    this.lastCaptureUs = null;
+    this.lastCapture = null;
   }
 
   /**
@@ -257,11 +262,23 @@ export class FrameOrderer {
    * releases the deltas that were waiting on it.
    */
   accept(f: WtFrame): WtFrame[] {
-    if (this.lastCaptureUs !== null) {
-      const step = f.capture_us - this.lastCaptureUs;
-      if (step > 0 && step < 1_000_000) this.cadenceUs = this.cadenceUs * 0.9 + step * 0.1;
+    const last = this.lastCapture;
+    if (last !== null) {
+      const ahead = (f.frame_no - last.no) >>> 0;
+      const step = f.capture_us - last.us;
+      if (ahead > 0 && ahead < 0x80000000) {
+        // Arrival order is not capture order. A late repair followed by the
+        // newest frame used to look like one huge capture interval, shrinking
+        // the horizon until it rejected healthy deltas behind the next hole.
+        // Measure per-frame cadence between advancing frame numbers instead.
+        if (step > 0 && step < 1_000_000) {
+          this.cadenceUs = this.cadenceUs * 0.9 + (step / ahead) * 0.1;
+        }
+        this.lastCapture = { no: f.frame_no, us: f.capture_us };
+      }
+    } else {
+      this.lastCapture = { no: f.frame_no, us: f.capture_us };
     }
-    this.lastCaptureUs = f.capture_us;
     // capture_us is the pipeline's PTS, so it restarts with each pipeline
     // while frame numbers carry on: a capture far behind the newest is a new
     // clock, and a re-request scheduled on the old one would never fall due.

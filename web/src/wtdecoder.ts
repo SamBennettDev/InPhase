@@ -345,6 +345,7 @@ export class WtDecoder {
     this.order.reset(newStream);
     // Frames held for pacing belong to the decode state being replaced.
     this.dropPaced();
+    if (newStream) this.playout.reset();
     // Only a new stream may ask at once. A rebuild re-asking past the throttle
     // was one IDR request per decode error (audit §3.1).
     if (newStream) this.keyThrottle.reset();
@@ -477,16 +478,24 @@ export class WtDecoder {
 
   onFrame(f: WtFrame): void {
     if (this.stopped || this.decoder === null || this.decoder.state !== "configured") return;
+    const arrivedMs = performance.now();
     const offset = this.clockOffsetUs();
     this.frames.arrived(
       f.capture_us,
-      performance.now(),
+      arrivedMs,
       offset !== null ? glassAgeMs(performance.now() * 1000, f.capture_us, offset) : null,
     );
     // Ordering lives in FrameOrderer - pure logic over frame numbers, tested
     // directly. Streams complete independently, so frames arrive out of order
     // and a late keyframe must still anchor the sequence.
-    for (const ready of this.order.accept(f)) this.admit(ready);
+    const ready = this.order.accept(f);
+    // Sample accepted arrivals, using the timestamp from before reordering.
+    // A repair can release dozens of healthy successors together; measuring
+    // that release made one loss add 40ms of pacing for seconds. Replays and
+    // previous-pipeline stragglers must not contaminate the new clock either.
+    if (this.pacing && this.announced && !this.order.needsKeyframe &&
+        (this.order.holds(f) || ready.includes(f))) this.playout.observe(f.capture_us, arrivedMs);
+    for (const f of ready) this.admit(f);
     if (this.order.needsResync) {
       this.lastGapSeq = f.frame_no;
       this.referenceGap();
@@ -719,7 +728,6 @@ export class WtDecoder {
       this.submit(f);
       return;
     }
-    this.playout.observe(f.capture_us, performance.now());
     for (const early of this.paced.push(f, this.playout.dueMs(f.capture_us))) this.release(early);
     this.releasePaced(performance.now());
   }

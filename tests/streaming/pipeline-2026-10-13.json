@@ -1,0 +1,175 @@
+{
+  "kind": "virtual-network-receiver-followup",
+  "baseline": "5af589b66f24b1f6bb72586039adee30ba76cab2",
+  "secondsPerRun": 60,
+  "fps": [
+    60,
+    120
+  ],
+  "seeds": [
+    1,
+    7,
+    42
+  ],
+  "deltaPayloadBytes": 12113,
+  "repairRatePerSecond": 300,
+  "repairBurst": 300,
+  "cache": "data only, current frame plus preceding 150 frame numbers",
+  "metricsEnd": "decoder ordering gate",
+  "profiles": {
+    "lan": {
+      "before": {
+        "minimumAdmissionPercent": 100,
+        "maximumAdmissionGapMs": 16.7,
+        "maximumAdmissionAgeP95Ms": 3.1,
+        "maximumHeld": 0,
+        "maximumAssemblies": 1,
+        "maximumNacksPerMinute": 0,
+        "maximumRepairsRefused": 0,
+        "maximumResyncsPerMinute": 0
+      },
+      "after": {
+        "minimumAdmissionPercent": 100,
+        "maximumAdmissionGapMs": 16.7,
+        "maximumAdmissionAgeP95Ms": 3.1,
+        "maximumHeld": 0,
+        "maximumAssemblies": 1,
+        "maximumNacksPerMinute": 0,
+        "maximumRepairsRefused": 0,
+        "maximumResyncsPerMinute": 0
+      }
+    },
+    "wifi-jitter": {
+      "before": {
+        "minimumAdmissionPercent": 100,
+        "maximumAdmissionGapMs": 34.2,
+        "maximumAdmissionAgeP95Ms": 39.6,
+        "maximumHeld": 1,
+        "maximumAssemblies": 4,
+        "maximumNacksPerMinute": 42,
+        "maximumRepairsRefused": 0,
+        "maximumResyncsPerMinute": 0
+      },
+      "after": {
+        "minimumAdmissionPercent": 100,
+        "maximumAdmissionGapMs": 34.2,
+        "maximumAdmissionAgeP95Ms": 39.6,
+        "maximumHeld": 1,
+        "maximumAssemblies": 4,
+        "maximumNacksPerMinute": 42,
+        "maximumRepairsRefused": 0,
+        "maximumResyncsPerMinute": 0
+      }
+    },
+    "loss-1pct": {
+      "before": {
+        "minimumAdmissionPercent": 100,
+        "maximumAdmissionGapMs": 154.7,
+        "maximumAdmissionAgeP95Ms": 21.2,
+        "maximumHeld": 16,
+        "maximumAssemblies": 4,
+        "maximumNacksPerMinute": 38,
+        "maximumRepairsRefused": 0,
+        "maximumResyncsPerMinute": 0
+      },
+      "after": {
+        "minimumAdmissionPercent": 100,
+        "maximumAdmissionGapMs": 129.5,
+        "maximumAdmissionAgeP95Ms": 20.8,
+        "maximumHeld": 7,
+        "maximumAssemblies": 4,
+        "maximumNacksPerMinute": 38,
+        "maximumRepairsRefused": 0,
+        "maximumResyncsPerMinute": 0
+      }
+    },
+    "loss-5pct": {
+      "before": {
+        "minimumAdmissionPercent": 99.89,
+        "maximumAdmissionGapMs": 305.5,
+        "maximumAdmissionAgeP95Ms": 186.8,
+        "maximumHeld": 34,
+        "maximumAssemblies": 9,
+        "maximumNacksPerMinute": 825,
+        "maximumRepairsRefused": 0,
+        "maximumResyncsPerMinute": 0
+      },
+      "after": {
+        "minimumAdmissionPercent": 99.97,
+        "maximumAdmissionGapMs": 243.6,
+        "maximumAdmissionAgeP95Ms": 136.5,
+        "maximumHeld": 27,
+        "maximumAssemblies": 9,
+        "maximumNacksPerMinute": 858,
+        "maximumRepairsRefused": 0,
+        "maximumResyncsPerMinute": 0
+      }
+    },
+    "wan": {
+      "before": {
+        "minimumAdmissionPercent": 100,
+        "maximumAdmissionGapMs": 298.6,
+        "maximumAdmissionAgeP95Ms": 254.7,
+        "maximumHeld": 34,
+        "maximumAssemblies": 8,
+        "maximumNacksPerMinute": 310,
+        "maximumRepairsRefused": 0,
+        "maximumResyncsPerMinute": 0
+      },
+      "after": {
+        "minimumAdmissionPercent": 100,
+        "maximumAdmissionGapMs": 290.9,
+        "maximumAdmissionAgeP95Ms": 251,
+        "maximumHeld": 32,
+        "maximumAssemblies": 8,
+        "maximumNacksPerMinute": 304,
+        "maximumRepairsRefused": 0,
+        "maximumResyncsPerMinute": 0
+      }
+    },
+    "burst": {
+      "before": {
+        "minimumAdmissionPercent": 99.89,
+        "maximumAdmissionGapMs": 76.7,
+        "maximumAdmissionAgeP95Ms": 20.6,
+        "maximumHeld": 5,
+        "maximumAssemblies": 5,
+        "maximumNacksPerMinute": 87,
+        "maximumRepairsRefused": 0,
+        "maximumResyncsPerMinute": 0
+      },
+      "after": {
+        "minimumAdmissionPercent": 99.89,
+        "maximumAdmissionGapMs": 76.7,
+        "maximumAdmissionAgeP95Ms": 20.6,
+        "maximumHeld": 5,
+        "maximumAssemblies": 5,
+        "maximumNacksPerMinute": 87,
+        "maximumRepairsRefused": 0,
+        "maximumResyncsPerMinute": 0
+      }
+    },
+    "outage-1s": {
+      "before": {
+        "minimumAdmissionPercent": 97.75,
+        "maximumAdmissionGapMs": 1371.8,
+        "maximumAdmissionAgeP95Ms": 20.4,
+        "maximumHeld": 3,
+        "maximumAssemblies": 2,
+        "maximumNacksPerMinute": 0,
+        "maximumRepairsRefused": 0,
+        "maximumResyncsPerMinute": 1
+      },
+      "after": {
+        "minimumAdmissionPercent": 97.75,
+        "maximumAdmissionGapMs": 1371.8,
+        "maximumAdmissionAgeP95Ms": 20.4,
+        "maximumHeld": 3,
+        "maximumAssemblies": 2,
+        "maximumNacksPerMinute": 0,
+        "maximumRepairsRefused": 0,
+        "maximumResyncsPerMinute": 1
+      }
+    }
+  }
+}

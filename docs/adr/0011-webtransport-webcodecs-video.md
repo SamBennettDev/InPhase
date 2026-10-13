@@ -177,6 +177,43 @@ Total ≈ 5-8 working days for a flag-gated v1.
 - **GC pressure from VideoFrames** — explicit `close()` discipline, verified
   in P2 profiling.
 
+## Receiver recovery update (2026-10-13)
+
+Deterministic v4 loss/jitter runs exposed avoidable stutters in the receiver:
+late repairs distorted the capture-cadence estimate, and one NACK per FEC group
+could not repair three missing fragments or a missing parity row before the
+reorder deadline. Cadence now uses capture-time differences divided by advancing
+frame-number differences; late arrivals do not move that sampling cursor.
+
+NACK rounds give each damaged group a first request before spending spare budget
+on the additional holes row-1 parity cannot restore. The existing eight-request
+round cap and four-round limit remain. After eight healthy assemblies calibrate
+the route, the first round waits the greater of RTT + 15ms and the recent
+assembly-spread p95 + 15ms, clamped to 40–150ms. Cold connections wait 150ms;
+unknown RTT keeps the conservative fallback timings. Retries wait RTT + 30ms,
+clamped to 50–180ms. Measuring fragment spread avoids repair floods on routes
+with low RTT but a long jitter tail. NACK-repaired assemblies are excluded from
+the spread estimate.
+
+The host retains fractional refill credit in its 300 repairs/s, 300-burst
+budget; dense requests no longer round every refill down to zero. Two-row FEC
+can also rebuild a missing short final fragment with an opposite-parity hole,
+using the encoded total length to remove zero padding. Playout statistics use
+accepted frames' original arrival times, before the reorder gate releases
+them: releasing a repaired chain together must not invent network jitter.
+
+Input copies start independently on datagrams and the dedicated reliable
+stream. The first successful write completes the send call. Strict sequence
+freshness makes duplicate copies consume neither input actions nor rate credit;
+duplicates cannot keep held keys alive. All three host input carriers check
+session ownership while publishing, including queued reliable input during
+handover.
+
+`web/tests/performance` combines production reassembly and ordering under virtual
+impairments; `crates/host/tests/quic_impairment.rs` exercises actual QUIC sockets.
+These validate recovery and transport behavior, not Windows GPU or optical
+latency. Browser presentation tests use real WebCodecs with synthetic motion.
+
 ## Revisit trigger
 
 If measured glass-to-glass over WT on a stable path exceeds the WebRTC LAN
