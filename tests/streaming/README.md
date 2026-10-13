@@ -71,15 +71,22 @@ npm run test:network -- /tmp/inphase-network.json
 # Moving H.264 through the production decoder/canvas, pacing off and on.
 # Run on an idle machine: concurrent compilation changes these numbers.
 npm run test:streaming -- /tmp/inphase-browser.json
+# Reassembly CPU diagnostic, with payload generation outside the timed loop.
+npm run test:receiver -- /tmp/inphase-receiver.json
 ```
 
 `INPHASE_SIM_SECONDS=120 npm run test:network -- /tmp/network.json` extends the
 receiver runs. They assert byte integrity, ordered reference chains, bounded
 queues, progress, recovery and profile-specific frame-admission floors. Their
 ages end at decode admission; they model v4 frame delivery, reliable control
-requests and a 150-frame resend cache, not QUIC congestion, bandwidth adaptation,
+requests, the host's 300/s repair budget and a data-only resend cache covering
+the current frame and preceding 150 frame numbers, not QUIC congestion, bandwidth adaptation,
 Windows capture, audio, GPU decoding or physical display timing. Synthetic v4
 keyframes also exercise FEC here; the live host sends its keyframes reliably.
+`INPHASE_SIM_FRAME_BYTES=64113` increases delta payload size (about 61.5 Mbps
+at 120 fps before parity and headers). `INPHASE_SIM_REPAIR_LIMITER=legacy`
+reproduces the old integer-refill behavior for comparisons. These controls do
+not model link capacity; increasing offered traffic can exceed repair limits.
 
 The Rust test sends actual WebTransport through a userspace UDP proxy with
 bidirectional delay, jitter and packet loss, and checks video plus dedicated
@@ -87,6 +94,8 @@ input-stream delivery. The browser diagnostic reports counters and frametime
 tails; a successful exit means valid visible playback, not that a resolution/FPS
 target was met. The small browser regression tests have explicit progress
 assertions. Higher-resolution results are diagnostic and need hardware checks.
+The browser test command uses one worker so software-codec presentation gates
+run without concurrent test pages competing for the player's CPU.
 
 The network harness has no throughput ceiling claim. Use `matrix.sh` and the
 hardware procedures below to test bandwidth caps, a real encoder, controllers,
@@ -94,6 +103,10 @@ audio and game load on a Windows host.
 
 See [the 2026-10-13 stutter report](PERFORMANCE-2026-10-13.md) for measured
 before/after receiver results and browser presentation limits.
+The [pipeline follow-up](PIPELINE-2026-10-13.md) compares the next optimizations
+against that first fix, using the updated repair-budget model. See
+[replacement readiness](../../docs/REPLACEMENT_READINESS.md) for feature and
+hardware gates before treating InPhase as a full Moonlight/Sunshine replacement.
 
 ```sh
 cd tests/streaming

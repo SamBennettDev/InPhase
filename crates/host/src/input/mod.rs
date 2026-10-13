@@ -138,19 +138,18 @@ impl InputSession {
             return Ok(());
         }
         let pkt = InputPacket::decode(bytes)?;
-        self.last_packet_at = Instant::now();
-        self.released = false;
-
-        if !self.rate_ok() {
-            self.note_throttled("rate");
-            return Ok(());
-        }
-
         if !self.is_fresh(pkt.header.sequence) {
             debug!(
                 seq = pkt.header.sequence,
                 "dropping stale/out-of-order input packet"
             );
+            return Ok(());
+        }
+        // The datagram and reliable paths carry copies of the same input.
+        // Discard the second copy before charging the rate bucket or
+        // renewing the watchdog: it is neither new movement nor liveness.
+        if !self.rate_ok() {
+            self.note_throttled("rate");
             return Ok(());
         }
         self.high_water = Some(pkt.header.sequence);
@@ -175,6 +174,8 @@ impl InputSession {
             }
         }
 
+        self.last_packet_at = Instant::now();
+        self.released = false;
         let diff = match &pkt.event {
             // Authoritative reconciliation — releases anything the host still
             // thinks is held but the client says is not (§12.2).
@@ -193,7 +194,10 @@ impl InputSession {
     fn is_fresh(&self, seq: u32) -> bool {
         match self.high_water {
             None => true,
-            Some(hw) => seq.wrapping_sub(hw) < u32::MAX / 2,
+            Some(hw) => {
+                let ahead = seq.wrapping_sub(hw);
+                ahead != 0 && ahead < 0x8000_0000
+            }
         }
     }
 
@@ -305,5 +309,85 @@ mod tests {
     fn truncated_frame_still_errors() {
         let mut s = session();
         assert!(s.handle_packet(&[1, 2, 3]).is_err());
+    }
+
+    #[derive(Clone, Default)]
+    struct RecordingBackend(std::sync::Arc<parking_lot::Mutex<Vec<InputAction>>>);
+
+    impl InputBackend for RecordingBackend {
+        fn name(&self) -> &str {
+            "recording"
+        }
+        fn apply_diff(&mut self, diff: &InputDiff) {
+            self.0.lock().extend(diff.actions.iter().cloned());
+        }
+        fn release_all(&mut self) {}
+    }
+
+    #[test]
+    fn dual_path_mouse_packets_apply_once_and_do_not_consume_the_next_event() {
+        let recorder = RecordingBackend::default();
+        let mut s = session();
+        s.backend = Box::new(recorder.clone());
+        s.tokens = 2.0;
+        for seq in [1, 1, 2, 2] {
+            s.handle_packet(&mv(seq, if seq == 1 { 7 } else { 9 }, -2))
+                .unwrap();
+        }
+        assert_eq!(
+            *recorder.0.lock(),
+            vec![
+                InputAction::MouseMove { dx: 7, dy: -2 },
+                InputAction::MouseMove { dx: 9, dy: -2 },
+            ],
+            "datagram and reliable copies must not double movement or burn admission credit"
+        );
+        assert_eq!(s.throttled, 0);
+    }
+
+    #[test]
+    fn sequence_wrap_still_applies_each_movement_once() {
+        let recorder = RecordingBackend::default();
+        let mut s = session();
+        s.backend = Box::new(recorder.clone());
+        for seq in [u32::MAX, u32::MAX, 0, 0, 1] {
+            s.handle_packet(&mv(seq, 1, 0)).unwrap();
+        }
+        assert_eq!(recorder.0.lock().len(), 3);
+    }
+
+    #[test]
+    fn duplicate_input_does_not_keep_a_held_key_alive() {
+        let recorder = RecordingBackend::default();
+        let mut s = session();
+        s.backend = Box::new(recorder.clone());
+        let down = InputPacket::new(
+            1,
+            0,
+            0,
+            InputEvent::Key {
+                physical_code: 30,
+                down: true,
+                modifiers: 0,
+            },
+        )
+        .encode();
+        s.handle_packet(&down).unwrap();
+        s.last_packet_at = Instant::now() - Duration::from_millis(300);
+        s.handle_packet(&down).unwrap();
+        s.tick_watchdog();
+        assert_eq!(
+            *recorder.0.lock(),
+            vec![
+                InputAction::Key {
+                    physical_code: 30,
+                    down: true
+                },
+                InputAction::Key {
+                    physical_code: 30,
+                    down: false
+                },
+            ]
+        );
     }
 }

@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! Video: d3d11screencapturesrc(dxgi|wgc, monitor N)
-//!          -> queue(max-buffers=3, leaky=downstream)      // drop stale frames
+//!          -> queue(max-buffers=1, leaky=downstream)      // drop stale frames
 //!          -> d3d11convert                                // GPU BGRA->NV12 §5.1
 //!          -> video/x-raw(memory:D3D11Memory),NV12,W x H @ fps
 //!          -> encoder + WT tap (see `media::webrtc`)
@@ -185,9 +185,6 @@ impl Pipeline {
 
         // ---- leaky queue: decouples the capture thread from encode, and drops
         //      STALE frames rather than stalling the source (§2.1, §5.1, §8.2).
-        //      `leaky=upstream` keeps the freshest buffers and discards the
-        //      oldest when full — `downstream` would do the opposite (hold old
-        //      frames, discard fresh ones), letting latency grow to the cap.
         //      Leak DOWNSTREAM with a single buffer: when the encoder
         //      stalls, the OLDEST frame is dropped and the encoder always
         //      wakes on the newest capture. (leaky=upstream kept 3 stale

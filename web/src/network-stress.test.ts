@@ -10,3 +10,10 @@ for (const fps of [60, 120]) {
     });
   }
 }
+
+for (const fps of [60, 120]) {
+  test(`a 120ms jitter tail at ${fps} fps does not create a repair flood`, () => {
+    const profile = { name: "jitter-tail", rttMs: 40, jitterMs: 120, loss: 0 };
+    verifyNetworkResult(simulateNetwork(profile, fps, 42), profile);
+  });
+}

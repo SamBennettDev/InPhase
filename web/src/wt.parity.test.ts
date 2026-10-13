@@ -61,6 +61,40 @@ function feed(dgrams: Uint8Array[]): { frames: { no: number; payload: Uint8Array
 
 const GROUP = 8;
 
+test("tail parity arriving before another group's data still repairs the tail", () => {
+  const payload = Uint8Array.from({ length: 8 * 40 + 13 }, (_, i) => i & 255);
+  const ds = [frag(92, 1, 9, withTrailer(payload.subarray(320), payload.length), 1)];
+  for (let i = 0; i < 8; i++) ds.push(frag(92, i, 9, payload.subarray(i * 40, (i + 1) * 40), 0));
+  const { frames, c } = feed(ds);
+  assert.equal(frames.length, 1);
+  assert.deepEqual(frames[0]!.payload, payload);
+  c.close();
+});
+
+for (const cnt of [2, 16, 23]) for (const width of [31, 40]) {
+  test(`two-row FEC restores a lost short tail at ${cnt} fragments / ${width} bytes without a NACK`, () => {
+    const payload = Uint8Array.from({ length: (cnt - 1) * width + 13 }, (_, i) => (i * 19 + 7) & 255);
+    const parts = Array.from({ length: cnt }, (_, i) => payload.subarray(i * width, (i + 1) * width));
+    const dgrams: Uint8Array[] = [];
+    for (let g = 0; g * GROUP < cnt; g++) {
+      for (const row of [1, 2] as const) {
+        const p = new Uint8Array(width);
+        for (let i = g * GROUP; i < Math.min(cnt, (g + 1) * GROUP); i++) {
+          if (row === 2 && i % 2 === 0) continue;
+          for (let j = 0; j < parts[i]!.length; j++) p[j] = p[j]! ^ parts[i]![j]!;
+        }
+        dgrams.push(frag(91, g, cnt, withTrailer(p, payload.length), row, true));
+      }
+    }
+    for (let i = 0; i < cnt - 2; i++) dgrams.push(frag(91, i, cnt, parts[i]!, 0, true));
+    const { frames, c } = feed(dgrams);
+    assert.equal(frames.length, 1);
+    assert.deepEqual(frames[0]!.payload, payload, "tail length and every byte survive");
+    assert.equal((c as unknown as { nacksSent: number }).nacksSent, 0);
+    c.close();
+  });
+}
+
 test("row-1 parity rebuilds one lost fragment with no round-trip", () => {
   const cnt = GROUP;
   const budget = 40;
@@ -448,6 +482,8 @@ test("repair retries leave time for a second response inside the reorder budget"
   assert.ok(relay.firstMs <= 150 && relay.gapMs >= 120, "wait for the repair RTT without an excessive first delay");
   const wifi = nackTiming(40);
   assert.ok(wifi.firstMs + wifi.gapMs + 40 < 300, "a second response fits the reorder budget");
+  const jitter = nackTiming(40, 120);
+  assert.ok(jitter.firstMs >= 135, "measured fragment jitter defers false repairs");
   // Four rounds on a LAN finish well inside the orderer's 300 ms repair budget.
   assert.ok(lan.firstMs + 3 * lan.gapMs < 300);
 });
@@ -475,7 +511,7 @@ for (const useParity of [false, true]) {
         for (const p of parts) for (let j = 0; j < size; j++) row[j] = row[j]! ^ p[j]!;
         core.onVideoFragment(frag(71, 0, 8, withTrailer(row, payload.length), 1), h);
       }
-      now += 146;
+      now += 151; // uncalibrated receiver keeps its conservative first round
       core.onVideoFragment(frag(71, 0, 8, parts[0]!, 0), h);
       assert.equal(asks.length, 2, "ask for every hole parity cannot rebuild");
       now += 40;

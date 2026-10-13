@@ -53,6 +53,8 @@ Updates near 60fps**.
 InPhase does not wake a sleeping PC, stream the Windows sign-in/secure desktop,
 or guarantee input compatibility with every game or anti-cheat system.
 See the [hardware test matrix](tests/compatibility/host-gpu.md).
+The [replacement readiness assessment](docs/REPLACEMENT_READINESS.md) tracks
+performance validation and feature gaps for replacing Moonlight and Sunshine.
 
 ## Interface
 

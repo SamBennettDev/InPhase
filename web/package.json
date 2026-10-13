@@ -11,9 +11,10 @@
     "preview": "vite preview",
     "test": "node scripts/test.mjs",
     "typecheck": "tsc --noEmit",
-    "test:browser": "playwright test",
+    "test:browser": "playwright test --workers=1",
     "test:network": "node --import tsx scripts/network-stress.ts",
-    "test:streaming": "node scripts/browser-stress.mjs"
+    "test:streaming": "node scripts/browser-stress.mjs",
+    "test:receiver": "node --import tsx scripts/receiver-bench.ts"
   },
   "devDependencies": {
     "@types/node": "^22.9.0",

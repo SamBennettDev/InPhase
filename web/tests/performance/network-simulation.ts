@@ -79,7 +79,7 @@ function payloadFor(no: number, length: number): Uint8Array {
 }
 
 /** v4 wire layout and 8+1 / 8+2 XOR rows, matching protocol/wtvideo.rs. */
-function fragment(f: WtFrame): Uint8Array[] {
+export function encodeFragments(f: WtFrame): Uint8Array[] {
   const count = Math.ceil(f.payload.length / FRAGMENT_BYTES);
   const encode = (idx: number, row: number, body: Uint8Array): Uint8Array => {
     const d = new Uint8Array(18 + body.length);
@@ -143,6 +143,9 @@ export interface NetworkResult {
   nacks: number;
   resyncs: number;
   lastProgressMs: number;
+  frameBytes: number;
+  repairLimiter: "legacy" | "fractional";
+  repairsRefused: number;
 }
 
 export function verifyNetworkResult(r: NetworkResult, profile: NetworkProfile): void {
@@ -158,11 +161,14 @@ export function verifyNetworkResult(r: NetworkResult, profile: NetworkProfile): 
   assert.ok(r.nacks < r.generated * 3, `repair traffic bounded: ${r.nacks} for ${r.generated} frames`);
 }
 
-export function simulateNetwork(profile: NetworkProfile, fps: number, seed: number, seconds = 20): NetworkResult {
+export function simulateNetwork(profile: NetworkProfile, fps: number, seed: number, seconds = 20,
+  opts: { frameBytes?: number; repairLimiter?: "legacy" | "fractional" } = {}): NetworkResult {
   const events = new Events();
   const rand = random(seed);
   let now = 1;
   const duration = seconds * 1000;
+  const frameBytes = opts.frameBytes ?? 12_113;
+  const repairLimiter = opts.repairLimiter ?? "fractional";
   const order = new FrameOrderer();
   order.setRttMs(profile.rttMs);
   const client = new WtVideoClient();
@@ -180,6 +186,18 @@ export function simulateNetwork(profile: NetworkProfile, fps: number, seed: numb
   let resyncs = 0;
   let maxHeld = 0;
   let maxAssemblies = 0;
+  let repairTokens = 0;
+  let refillAt = 1;
+  let repairsRefused = 0;
+  const takeRepair = () => {
+    const elapsed = now - refillAt;
+    const refill = repairLimiter === "legacy" ? Math.floor(Math.floor(elapsed) * 300 / 1000) : elapsed * 300 / 1000;
+    repairTokens = Math.min(300, repairTokens + refill);
+    refillAt = now;
+    if (repairTokens < 1) { repairsRefused++; return false; }
+    repairTokens--;
+    return true;
+  };
   const ages: number[] = [];
   const requestKey = () => {
     if (now - lastKeyAsk < 1000) return;
@@ -191,7 +209,7 @@ export function simulateNetwork(profile: NetworkProfile, fps: number, seed: numb
   const h: WtClientHandlers = {
     onVideoConfig: () => {}, onClosed: () => {},
     onFrame(f) {
-      assert.deepEqual(f.payload, payloadFor(f.frame_no, f.key ? 51_713 : 12_113), "FEC/retransmission must preserve bytes");
+      assert.deepEqual(f.payload, payloadFor(f.frame_no, f.key ? 51_713 : frameBytes), "FEC/retransmission must preserve bytes");
       for (const ready of order.accept(f)) {
         assert.ok(ready.key || previousNo === null || ready.frame_no === ((previousNo + 1) >>> 0), "never admit a broken delta chain");
         previousNo = ready.frame_no;
@@ -223,11 +241,17 @@ export function simulateNetwork(profile: NetworkProfile, fps: number, seed: numb
     nacks++;
     const sentAt = now;
     events.push(sentAt + profile.rttMs / 2, () => {
+      // Match the host's shared 300/s, 300-burst repair limit, including
+      // charging whole-frame requests once and each additional fragment.
+      if (!takeRepair()) return;
       const saved = cache.get(Number(m.frame));
       if (!saved) return;
       const requested = Number(m.idx) === NACK_WHOLE_FRAME ? saved : saved.filter((d) =>
         (d[1]! >> 1) === 0 && new DataView(d.buffer).getUint16(6, true) === Number(m.idx));
-      requested.forEach((d, i) => send(d, now + i * 0.1));
+      for (let i = 0; i < requested.length; i++) {
+        if (i > 0 && !takeRepair()) break;
+        send(requested[i]!, now + i * 0.1);
+      }
     });
   };
   for (let no = 0; no < seconds * fps; no++) {
@@ -235,10 +259,12 @@ export function simulateNetwork(profile: NetworkProfile, fps: number, seed: numb
     events.push(captureMs, () => {
       const key = keyNext;
       keyNext = false;
-      const f: WtFrame = { frame_no: no, capture_us: CAPTURE_EPOCH_US + Math.round(captureMs * 1000), key, payload: payloadFor(no, key ? 51_713 : 12_113) };
+      const f: WtFrame = { frame_no: no, capture_us: CAPTURE_EPOCH_US + Math.round(captureMs * 1000), key, payload: payloadFor(no, key ? 51_713 : frameBytes) };
       generated++;
-      const ds = fragment(f);
-      cache.set(no, ds);
+      const ds = encodeFragments(f);
+      // The host caches data fragments, not parity. Whole-frame repairs
+      // consume one token per cached data datagram.
+      cache.set(no, ds.filter((d) => (d[1]! >> 1) === 0));
       cache.delete(no - 151);
       ds.forEach((d, i) => send(d, now + i * 0.1));
     });
@@ -264,6 +290,6 @@ export function simulateNetwork(profile: NetworkProfile, fps: number, seed: numb
     admittedPercent: Math.round(admitted / generated * 10000) / 100,
     ageP50Ms: percentile(0.5), ageP95Ms: percentile(0.95), maxGapMs: Math.round(maxGap * 10) / 10,
     maxHeld, maxAssemblies, repairedFragments: receiver.v4Repaired, abandoned: receiver.framesAbandoned,
-    nacks, resyncs, lastProgressMs: Math.round(lastProgress),
+    nacks, resyncs, lastProgressMs: Math.round(lastProgress), frameBytes, repairLimiter, repairsRefused,
   };
 }

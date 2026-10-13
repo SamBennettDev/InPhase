@@ -201,6 +201,11 @@ export class FrameOrderer {
     return this.pending.size;
   }
 
+  /** This exact arrival was accepted and is waiting for its predecessor. */
+  holds(f: WtFrame): boolean {
+    return this.pending.get(f.frame_no) === f;
+  }
+
   /** Unanchored and a keyframe request is due. Stays true until the caller
    *  reports one sent ({@link keyframeRequested}), so a request the page
    *  throttle refused is retried on the next arrival rather than lost. */
